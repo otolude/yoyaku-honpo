@@ -58,6 +58,28 @@ docker compose stop postgres
 
 PostgreSQLだけがコンテナで起動します。Phase 1のBotはコンテナ化しません。
 
+### 4. DB接続確認
+
+PostgreSQLを起動し、`.env`に `DATABASE_URL`だけを設定してから次を実行します。Discord BotトークンやDiscord IDは、この接続確認には必要ありません。
+
+```bash
+python -m discord_ai_reminder_bot.infrastructure.database.health
+```
+
+このコマンドは読み取り専用の `SELECT 1` だけを実行します。テーブルの作成やデータ更新は行いません。
+
+### 5. Alembic
+
+Alembicは、SQLAlchemyのモデルに合わせてPostgreSQLのテーブル構造を段階的に変更し、その履歴を管理するツールです。
+
+マイグレーションはBot起動とは別に、開発者またはデプロイ処理が明示的に適用します。Bot起動時に自動適用はしません。
+
+```bash
+alembic upgrade head
+```
+
+現段階では業務用DBテーブルとマイグレーションリビジョンをまだ作成していないため、このコマンドを実行する必要はありません。今後モデルを定義してリビジョンを作成した後に使用します。DB接続URLは `alembic.ini` へ書かず、`.env`の `DATABASE_URL`から読み込みます。
+
 ## 動作確認
 
 ```bash

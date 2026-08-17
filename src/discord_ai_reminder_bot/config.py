@@ -12,12 +12,8 @@ DiscordId = Annotated[int, Field(gt=0, le=MAX_POSTGRES_BIGINT)]
 AllowedRoleIds = Annotated[tuple[DiscordId, ...], NoDecode]
 
 
-class Settings(BaseSettings):
-    """Validated runtime settings.
-
-    Secret values use ``SecretStr`` so their values are masked in ``repr`` and
-    validation output. Call ``get_secret_value()`` only at the integration boundary.
-    """
+class DatabaseSettings(BaseSettings):
+    """Settings required by database-only commands such as Alembic."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -25,6 +21,24 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=True,
     )
+
+    database_url: SecretStr = Field(validation_alias="DATABASE_URL")
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value()
+        if not url.startswith("postgresql+psycopg://"):
+            raise ValueError("DATABASE_URLにはPsycopg用のPostgreSQL URLを指定してください")
+        return value
+
+
+class Settings(DatabaseSettings):
+    """Validated settings required by the complete application.
+
+    Secret values use ``SecretStr`` so their values are masked in ``repr`` and
+    validation output. Call ``get_secret_value()`` only at the integration boundary.
+    """
 
     app_env: Literal["development", "test", "production"] = Field(validation_alias="APP_ENV")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
@@ -37,8 +51,6 @@ class Settings(BaseSettings):
     discord_allowed_role_ids: AllowedRoleIds = Field(validation_alias="DISCORD_ALLOWED_ROLE_IDS")
     discord_operator_user_id: DiscordId = Field(validation_alias="DISCORD_OPERATOR_USER_ID")
     discord_operator_channel_id: DiscordId = Field(validation_alias="DISCORD_OPERATOR_CHANNEL_ID")
-
-    database_url: SecretStr = Field(validation_alias="DATABASE_URL")
 
     scheduler_poll_interval_seconds: int = Field(
         default=10, gt=0, validation_alias="SCHEDULER_POLL_INTERVAL_SECONDS"
@@ -80,14 +92,6 @@ class Settings(BaseSettings):
             raise ValueError("Discord Botトークンを設定してください")
         return value
 
-    @field_validator("database_url")
-    @classmethod
-    def validate_database_url(cls, value: SecretStr) -> SecretStr:
-        url = value.get_secret_value()
-        if not url.startswith("postgresql+psycopg://"):
-            raise ValueError("DATABASE_URLにはPsycopg用のPostgreSQL URLを指定してください")
-        return value
-
     @model_validator(mode="after")
     def validate_scheduler_limits(self) -> Self:
         if self.scheduler_max_concurrency > self.scheduler_batch_size:
@@ -98,3 +102,8 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     """Load and validate settings before starting the application."""
     return Settings()
+
+
+def load_database_settings() -> DatabaseSettings:
+    """Load only the settings required to connect to PostgreSQL."""
+    return DatabaseSettings()

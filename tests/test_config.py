@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from discord_ai_reminder_bot.config import Settings
+from discord_ai_reminder_bot.config import DatabaseSettings, Settings, load_database_settings
 
 ENVIRONMENT_KEYS = (
     "APP_ENV",
@@ -51,6 +53,10 @@ def valid_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 def load_without_env_file() -> Settings:
     return Settings(_env_file=None)
+
+
+def load_database_without_env_file() -> DatabaseSettings:
+    return DatabaseSettings(_env_file=None)
 
 
 def test_loads_valid_settings(valid_environment: dict[str, str]) -> None:
@@ -121,3 +127,43 @@ def test_masks_secret_in_validation_error(
 
     assert secret_url not in str(error.value)
     assert "do-not-expose" not in str(error.value)
+
+
+def test_loads_database_settings_without_discord_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for key in ENVIRONMENT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://database_user:database-password@localhost/database_test",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_database_settings()
+
+    assert settings.database_url.get_secret_value().endswith("@localhost/database_test")
+
+
+def test_database_settings_rejects_invalid_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid_url = "mysql://database_user:do-not-expose@localhost/database_test"
+    monkeypatch.setenv("DATABASE_URL", invalid_url)
+
+    with pytest.raises(ValidationError) as error:
+        load_database_without_env_file()
+
+    assert invalid_url not in str(error.value)
+    assert "do-not-expose" not in str(error.value)
+
+
+def test_database_settings_masks_url_in_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    password = "database-password"
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        f"postgresql+psycopg://database_user:{password}@localhost/database_test",
+    )
+
+    settings = load_database_without_env_file()
+
+    assert password not in repr(settings)
+    assert "**********" in repr(settings)
