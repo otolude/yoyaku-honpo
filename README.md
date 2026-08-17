@@ -4,7 +4,7 @@ Discordへの予約投稿、AIによる文章作成、利用者の文体反映�
 
 ## 現在の段階
 
-Phase 1の要件と技術設計を確定し、開発環境と設定基盤を構築しています。Discord Bot本体、DBモデル、予約処理はまだ未実装です。
+Phase 1の要件と技術設計を確定し、DBモデル、予約ドメイン、基本Repositoryを構築しています。Discord Bot本体、コマンド、予約ワーカーはまだ未実装です。
 
 ## 開発環境
 
@@ -78,7 +78,38 @@ Alembicは、SQLAlchemyのモデルに合わせてPostgreSQLのテーブル構�
 alembic upgrade head
 ```
 
-現段階では業務用DBテーブルとマイグレーションリビジョンをまだ作成していないため、このコマンドを実行する必要はありません。今後モデルを定義してリビジョンを作成した後に使用します。DB接続URLは `alembic.ini` へ書かず、`.env`の `DATABASE_URL`から読み込みます。
+DB接続URLは `alembic.ini` へ書かず、`.env`の `DATABASE_URL`から読み込みます。
+
+### 6. PostgreSQL統合テスト
+
+統合テストは、開発DBとは別の一時的なPostgreSQLを使用します。`test` profileを指定して起動してください。
+
+```bash
+docker compose --profile test up -d postgres_test
+docker compose --profile test ps
+```
+
+テストDBは`127.0.0.1:55432/discord_bot_test`です。データはtmpfsへ保存されるため、コンテナを削除すると消えます。開発DBのVolumeは共有しません。
+
+初回リビジョンをテストDBだけへ適用します。
+
+```bash
+export TEST_DATABASE_URL='postgresql+psycopg://discord_bot_test:discord_bot_test_password@127.0.0.1:55432/discord_bot_test'
+DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head
+```
+
+統合テストは`TEST_DATABASE_URL`がある場合だけ動きます。接続前にローカルホストとテスト用DB名を検証し、`discord_bot_dev`や本番らしい接続先を拒否します。
+
+```bash
+TEST_DATABASE_URL="$TEST_DATABASE_URL" python -m pytest tests/integration
+```
+
+停止して一時データを破棄する場合は次を実行します。この2つのコマンドは `postgres_test` だけを停止・削除し、コンテナのtmpfs上にあるテストデータも削除します。開発用の `postgres` サービスは停止せず、`postgres_data` Volumeも削除しません。開発データを巻き込む可能性があるため、`docker compose down` や `docker compose down -v` は使用しないでください。
+
+```bash
+docker compose --profile test stop postgres_test
+docker compose --profile test rm -f postgres_test
+```
 
 ## 動作確認
 
