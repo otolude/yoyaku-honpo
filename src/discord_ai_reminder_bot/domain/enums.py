@@ -47,6 +47,7 @@ class OperationAction(StrEnum):
     DELETED = "deleted"
     PAUSED = "paused"
     RESUMED = "resumed"
+    COMPLETED = "completed"
     ENDED = "ended"
     FAILED = "failed"
 

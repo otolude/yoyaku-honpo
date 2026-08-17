@@ -334,7 +334,7 @@ discord-ai-reminder-bot/
 | --- | --- | --- | --- |
 | `id` | BIGINT IDENTITY | 不可 | 内部主キー |
 | `schedule_id` | BIGINT | 不可 | `schedules.id` への外部キー |
-| `action` | VARCHAR(32) | 不可 | `created`、`edited`、`deleted`、`paused`、`resumed`、`ended`、`failed` |
+| `action` | VARCHAR(32) | 不可 | `created`、`edited`、`deleted`、`paused`、`resumed`、`completed`、`ended`、`failed` |
 | `actor_type` | VARCHAR(16) | 不可 | `user`、`system` |
 | `actor_user_id` | BIGINT | 可 | ユーザー操作時のDiscordユーザーID |
 | `delete_kind` | VARCHAR(32) | 可 | `creator_deleted`、`admin_deleted`、`operator_resolved_failed` |
@@ -353,6 +353,8 @@ discord-ai-reminder-bot/
 - `(actor_user_id, created_at DESC)`
 
 本文変更は `changes` に「本文が変更された」という事実だけを保存し、変更前後の本文は保存しない。
+
+単発投稿の成功で予約を `completed` にした場合は `actor_type = 'system'`、`actor_user_id = NULL`、`action = 'completed'` の操作履歴を同じトランザクションで保存する。単発の最終失敗では `action = 'failed'`、本文あり定期投稿の終了では `action = 'ended'` を同様に保存する。
 
 ### 6.6 `notification_logs`：通知履歴
 
@@ -413,6 +415,7 @@ discord-ai-reminder-bot/
 - サーバー管理者による `failed` 予約の削除を「運営者による確認・対処完了」とみなし、操作履歴を `operator_resolved_failed` として記録する。
 - 上位要件の権限規則に従い、予約作成者も自分の `failed` 予約を削除できる。その場合は通常の作成者削除として `creator_deleted` を記録し、運営者による対処完了とは区別する。
 - `completed`、`ended`、`deleted` は終端状態である。
+- 単発投稿成功による `active` から `completed` への遷移では、システム操作履歴 `completed` を予約更新と同じトランザクションで保存する。
 
 主な禁止遷移:
 
@@ -485,6 +488,7 @@ discord-ai-reminder-bot/
 - 一時停止中に過ぎた回は生成せず、まとめて投稿しない。
 - 次回が存在せず本文がある場合は `ended` へ遷移する。
 - 次回が存在せず本文がない `paused` は `ended` へ遷移せず、本文を設定して終了処理するか削除する。本文なしの `draft` も自動的に `ended` へ変更せず、利用者または管理者が確認して削除する。
+- 本文なしの定期 `draft` で現在回を `skipped` にした場合も、次回が存在すれば `draft` を維持して未来の次回実行を1件だけ生成する。次回が存在しなければ、DB制約上必要な既存の `next_run_at`、状態、versionを変更せず、確認・削除対象として残す。
 
 ## 9. 日時の扱い
 
@@ -611,6 +615,7 @@ Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord
 - 終了日当日の予定は対象に含める。
 - 次回が存在せず本文がある場合は予約を `ended` にする。
 - 次回が存在しない本文なしの `draft` または `paused` は `ended` にせず、利用者または管理者が本文を設定して終了処理するか削除する。
+- 本文なしの定期 `draft` の `skipped` 回を確定するときは、復旧時刻より後の次回があれば `draft` のまま1件だけ生成する。次回がなければ既存の `next_run_at` とversionを維持し、確認・削除対象として残す。
 
 長期間停止して大量の履歴が必要になった場合も、Phase 1ではスキップした各予定回を個別の `schedule_runs` として保存する。ただし1回の復旧処理は500件までとし、超過分は次の処理へ分割してBotの起動を長時間止めない。
 

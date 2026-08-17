@@ -10,6 +10,7 @@ from discord_ai_reminder_bot.infrastructure.database.base import Base
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DELIVERY_ATTEMPT_STATUSES,
     NOTIFICATION_STATUSES,
+    OPERATION_ACTIONS,
     RUN_STATUSES,
     SCHEDULE_STATUSES,
     DeliveryAttempt,
@@ -140,6 +141,25 @@ def test_state_constants_match_technical_design() -> None:
         "unknown",
     )
     assert NOTIFICATION_STATUSES == ("pending", "succeeded", "failed")
+    assert OPERATION_ACTIONS == (
+        "created",
+        "edited",
+        "deleted",
+        "paused",
+        "resumed",
+        "completed",
+        "ended",
+        "failed",
+    )
+
+
+def test_completed_operation_is_present_in_action_check() -> None:
+    constraint = next(
+        constraint
+        for constraint in OperationLog.__table__.constraints
+        if constraint.name == "ck_operation_logs_action_valid"
+    )
+    assert "'completed'" in str(constraint.sqltext)
 
 
 def test_major_check_constraints_exist() -> None:

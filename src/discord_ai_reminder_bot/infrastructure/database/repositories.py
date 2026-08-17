@@ -103,6 +103,16 @@ def build_expired_processing_statement(
     )
 
 
+def build_run_finalization_statement(*, run_id: int) -> Select[tuple[ScheduleRun]]:
+    """Lock one run before locking its parent schedule."""
+    return select(ScheduleRun).where(ScheduleRun.id == run_id).with_for_update()
+
+
+def build_schedule_lock_statement(*, schedule_id: int) -> Select[tuple[Schedule]]:
+    """Lock one parent schedule after its run has been locked."""
+    return select(Schedule).where(Schedule.id == schedule_id).with_for_update()
+
+
 class ScheduleRepository:
     """Read and write schedules while leaving commit and rollback to the caller."""
 
@@ -132,6 +142,19 @@ class ScheduleRepository:
         schedule = await self._session.get(Schedule, schedule_id)
         if schedule is None:
             raise RepositoryNotFoundError("schedule was not found")
+        return schedule
+
+    async def lock_by_id(self, schedule_id: int) -> Schedule:
+        schedule = (
+            await self._session.execute(build_schedule_lock_statement(schedule_id=schedule_id))
+        ).scalar_one_or_none()
+        if schedule is None:
+            raise RepositoryNotFoundError("schedule was not found")
+        return schedule
+
+    async def flush_execution_update(self, schedule: Schedule) -> Schedule:
+        """Flush an execution-driven change without committing it."""
+        await self._session.flush()
         return schedule
 
     async def list_by_creator(
@@ -231,6 +254,43 @@ class ScheduleRunRepository:
             .limit(limit)
         )
         return list((await self._session.execute(statement)).scalars())
+
+    async def lock_for_finalization(self, *, run_id: int) -> ScheduleRun:
+        run = (
+            await self._session.execute(build_run_finalization_statement(run_id=run_id))
+        ).scalar_one_or_none()
+        if run is None:
+            raise RepositoryNotFoundError("schedule run was not found")
+        return run
+
+    async def get_by_schedule_and_time(
+        self, *, schedule_id: int, scheduled_for: datetime
+    ) -> ScheduleRun | None:
+        scheduled_for = require_utc(scheduled_for)
+        return (
+            await self._session.execute(
+                select(ScheduleRun).where(
+                    ScheduleRun.schedule_id == schedule_id,
+                    ScheduleRun.scheduled_for == scheduled_for,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def get_first_after(
+        self, *, schedule_id: int, scheduled_for: datetime
+    ) -> ScheduleRun | None:
+        scheduled_for = require_utc(scheduled_for)
+        return (
+            await self._session.execute(
+                select(ScheduleRun)
+                .where(
+                    ScheduleRun.schedule_id == schedule_id,
+                    ScheduleRun.scheduled_for > scheduled_for,
+                )
+                .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
     async def claim_due(
         self,
