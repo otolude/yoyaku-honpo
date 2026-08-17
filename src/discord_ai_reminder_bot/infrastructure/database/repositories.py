@@ -81,6 +81,28 @@ def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[
     )
 
 
+def build_expired_processing_statement(
+    *, recovered_at: datetime, batch_size: int
+) -> Select[tuple[ScheduleRun]]:
+    """Build the PostgreSQL-only expired processing-run locking statement."""
+    recovered_at = require_utc(recovered_at)
+    if isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CLAIM_BATCH_SIZE:
+        raise ValueError(f"batch_size must be between 1 and {MAX_CLAIM_BATCH_SIZE}")
+    return (
+        select(ScheduleRun)
+        .where(
+            ScheduleRun.status == RunStatus.PROCESSING.value,
+            ScheduleRun.lease_expires_at <= recovered_at,
+            ScheduleRun.claimed_by.is_not(None),
+            ScheduleRun.claimed_at.is_not(None),
+            ScheduleRun.lease_expires_at.is_not(None),
+        )
+        .order_by(ScheduleRun.lease_expires_at.asc(), ScheduleRun.id.asc())
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
+    )
+
+
 class ScheduleRepository:
     """Read and write schedules while leaving commit and rollback to the caller."""
 
@@ -258,6 +280,14 @@ class ScheduleRunRepository:
         await self._session.flush()
         return claimed
 
+    async def lock_expired_processing(
+        self, *, recovered_at: datetime, batch_size: int
+    ) -> list[ScheduleRun]:
+        statement = build_expired_processing_statement(
+            recovered_at=recovered_at, batch_size=batch_size
+        )
+        return list((await self._session.execute(statement)).scalars())
+
     async def mark_sending_started(
         self, *, run_id: int, worker_id: uuid.UUID, now: datetime
     ) -> ScheduleRun:
@@ -405,6 +435,16 @@ class DeliveryAttemptRepository:
             raise RepositoryNotFoundError("delivery attempt was not found")
         return attempt
 
+    async def get_latest_by_run(self, *, run_id: int) -> DeliveryAttempt | None:
+        return (
+            await self._session.execute(
+                select(DeliveryAttempt)
+                .where(DeliveryAttempt.schedule_run_id == run_id)
+                .order_by(DeliveryAttempt.attempt_number.desc(), DeliveryAttempt.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
     async def mark_sending(
         self, *, attempt_id: int, worker_id: uuid.UUID, now: datetime
     ) -> DeliveryAttempt:
@@ -476,7 +516,13 @@ class DeliveryAttemptRepository:
         )
 
     async def mark_unknown(
-        self, *, attempt_id: int, worker_id: uuid.UUID, now: datetime
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        error_code: str | None = None,
+        error_summary: str | None = None,
     ) -> DeliveryAttempt:
         return await self._transition(
             attempt_id=attempt_id,
@@ -489,8 +535,33 @@ class DeliveryAttemptRepository:
                 "finished_at": now,
                 "discord_message_id": None,
                 "error_kind": "unknown",
-                "error_code": None,
-                "error_summary": None,
+                "error_code": error_code,
+                "error_summary": error_summary,
+            },
+        )
+
+    async def mark_unknown_after_expiry(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        error_code: str,
+        error_summary: str,
+    ) -> DeliveryAttempt:
+        return await self._transition(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            expected=(DeliveryAttemptStatus.SENDING, DeliveryAttemptStatus.UNKNOWN),
+            target=DeliveryAttemptStatus.UNKNOWN,
+            now=now,
+            require_send_started=True,
+            values={
+                "finished_at": now,
+                "discord_message_id": None,
+                "error_kind": "unknown",
+                "error_code": error_code,
+                "error_summary": error_summary,
             },
         )
 
