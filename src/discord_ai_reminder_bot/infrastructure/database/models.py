@@ -24,27 +24,33 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from discord_ai_reminder_bot.domain.enums import (
+    ActorType,
+    DeleteKind,
+    DeliveryAttemptStatus,
+    DeliveryErrorKind,
+    NotificationRecipientType,
+    NotificationStatus,
+    NotificationType,
+    OperationAction,
+    RunStatus,
+    ScheduleStatus,
+    ScheduleType,
+    enum_values,
+)
 from discord_ai_reminder_bot.infrastructure.database.base import Base
 
-SCHEDULE_TYPES = ("once", "daily", "weekly")
-SCHEDULE_STATUSES = ("draft", "active", "paused", "failed", "completed", "ended", "deleted")
-RUN_STATUSES = ("pending", "processing", "succeeded", "failed", "skipped")
-DELIVERY_ATTEMPT_STATUSES = ("claimed", "sending", "succeeded", "failed", "unknown")
-DELIVERY_ERROR_KINDS = ("transient", "permanent", "unknown")
-OPERATION_ACTIONS = ("created", "edited", "deleted", "paused", "resumed", "ended", "failed")
-ACTOR_TYPES = ("user", "system")
-DELETE_KINDS = ("creator_deleted", "admin_deleted", "operator_resolved_failed")
-NOTIFICATION_TYPES = (
-    "draft_24h",
-    "draft_1h",
-    "draft_immediate",
-    "run_failed",
-    "run_delayed",
-    "run_skipped",
-    "recovery",
-)
-NOTIFICATION_RECIPIENT_TYPES = ("creator_dm", "operator_channel", "operator_dm", "log")
-NOTIFICATION_STATUSES = ("pending", "succeeded", "failed")
+SCHEDULE_TYPES = enum_values(ScheduleType)
+SCHEDULE_STATUSES = enum_values(ScheduleStatus)
+RUN_STATUSES = enum_values(RunStatus)
+DELIVERY_ATTEMPT_STATUSES = enum_values(DeliveryAttemptStatus)
+DELIVERY_ERROR_KINDS = enum_values(DeliveryErrorKind)
+OPERATION_ACTIONS = enum_values(OperationAction)
+ACTOR_TYPES = enum_values(ActorType)
+DELETE_KINDS = enum_values(DeleteKind)
+NOTIFICATION_TYPES = enum_values(NotificationType)
+NOTIFICATION_RECIPIENT_TYPES = enum_values(NotificationRecipientType)
+NOTIFICATION_STATUSES = enum_values(NotificationStatus)
 
 
 def sql_values(values: tuple[str, ...]) -> str:
