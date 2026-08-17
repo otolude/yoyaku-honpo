@@ -17,5 +17,13 @@ class DuplicateRecordError(RepositoryError):
     """A database uniqueness rule rejected a duplicate row."""
 
 
+class RepositoryOwnershipError(RepositoryError):
+    """The row belongs to a different worker."""
+
+
+class RepositoryStateConflictError(RepositoryError):
+    """The row exists but is no longer in the expected state."""
+
+
 class UnsafeTestDatabaseError(RepositoryError):
     """A test database URL could point to development or production data."""

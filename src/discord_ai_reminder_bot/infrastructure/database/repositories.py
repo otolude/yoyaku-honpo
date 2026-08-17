@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,8 @@ from discord_ai_reminder_bot.infrastructure.database.exceptions import (
     DuplicateRecordError,
     OptimisticLockError,
     RepositoryNotFoundError,
+    RepositoryOwnershipError,
+    RepositoryStateConflictError,
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
@@ -255,6 +257,301 @@ class ScheduleRunRepository:
 
         await self._session.flush()
         return claimed
+
+    async def mark_sending_started(
+        self, *, run_id: int, worker_id: uuid.UUID, now: datetime
+    ) -> ScheduleRun:
+        now = require_utc(now)
+        _validate_worker_id(worker_id)
+        statement = (
+            update(ScheduleRun)
+            .where(
+                ScheduleRun.id == run_id,
+                ScheduleRun.status == RunStatus.PROCESSING.value,
+                ScheduleRun.claimed_by == worker_id,
+                ScheduleRun.lease_expires_at >= now,
+            )
+            .values(updated_at=now)
+            .returning(ScheduleRun)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        run = (await self._session.execute(statement)).scalar_one_or_none()
+        if run is None:
+            await self._raise_run_transition_error(run_id=run_id, worker_id=worker_id)
+        return run
+
+    async def mark_succeeded(
+        self,
+        *,
+        run_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        message_id: int,
+        result_code: str,
+    ) -> ScheduleRun:
+        return await self._finish(
+            run_id=run_id,
+            worker_id=worker_id,
+            now=now,
+            status=RunStatus.SUCCEEDED,
+            next_attempt_at=None,
+            finished_at=now,
+            message_id=message_id,
+            result_code=result_code,
+            error_summary=None,
+        )
+
+    async def mark_failed_or_pending(
+        self,
+        *,
+        run_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        retry_at: datetime | None,
+        result_code: str,
+        error_summary: str,
+    ) -> ScheduleRun:
+        status = RunStatus.PENDING if retry_at is not None else RunStatus.FAILED
+        return await self._finish(
+            run_id=run_id,
+            worker_id=worker_id,
+            now=now,
+            status=status,
+            next_attempt_at=retry_at,
+            finished_at=None if retry_at is not None else now,
+            message_id=None,
+            result_code=result_code,
+            error_summary=error_summary,
+        )
+
+    async def _finish(
+        self,
+        *,
+        run_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        status: RunStatus,
+        next_attempt_at: datetime | None,
+        finished_at: datetime | None,
+        message_id: int | None,
+        result_code: str,
+        error_summary: str | None,
+    ) -> ScheduleRun:
+        now = require_utc(now)
+        _validate_worker_id(worker_id)
+        statement = (
+            update(ScheduleRun)
+            .where(
+                ScheduleRun.id == run_id,
+                ScheduleRun.status == RunStatus.PROCESSING.value,
+                ScheduleRun.claimed_by == worker_id,
+            )
+            .values(
+                status=status.value,
+                next_attempt_at=next_attempt_at,
+                discord_message_id=message_id,
+                result_code=result_code,
+                error_summary=error_summary,
+                finished_at=finished_at,
+                claimed_by=None,
+                claimed_at=None,
+                lease_expires_at=None,
+                updated_at=now,
+            )
+            .returning(ScheduleRun)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        run = (await self._session.execute(statement)).scalar_one_or_none()
+        if run is None:
+            await self._raise_run_transition_error(run_id=run_id, worker_id=worker_id)
+        return run
+
+    async def _raise_run_transition_error(self, *, run_id: int, worker_id: uuid.UUID) -> None:
+        run = await self._session.get(ScheduleRun, run_id, populate_existing=True)
+        if run is None:
+            raise RepositoryNotFoundError("schedule run was not found")
+        if run.claimed_by != worker_id:
+            raise RepositoryOwnershipError("schedule run belongs to another worker")
+        raise RepositoryStateConflictError("schedule run state or lease does not permit the update")
+
+
+def _validate_worker_id(worker_id: uuid.UUID) -> None:
+    if not isinstance(worker_id, uuid.UUID):
+        raise TypeError("worker_id must be a UUID")
+
+
+class DeliveryAttemptRepository:
+    """Conditionally advance delivery attempts without owning the transaction."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, attempt_id: int) -> DeliveryAttempt:
+        attempt = await self._session.get(DeliveryAttempt, attempt_id)
+        if attempt is None:
+            raise RepositoryNotFoundError("delivery attempt was not found")
+        return attempt
+
+    async def get_by_run_and_number(self, *, run_id: int, attempt_number: int) -> DeliveryAttempt:
+        attempt = (
+            await self._session.execute(
+                select(DeliveryAttempt).where(
+                    DeliveryAttempt.schedule_run_id == run_id,
+                    DeliveryAttempt.attempt_number == attempt_number,
+                )
+            )
+        ).scalar_one_or_none()
+        if attempt is None:
+            raise RepositoryNotFoundError("delivery attempt was not found")
+        return attempt
+
+    async def mark_sending(
+        self, *, attempt_id: int, worker_id: uuid.UUID, now: datetime
+    ) -> DeliveryAttempt:
+        return await self._transition(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            expected=(DeliveryAttemptStatus.CLAIMED,),
+            target=DeliveryAttemptStatus.SENDING,
+            now=now,
+            require_send_started=False,
+            values={
+                "send_started_at": now,
+                "finished_at": None,
+                "discord_message_id": None,
+                "error_kind": None,
+                "error_code": None,
+                "error_summary": None,
+            },
+        )
+
+    async def mark_succeeded(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        message_id: int,
+    ) -> DeliveryAttempt:
+        return await self._transition(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            expected=(DeliveryAttemptStatus.SENDING,),
+            target=DeliveryAttemptStatus.SUCCEEDED,
+            now=now,
+            require_send_started=True,
+            values={
+                "finished_at": now,
+                "discord_message_id": message_id,
+                "error_kind": None,
+                "error_code": None,
+                "error_summary": None,
+            },
+        )
+
+    async def mark_failed(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        error_kind: str,
+        error_code: str,
+        error_summary: str,
+    ) -> DeliveryAttempt:
+        return await self._transition(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            expected=(DeliveryAttemptStatus.CLAIMED, DeliveryAttemptStatus.SENDING),
+            target=DeliveryAttemptStatus.FAILED,
+            now=now,
+            require_send_started=False,
+            values={
+                "finished_at": now,
+                "discord_message_id": None,
+                "error_kind": error_kind,
+                "error_code": error_code,
+                "error_summary": error_summary,
+            },
+        )
+
+    async def mark_unknown(
+        self, *, attempt_id: int, worker_id: uuid.UUID, now: datetime
+    ) -> DeliveryAttempt:
+        return await self._transition(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            expected=(DeliveryAttemptStatus.SENDING,),
+            target=DeliveryAttemptStatus.UNKNOWN,
+            now=now,
+            require_send_started=True,
+            values={
+                "finished_at": now,
+                "discord_message_id": None,
+                "error_kind": "unknown",
+                "error_code": None,
+                "error_summary": None,
+            },
+        )
+
+    async def _transition(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        expected: tuple[DeliveryAttemptStatus, ...],
+        target: DeliveryAttemptStatus,
+        now: datetime,
+        require_send_started: bool,
+        values: Mapping[str, Any],
+    ) -> DeliveryAttempt:
+        now = require_utc(now)
+        _validate_worker_id(worker_id)
+        conditions = [
+            DeliveryAttempt.id == attempt_id,
+            DeliveryAttempt.claimed_by == worker_id,
+            DeliveryAttempt.status.in_(status.value for status in expected),
+            DeliveryAttempt.claimed_at <= now,
+        ]
+        if require_send_started:
+            conditions.append(DeliveryAttempt.send_started_at <= now)
+        elif DeliveryAttemptStatus.SENDING in expected:
+            conditions.append(
+                or_(
+                    DeliveryAttempt.status == DeliveryAttemptStatus.CLAIMED.value,
+                    DeliveryAttempt.send_started_at <= now,
+                )
+            )
+        statement = (
+            update(DeliveryAttempt)
+            .where(*conditions)
+            .values(status=target.value, **values)
+            .returning(DeliveryAttempt)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        attempt = (await self._session.execute(statement)).scalar_one_or_none()
+        if attempt is None:
+            await self._raise_transition_error(
+                attempt_id=attempt_id, worker_id=worker_id, expected=expected
+            )
+        return attempt
+
+    async def _raise_transition_error(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        expected: tuple[DeliveryAttemptStatus, ...],
+    ) -> None:
+        attempt = await self._session.get(DeliveryAttempt, attempt_id, populate_existing=True)
+        if attempt is None:
+            raise RepositoryNotFoundError("delivery attempt was not found")
+        if attempt.claimed_by != worker_id:
+            raise RepositoryOwnershipError("delivery attempt belongs to another worker")
+        expected_values = {status.value for status in expected}
+        if attempt.status not in expected_values:
+            raise RepositoryStateConflictError("delivery attempt is not in the expected state")
+        raise RepositoryStateConflictError("delivery attempt timestamps do not permit the update")
 
 
 class OperationLogRepository:
