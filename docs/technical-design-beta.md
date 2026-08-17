@@ -1,0 +1,858 @@
+# Phase 1 β版 技術設計
+
+## 1. 設計目的と上位要件
+
+本書は、[Phase 1 β版 要件定義](requirements-beta.md)を実装へ落とし込むための技術設計書である。要件定義を上位文書とし、解釈が分かれる箇所では本書の採用案に従う。ただし、本書と要件定義が矛盾した場合は要件定義を優先し、実装前に本書を修正する。
+
+Phase 1では、環境変数で指定した1つのDiscordサーバーに対して、単発、毎日、毎週の予約投稿を安全に実行する。予約、各回の実行状態、通知結果をPostgreSQLへ保存し、Botを再起動しても処理を復旧できるようにする。
+
+### 1.1 設計方針
+
+- 対応言語は日本語、利用者向けタイムゾーンは `Asia/Tokyo` に固定する。
+- PostgreSQLを予約状態の唯一の正しい保存先とする。
+- Discord Bot、業務処理、予約ルール、DB・Discord接続を分離する。
+- Discord APIやDBへ依存しない予約ルールを先に実装し、単体テスト可能にする。
+- 非同期I/Oを使用し、Discord Botの応答を同期処理で止めない。
+- DBポーリング方式を採用し、APSchedulerとCeleryはPhase 1では使用しない。
+- PostgreSQLだけをDocker Composeで起動し、BotはWSL上の `.venv` で実行する。
+- 初期実装ではファイルを過度に細分化せず、責務が大きくなった時点で分割する。
+- Phase 2のAI、文体、PAY.JP、複数サーバー対応を追加できる境界を設ける。
+- 自動再送による二重投稿を避けることを、投稿の取りこぼしを避けることより優先する。
+
+## 2. システム構成
+
+Phase 1は、次の2つの実行要素で構成する。
+
+```text
+WSL
+┌────────────────────────────────────────────────────┐
+│ CPython 3.14 / .venv                               │
+│                                                    │
+│ Discord Botプロセス                                │
+│ ├─ スラッシュコマンド                              │
+│ ├─ アプリケーションサービス                        │
+│ ├─ DBポーリングワーカー                            │
+│ ├─ 起動時復旧                                      │
+│ ├─ 下書き通知・運営者通知                          │
+│ └─ 30日経過データの削除                            │
+└───────────────┬───────────────────┬────────────────┘
+                │                   │
+                │ 非同期DB接続      │ HTTPS / Gateway
+                ▼                   ▼
+Docker Compose                  Discord API
+┌──────────────────┐
+│ PostgreSQL       │
+│ ├─ 予約          │
+│ ├─ 実行履歴      │
+│ ├─ 送信試行      │
+│ ├─ 操作履歴      │
+│ └─ 通知履歴      │
+└──────────────────┘
+```
+
+Botプロセス内の各バックグラウンド処理は同じアプリケーションサービスを呼び出す。スラッシュコマンド、通常ポーリング、起動時復旧で業務ルールを重複実装しない。
+
+Phase 1では1つのBotプロセスを標準運用とする。ただし、誤って複数起動した場合も二重実行しないDB排他制御を実装する。
+
+## 3. 採用技術と選定理由
+
+| 分類 | 採用技術 | 選定理由 |
+| --- | --- | --- |
+| Python | 通常版CPython 3.14 | READMEの開発環境と統一し、型や標準ライブラリを新しい安定版へ揃えるため |
+| Discord | discord.py 2.x | スラッシュコマンド、Cog、権限、DM、非同期処理に対応するため |
+| 設定 | pydantic-settings | 必須値、数値ID、環境ごとの差を起動時に検証するため |
+| ORM | SQLAlchemy 2.x | 型付きORM、非同期接続、PostgreSQL機能、将来拡張に対応するため |
+| DBドライバー | Psycopg 3 | PostgreSQL向けでasyncioに対応し、SQLAlchemyから利用できるため |
+| マイグレーション | Alembic | SQLAlchemyモデルとDBスキーマの変更履歴を管理するため |
+| DB | PostgreSQL | 排他ロック、制約、トランザクション、将来の複数プロセス化に対応するため |
+| 定期ループ | discord.ext.tasks | Botのasyncioループ上で、ポーリングと再接続を扱うため |
+| テスト | pytest、pytest-asyncio | 同期・非同期の単体テストと統合テストを同じ形式で記述するため |
+| 品質 | Ruff | lintとformatを1つのツールで管理するため |
+| コンテナ | Docker Compose | 開発用PostgreSQLだけを再現可能に起動するため |
+| ログ | Python標準logging | 依存を増やさず、構造化ログへ拡張できるため |
+
+### 3.1 Python設定の変更方針
+
+実装開始時に `pyproject.toml` の次の変更が必要である。本書作成時点では変更しない。
+
+```toml
+[project]
+requires-python = ">=3.14,<3.15"
+
+[tool.ruff]
+target-version = "py314"
+```
+
+開発・テスト・本番で同じPython 3.14系を使用する。自由スレッド版ではなく、通常版CPythonを使用する。依存ライブラリを追加する前に、採用バージョンがPython 3.14へ対応していることを確認する。
+
+## 4. 責務分離
+
+### 4.1 Bot層
+
+Bot層はDiscordとの入出力だけを担当する。
+
+- スラッシュコマンドの登録
+- Discord入力値の受取と基本的な形式確認
+- 対象サーバー、管理者、許可ロール、予約所有者の確認
+- 本人だけに見える応答、確認ボタン、一覧のページング
+- アプリケーションサービスの呼び出し
+- 業務エラーを利用者向け日本語メッセージへ変換
+
+Bot層はSQLAlchemyモデルを直接操作せず、次回日時や状態遷移を独自に計算しない。
+
+### 4.2 アプリケーション層
+
+アプリケーション層は、1つの利用目的を完了させる処理を担当する。
+
+- 予約の作成、一覧、詳細、編集、削除
+- 定期投稿の一時停止、再開
+- 実行予定の生成と処理権取得
+- Discord投稿、再試行、結果保存
+- 起動時復旧
+- 下書き通知、運営者通知
+- 期限切れデータの削除
+- 操作履歴と通知履歴の保存
+
+DBトランザクションの境界はアプリケーション層で決める。
+
+### 4.3 ドメイン層
+
+ドメイン層は、外部サービスに依存しない業務ルールを担当する。
+
+- 予約種別と状態
+- 許可される状態遷移
+- 単発、毎日、毎週の次回日時計算
+- 終了日の判定
+- 5分前の編集制限
+- 15分以内の遅延投稿判定
+- 最大4回の試行と再試行時刻
+- 本文とメンションの検証
+
+ドメイン層はDiscordオブジェクト、SQLAlchemy Session、環境変数を参照しない。
+
+### 4.4 インフラストラクチャ層
+
+インフラストラクチャ層は外部技術との接続を担当する。
+
+- SQLAlchemyモデルとRepository実装
+- PostgreSQL接続とトランザクション
+- Discordへの投稿とDM
+- `allowed_mentions` の安全な生成
+- ログ出力
+
+Discord投稿はインターフェース越しに呼び出し、テストでは偽物へ交換できるようにする。
+
+## 5. 採用するディレクトリ構成
+
+初期実装では次の構成を採用する。
+
+```text
+discord-ai-reminder-bot/
+├── alembic/
+│   ├── versions/
+│   └── env.py
+├── docs/
+│   ├── requirements-beta.md
+│   └── technical-design-beta.md
+├── src/
+│   └── discord_ai_reminder_bot/
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── config.py
+│       ├── log_config.py
+│       ├── bot/
+│       │   ├── client.py
+│       │   └── posts.py
+│       ├── domain/
+│       │   ├── schedules.py
+│       │   └── recurrence.py
+│       ├── application/
+│       │   ├── schedules.py
+│       │   ├── execution.py
+│       │   └── maintenance.py
+│       └── infrastructure/
+│           ├── database.py
+│           ├── repositories.py
+│           └── discord_gateway.py
+├── tests/
+│   ├── unit/
+│   │   ├── test_recurrence.py
+│   │   ├── test_schedule_states.py
+│   │   ├── test_permissions.py
+│   │   └── test_retry_policy.py
+│   ├── integration/
+│   │   ├── test_repositories.py
+│   │   ├── test_run_claiming.py
+│   │   └── test_recovery.py
+│   ├── bot/
+│   │   └── test_post_commands.py
+│   ├── conftest.py
+│   └── test_package.py
+├── .env.example
+├── alembic.ini
+├── compose.yaml
+├── pyproject.toml
+└── README.md
+```
+
+初期段階ではDBモデル、接続、セッションを `infrastructure/database.py` にまとめる。ファイルが読みにくくなった場合に `infrastructure/database/` パッケージへ分割する。同様にBotの共通チェックやエラー処理も、複数コマンドで必要になった時点で分離する。
+
+## 6. DBテーブル設計
+
+### 6.1 共通方針
+
+- 各テーブルの内部主キーはPostgreSQLの `BIGINT GENERATED ALWAYS AS IDENTITY` とする。
+- 予約の公開識別子 `public_id` は、Python 3.14標準の `uuid.uuid7()` でアプリケーション側が生成するUUIDとする。
+- 内部主キーはテーブル結合と外部キー参照だけに使い、Discordの応答、コマンド入力、ログの利用者向け表示には公開しない。
+- DiscordのSnowflake IDはPostgreSQLの `BIGINT` で保存する。
+- 日時は `TIMESTAMP WITH TIME ZONE` でUTCとして保存する。
+- 作成・更新日時はDB側の現在時刻を初期値とする。
+- 状態値は `VARCHAR` とCHECK制約で管理し、PostgreSQL固有Enumは使用しない。
+- 本文はDiscordのPhase 1上限に合わせて最大2,000文字とする。
+- 外部キー削除は原則 `RESTRICT` とし、30日後の削除処理が関連行から順に明示的に削除する。
+- 業務上の更新競合を検出するため、`schedules` に `version` を持たせる。
+
+### 6.2 `schedules`：予約全体
+
+| カラム | 型 | NULL | 説明 |
+| --- | --- | --- | --- |
+| `id` | BIGINT IDENTITY | 不可 | 内部主キー。DB内の結合だけに使用し、外部へ公開しない |
+| `public_id` | UUID | 不可 | Pythonの `uuid.uuid7()` で生成し、Discord上で予約を指定する公開識別子として使用 |
+| `guild_id` | BIGINT | 不可 | DiscordサーバーID |
+| `channel_id` | BIGINT | 不可 | 投稿先チャンネルID |
+| `creator_user_id` | BIGINT | 不可 | 作成者のDiscordユーザーID |
+| `schedule_type` | VARCHAR(16) | 不可 | `once`、`daily`、`weekly` |
+| `status` | VARCHAR(16) | 不可 | `draft`、`active`、`paused`、`failed`、`completed`、`ended`、`deleted` |
+| `content` | VARCHAR(2000) | 可 | 投稿本文。下書き、または本文を消した一時停止中の定期投稿だけNULL可。空文字は保存しない |
+| `next_run_at` | TIMESTAMPTZ | 可 | 次回予定日時。実行対象がない状態ではNULL |
+| `local_time` | TIME | 可 | 毎日・毎週の日本時間。単発はNULL |
+| `weekday` | SMALLINT | 可 | 毎週の曜日。月曜0から日曜6。毎週以外はNULL |
+| `end_date` | DATE | 可 | `Asia/Tokyo` 基準の終了日 |
+| `version` | INTEGER | 不可 | 楽観ロック用。初期値1 |
+| `created_at` | TIMESTAMPTZ | 不可 | 作成日時 |
+| `updated_at` | TIMESTAMPTZ | 不可 | 更新日時 |
+| `deleted_at` | TIMESTAMPTZ | 可 | 削除日時 |
+| `terminal_at` | TIMESTAMPTZ | 可 | `completed`、`ended`、`deleted` になった日時 |
+
+制約:
+
+- 主キー: `id`
+- `public_id` は `UUID NOT NULL UNIQUE`
+- `schedule_type` は `once`、`daily`、`weekly` のいずれか
+- `status` は定義済み予約状態のいずれか
+- `content` はNULLまたは1～2,000文字
+- `content` がNULLの場合、状態は `draft` または `paused` に限る
+- `daily` は `local_time` 必須、`weekday` はNULL
+- `weekly` は `local_time` と `weekday` 必須
+- `once` は `local_time` と `weekday` がNULL
+- `weekday` は0～6
+- `end_date` は定期投稿だけ設定可能
+- `completed` は単発だけ、`ended` と `paused` は定期投稿だけ
+- `completed`、`ended`、`deleted` では `terminal_at` 必須
+
+主要インデックス:
+
+- `UNIQUE (public_id)`
+- `(guild_id, status, next_run_at)`：一覧と実行対象検索
+- `(creator_user_id, status, next_run_at)`：作成者別一覧
+- `(status, terminal_at)`：30日後削除
+
+`id` と `public_id` の役割は明確に分ける。`id` はDB内部で効率よく外部キーを結ぶための連番主キーであり、`public_id` はDiscord利用者が `/post show`、`/post edit`、`/post delete` などで予約を指定するための公開識別子である。外部へ内部の連番主キーを公開してはならない。
+
+重複予約は警告に留め、DBの一意制約では禁止しない。利用者が意図的に同じ投稿を複数作る場合があるためである。
+
+### 6.3 `schedule_runs`：各回の実行履歴
+
+| カラム | 型 | NULL | 説明 |
+| --- | --- | --- | --- |
+| `id` | BIGINT IDENTITY | 不可 | 内部主キー |
+| `schedule_id` | BIGINT | 不可 | `schedules.id` への外部キー |
+| `scheduled_for` | TIMESTAMPTZ | 不可 | 本来の実行予定日時 |
+| `status` | VARCHAR(16) | 不可 | `pending`、`processing`、`succeeded`、`failed`、`skipped` |
+| `attempt_count` | SMALLINT | 不可 | 完了した送信試行数。初期値0、最大4 |
+| `next_attempt_at` | TIMESTAMPTZ | 可 | 初回または再試行を行える日時 |
+| `claimed_by` | UUID | 可 | 処理権を取得したBotプロセスの起動ID |
+| `claimed_at` | TIMESTAMPTZ | 可 | 処理権取得日時 |
+| `lease_expires_at` | TIMESTAMPTZ | 可 | 送信開始前の処理権期限 |
+| `discord_message_id` | BIGINT | 可 | 投稿成功時のDiscordメッセージID |
+| `result_code` | VARCHAR(64) | 可 | 機械判定用の短い結果コード |
+| `error_summary` | VARCHAR(500) | 可 | 秘密情報を除いたエラー概要 |
+| `started_at` | TIMESTAMPTZ | 可 | この実行の処理開始日時 |
+| `finished_at` | TIMESTAMPTZ | 可 | 成功、失敗、見送りの確定日時 |
+| `created_at` | TIMESTAMPTZ | 不可 | 作成日時 |
+| `updated_at` | TIMESTAMPTZ | 不可 | 更新日時 |
+
+制約:
+
+- 主キー: `id`
+- 外部キー: `schedule_id -> schedules.id`、削除時は `RESTRICT`
+- 一意制約: `(schedule_id, scheduled_for)`
+- `attempt_count` は0～4
+- 終端状態 `succeeded`、`failed`、`skipped` では `finished_at` 必須
+- `succeeded` では `discord_message_id` 必須
+
+主要インデックス:
+
+- 部分インデックス `(next_attempt_at, scheduled_for)` WHERE `status = 'pending'`
+- 部分インデックス `(lease_expires_at)` WHERE `status = 'processing'`
+- `(schedule_id, scheduled_for DESC)`：予約詳細の履歴表示
+- `(status, finished_at)`：障害確認と削除
+
+### 6.4 `delivery_attempts`：各送信試行
+
+送信開始前の異常終了と、送信済みか判断できない異常終了を区別するため、各試行を別テーブルへ保存する。
+
+| カラム | 型 | NULL | 説明 |
+| --- | --- | --- | --- |
+| `id` | BIGINT IDENTITY | 不可 | 内部主キー |
+| `schedule_run_id` | BIGINT | 不可 | `schedule_runs.id` への外部キー |
+| `attempt_number` | SMALLINT | 不可 | 1～4 |
+| `status` | VARCHAR(16) | 不可 | `claimed`、`sending`、`succeeded`、`failed`、`unknown` |
+| `claimed_by` | UUID | 不可 | Botプロセスの起動ID |
+| `claimed_at` | TIMESTAMPTZ | 不可 | 試行の処理権取得日時 |
+| `send_started_at` | TIMESTAMPTZ | 可 | Discord送信直前の永続化日時 |
+| `finished_at` | TIMESTAMPTZ | 可 | 試行終了日時 |
+| `discord_message_id` | BIGINT | 可 | 成功時のメッセージID |
+| `error_kind` | VARCHAR(32) | 可 | `transient`、`permanent`、`unknown` |
+| `error_code` | VARCHAR(64) | 可 | 機械判定用コード |
+| `error_summary` | VARCHAR(500) | 可 | 安全化した概要 |
+
+制約とインデックス:
+
+- 主キー: `id`
+- 外部キー: `schedule_run_id -> schedule_runs.id`、削除時は `RESTRICT`
+- 一意制約: `(schedule_run_id, attempt_number)`
+- `attempt_number` は1～4
+- `(status, claimed_at)`：異常終了試行の検索
+
+### 6.5 `schedule_audit_logs`：操作履歴
+
+| カラム | 型 | NULL | 説明 |
+| --- | --- | --- | --- |
+| `id` | BIGINT IDENTITY | 不可 | 内部主キー |
+| `schedule_id` | BIGINT | 不可 | `schedules.id` への外部キー |
+| `action` | VARCHAR(32) | 不可 | `created`、`edited`、`deleted`、`paused`、`resumed`、`ended`、`failed` |
+| `actor_type` | VARCHAR(16) | 不可 | `user`、`system` |
+| `actor_user_id` | BIGINT | 可 | ユーザー操作時のDiscordユーザーID |
+| `delete_kind` | VARCHAR(32) | 可 | `creator_deleted`、`admin_deleted`、`operator_resolved_failed` |
+| `delete_reason` | VARCHAR(500) | 可 | 削除理由。削除操作では必須 |
+| `changes` | JSONB | 可 | 変更項目。秘密情報や本文全体は保存しない |
+| `created_at` | TIMESTAMPTZ | 不可 | 操作日時 |
+
+制約とインデックス:
+
+- 主キー: `id`
+- 外部キー: `schedule_id -> schedules.id`、削除時は `RESTRICT`
+- `actor_type = 'user'` では `actor_user_id` 必須
+- `action = 'deleted'` では `delete_kind` と `delete_reason` 必須
+- サーバー管理者が `failed` 予約を対処完了として削除する場合は `delete_kind = 'operator_resolved_failed'` とし、`delete_reason` を必須にする
+- `(schedule_id, created_at DESC)`
+- `(actor_user_id, created_at DESC)`
+
+本文変更は `changes` に「本文が変更された」という事実だけを保存し、変更前後の本文は保存しない。
+
+### 6.6 `notification_logs`：通知履歴
+
+| カラム | 型 | NULL | 説明 |
+| --- | --- | --- | --- |
+| `id` | BIGINT IDENTITY | 不可 | 内部主キー |
+| `schedule_id` | BIGINT | 可 | 関連予約。全体障害通知ではNULL可 |
+| `schedule_run_id` | BIGINT | 可 | 関連実行。予約前通知ではNULL可 |
+| `notification_type` | VARCHAR(32) | 不可 | `draft_24h`、`draft_1h`、`draft_immediate`、`run_failed`、`run_delayed`、`run_skipped`、`recovery` |
+| `recipient_type` | VARCHAR(32) | 不可 | `creator_dm`、`operator_channel`、`operator_dm`、`log` |
+| `recipient_id` | BIGINT | 可 | DiscordユーザーIDまたはチャンネルID。ログではNULL |
+| `status` | VARCHAR(16) | 不可 | `pending`、`succeeded`、`failed` |
+| `deduplication_key` | VARCHAR(160) | 不可 | 同じ通知の重複送信防止キー |
+| `error_code` | VARCHAR(64) | 可 | 失敗理由コード |
+| `error_summary` | VARCHAR(500) | 可 | 安全化した概要 |
+| `created_at` | TIMESTAMPTZ | 不可 | 作成日時 |
+| `sent_at` | TIMESTAMPTZ | 可 | 成功日時 |
+
+制約とインデックス:
+
+- 主キー: `id`
+- 外部キー: `schedule_id -> schedules.id`、`schedule_run_id -> schedule_runs.id`
+- 一意制約: `deduplication_key`
+- `(status, created_at)`：未送信通知の検索
+- `(schedule_id, created_at DESC)`：予約別通知履歴
+
+本文や内部例外全文は通知履歴へ保存しない。
+
+## 7. 状態遷移
+
+### 7.1 予約状態
+
+| 現在 | 次 | 遷移を起こす処理 | 許可条件 |
+| --- | --- | --- | --- |
+| 新規 | `draft` | 予約作成 | 本文なし |
+| 新規 | `active` | 予約作成 | 本文あり |
+| `draft` | `active` | 予約編集 | 本文と未来の次回日時が有効 |
+| `draft` | `deleted` | 予約削除 | 作成者または管理者 |
+| `active` | `draft` | 予約編集 | 本文を未入力へ変更し、処理開始前 |
+| `active` | `paused` | 一時停止 | 毎日・毎週だけ |
+| `active` | `completed` | 単発投稿成功 | 単発だけ |
+| `active` | `failed` | 単発の最終失敗 | 単発だけ |
+| `active` | `ended` | 終了日当日の処理完了 | 毎日・毎週だけ |
+| `active` | `deleted` | 予約削除 | 処理中ではなく、権限あり |
+| `paused` | `active` | 再開 | 毎日・毎週、終了日前 |
+| `paused` | `draft` | 再開または編集 | 毎日・毎週、本文なし |
+| `paused` | `ended` | 終了判定 | 終了日を過ぎて再開不能 |
+| `paused` | `deleted` | 予約削除 | 権限あり |
+| `failed` | `deleted` | `/post delete` | 作成者は自分の予約、サーバー管理者はすべての予約 |
+| `draft` | `ended` | 終了判定 | 定期投稿の終了日を迎えた |
+
+採用判断:
+
+- `paused` 予約の本文を編集しても、編集だけでは `active` に戻さない。再開操作が必要である。
+- 一時停止中に本文を消した場合も状態は `paused` を維持し、再開時に本文の有無で `active` または `draft` へ遷移する。
+- `failed` の再実行・編集機能はPhase 1では提供しない。運営者は予約一覧または詳細で失敗を確認し、必要な対応後に `/post delete` を実行する。新しい確認用コマンドは追加しない。
+- サーバー管理者による `failed` 予約の削除を「運営者による確認・対処完了」とみなし、操作履歴を `operator_resolved_failed` として記録する。
+- 上位要件の権限規則に従い、予約作成者も自分の `failed` 予約を削除できる。その場合は通常の作成者削除として `creator_deleted` を記録し、運営者による対処完了とは区別する。
+- `completed`、`ended`、`deleted` は終端状態である。
+
+主な禁止遷移:
+
+| 禁止遷移 | 理由 |
+| --- | --- |
+| 単発予約から `paused` | 単発の停止は削除で行うため |
+| `completed` から任意の状態 | 投稿済み単発は変更しないため |
+| `ended` から任意の状態 | 終了済み定期投稿は再開しないため |
+| `deleted` から任意の状態 | 削除済み予約を復元しないため |
+| `failed` から `active` | Phase 1では失敗予約を自動・手動再実行しないため |
+| `paused` から `completed` | 一時停止は定期投稿だけに存在するため |
+
+### 7.2 実行状態
+
+| 現在 | 次 | 遷移を起こす処理 |
+| --- | --- | --- |
+| 新規 | `pending` | 単発作成、定期投稿の次回生成 |
+| `pending` | `processing` | ポーラーが原子的に処理権を取得 |
+| `pending` | `skipped` | 下書き、停止中、期限超過、終了後と判定 |
+| `processing` | `pending` | 一時エラー後、次回再試行日時を設定 |
+| `processing` | `succeeded` | Discord投稿成功 |
+| `processing` | `failed` | 最大4回失敗、恒久エラー、送信結果不明 |
+| `processing` | `skipped` | 送信前の再検証で投稿不可と確定 |
+
+`succeeded`、`failed`、`skipped` は実行履歴の終端状態とし、他の状態へ戻さない。
+
+主な禁止遷移:
+
+- `pending` から直接 `succeeded`：処理権取得を省略できない。
+- `succeeded`、`failed`、`skipped` から任意の状態：履歴を書き換えない。
+- `processing` から `pending`：一時エラーで試行回数が4未満の場合だけ許可する。
+
+## 8. 次回日時計算
+
+### 8.1 共通ルール
+
+- 計算は `zoneinfo.ZoneInfo("Asia/Tokyo")` を使用する。
+- 利用者入力を日本時間のaware datetimeへ変換し、その後UTCへ変換して保存する。
+- 次回日時は常に「基準日時より後」の最初の予定とする。
+- 分単位で扱い、秒とマイクロ秒は0とする。
+- `Asia/Tokyo` は夏時間を採用していないが、固定オフセット文字列ではなくIANAタイムゾーン名を使う。
+
+### 8.2 単発
+
+入力された日本時間をUTCへ変換し、`schedules.next_run_at` と最初の `schedule_runs.scheduled_for` に保存する。新規作成時は現在から5分以上先でなければならない。
+
+### 8.3 毎日
+
+指定された `local_time` について、基準日時より後にある最初の日付を選ぶ。
+
+```text
+候補 = 基準日のlocal_time
+候補 <= 基準日時なら候補日を1日進める
+候補日 > end_dateなら次回なし
+```
+
+終了日当日の候補は実行対象に含める。
+
+### 8.4 毎週
+
+指定曜日と `local_time` について、基準日時から0～6日先の候補を求める。同じ曜日でも時刻を過ぎていれば7日後とする。候補日が `end_date` と同じなら実行し、超えていれば次回なしとする。
+
+### 8.5 編集と再開
+
+- 編集後は、編集完了時刻を基準に次回日時を再計算する。
+- 次回投稿の5分前を過ぎている場合は編集を拒否する。
+- 再開時は再開完了時刻より後の最初の予定を計算する。
+- 一時停止中に過ぎた回は生成せず、まとめて投稿しない。
+- 次回が存在しなければ `ended` へ遷移する。
+
+## 9. 日時の扱い
+
+- DBへ保存する日時はすべてUTCの `TIMESTAMP WITH TIME ZONE` とする。
+- アプリケーション内ではタイムゾーン付き `datetime` だけを使用する。
+- naive datetimeはドメイン境界で拒否する。
+- Discordからの入力とDiscordへの表示は `Asia/Tokyo` とする。
+- ログ日時はUTCのISO 8601形式とする。
+- 終了日は時刻を持たない `DATE` とし、`Asia/Tokyo` の日付として解釈する。
+- DBサーバーとBot実行環境はUTCを標準タイムゾーンに設定する。
+- テストでは現在時刻を直接取得せず、差し替え可能なClockから受け取る。
+
+## 10. DBポーリングと処理権取得
+
+Bot起動後、`discord.ext.tasks.loop` を使って既定10秒間隔で実行対象を検索する。
+
+処理対象:
+
+- `schedule_runs.status = 'pending'`
+- `next_attempt_at <= now()`
+- 関連予約が `active`、または予定時刻を迎えた `draft`
+
+1回の取得件数は既定20件とする。1回のループで取得した実行は、個別のasyncio Taskとして最大5件まで並行処理する。並行数はSemaphoreで制限する。
+
+ポーラーは次の順に動作する。
+
+1. 短いDBトランザクションを開始する。
+2. 実行可能な行をロック付きで取得する。
+3. `processing`、`claimed_by`、`claimed_at`、`lease_expires_at` を更新する。
+4. `delivery_attempts` に `claimed` の行を作る。
+5. コミットして行ロックを解放する。
+6. 予約状態、権限、本文、投稿先を再検証する。
+7. Discord送信直前状態をDBへ記録する。
+8. Discord APIを呼ぶ。
+9. 別の短いトランザクションで結果を保存する。
+
+Discord APIへの通信中はDB行ロックを保持しない。
+
+## 11. `SELECT FOR UPDATE SKIP LOCKED` による二重実行防止
+
+処理権取得では、概念的に次のSQLを使用する。実装ではSQLAlchemyの `with_for_update(skip_locked=True)` を使用してよい。
+
+```sql
+SELECT id
+FROM schedule_runs
+WHERE status = 'pending'
+  AND next_attempt_at <= now()
+ORDER BY next_attempt_at, scheduled_for
+FOR UPDATE SKIP LOCKED
+LIMIT :batch_size;
+```
+
+同じトランザクション内で対象行を `processing` に更新し、対応する送信試行を一意制約付きで作成する。ほかのBotプロセスはロック済み行を待たずに読み飛ばす。
+
+追加の防御:
+
+- `(schedule_id, scheduled_for)` の一意制約で同じ予定回の重複生成を防ぐ。
+- `(schedule_run_id, attempt_number)` の一意制約で同じ試行番号を重複作成しない。
+- 更新時に現在状態と `claimed_by` をWHERE条件へ含める。
+- Discord通信後は、処理権を取得した起動IDと一致する場合だけ結果を更新する。
+
+## 12. Discord送信段階と異常終了
+
+送信試行は次の段階を区別する。
+
+| 試行状態 | 意味 | 異常終了時の扱い |
+| --- | --- | --- |
+| `claimed` | DB上の処理権を取得したが送信開始前 | リース期限後、安全に再取得可能 |
+| `sending` | 送信直前の記録をコミット済み | 送信済みか判断不能として自動再送しない |
+| `succeeded` | DiscordからメッセージIDを受領済み | 実行を成功確定 |
+| `failed` | Discordから失敗を受領済み | エラー種別により再試行または最終失敗 |
+| `unknown` | `sending` 中に停止し結果を確認できない | 自動再送せず運営者確認 |
+
+送信直前に `delivery_attempts.status = 'sending'` と `send_started_at` を短いトランザクションで保存し、コミット後にDiscord APIを呼ぶ。このコミット前に停止した場合は「送信開始前」、コミット後から結果保存前に停止した場合は「送信結果不明」と判断する。
+
+DBへの `sending` 記録と実際のHTTP送信は原子的にできないため、記録直後・API呼出前に停止した場合も安全側で `unknown` とする。この狭い範囲では投稿されない可能性があるが、二重投稿防止を優先する。
+
+## 13. 最大4回の送信試行
+
+1つの `schedule_runs` に対して、初回1回と再試行3回の最大4回を許可する。
+
+| 試行番号 | 実行時刻 |
+| --- | --- |
+| 1 | 本来の予定時刻、または遅延投稿決定直後 |
+| 2 | 1回目の一時エラーから1分後 |
+| 3 | 2回目の一時エラーから5分後 |
+| 4 | 3回目の一時エラーから15分後 |
+
+Discordから待機時間を指定された場合は、その時刻を `next_attempt_at` に設定して上表より優先する。ただし試行回数は増える。
+
+一時エラーでは、試行結果を `failed` として保存したうえで、実行履歴を `pending` に戻し、`next_attempt_at` を設定する。恒久エラー、4回目の失敗、送信結果不明では実行履歴を `failed` にする。
+
+- 単発の最終失敗: 予約を `failed` にする。
+- 定期投稿の1回の最終失敗: 予約は原則 `active` を維持し、次回分を生成する。
+
+## 14. Bot停止・再起動時の復旧
+
+Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord接続完了後、通常ポーラー開始前に次を行う。
+
+1. DB接続とマイグレーション状態を確認する。
+2. 期限切れの処理権を持つ `processing` 実行を確認する。
+3. `claimed` のままなら送信開始前として `pending` へ戻す。
+4. `sending` のままなら試行を `unknown`、実行を `failed` とし、自動再送しない。
+5. 期限を過ぎた単発を15分ルールで処理する。
+6. 停止中に過ぎた定期投稿を `skipped` として記録する。
+7. 定期投稿の未来の次回日時を計算する。
+8. 終了日を過ぎた定期投稿を `ended` にする。
+9. 復旧内容を操作・実行・通知履歴とログへ残す。
+10. 運営者へ必要な通知を行う。
+11. 通常ポーラーを開始する。
+
+### 14.1 単発の期限超過
+
+- 予定時刻から15分以内: 遅延投稿として実行し、運営者へ通知する。
+- 15分超過: Discordへ送らず、実行履歴を `skipped`、予約を `failed` とし、運営者へ通知する。
+
+遅延投稿の送信エラーには通常の最大4回ルールを適用する。
+
+### 14.2 定期投稿の期限超過
+
+- 過去の各回は送信せず `skipped` として記録する。
+- 停止期間とスキップ件数を記録し、運営者へ通知する。
+- 復旧時刻より後の最初の予定だけを `pending` で作成する。
+- 終了日当日の予定は対象に含める。
+- 次回が存在しない場合は予約を `ended` にする。
+
+長期間停止して大量の履歴が必要になった場合も、Phase 1ではスキップした各予定回を個別の `schedule_runs` として保存する。ただし1回の復旧処理は500件までとし、超過分は次の処理へ分割してBotの起動を長時間止めない。
+
+## 15. 下書き通知と運営者通知
+
+### 15.1 下書き通知
+
+下書き通知もDBポーリングで判定する。毎回の予定日時に対して次を実施する。
+
+- 24時間前に本文がなければ作成者へDMする。
+- 1時間前にも本文がなければ作成者へDMする。
+- 24時間前を過ぎて作成された場合は24時間前通知を作らない。
+- 1時間前も過ぎて作成された場合は `draft_immediate` を作成直後に送る。
+- 一時停止中の定期投稿には送らない。
+- `deduplication_key` の一意制約で同じ通知を二重送信しない。
+
+下書きDMに失敗した場合は運営者通知へ切り替える。
+
+### 15.2 運営者通知
+
+共通の通知サービスが次の順で処理する。
+
+1. 環境変数で指定した運営者通知チャンネルへ投稿する。
+2. 失敗したら、環境変数で指定したBot運営者へDMする。
+3. 両方失敗したら `ERROR` ログへ記録する。
+
+通知には予約ID、実行履歴ID、発生時刻、投稿先、短い原因、必要な対応を含める。Botトークン、DB接続情報、投稿本文、内部例外全文は含めない。各経路の成功・失敗を `notification_logs` に残す。
+
+## 16. 30日後の自動削除
+
+Bot内の保守ループを1日1回、日本時間04:00に実行する。APSchedulerは使用せず、`discord.ext.tasks.loop(time=...)` を利用する。
+
+削除対象:
+
+- `completed`、`ended`、`deleted` の予約
+- `terminal_at` から30日以上経過
+- 関連する `schedule_runs`
+- 関連する `delivery_attempts`
+- 関連する `schedule_audit_logs`
+- 関連する `notification_logs`
+
+削除順序は子テーブルから親テーブルとし、1予約単位のトランザクションで削除する。1回100件まで処理し、残りは次のバッチで続行する。
+
+`failed` 状態の予約は30日自動削除の対象外とし、未確認のまま自動削除してはならない。運営者は予約一覧または詳細で内容を確認し、必要な対応後に `/post delete` を実行する。サーバー管理者によるこの削除を運営者による確認・対処完了とみなし、予約を `deleted` にした時点から30日を数える。
+
+上位要件の権限規則に従い、`failed` 予約を削除できるのは、その予約の作成者とサーバー管理者である。作成者による削除は `creator_deleted` とし、運営者による対処完了とは扱わない。サーバー管理者が `failed` 予約を削除した場合は `operator_resolved_failed`、サーバー管理者がそれ以外の予約を削除した場合は `admin_deleted` として操作履歴へ保存する。操作履歴には実行者、実行日時、対象予約、削除理由を必ず記録する。
+
+削除成功件数と失敗件数をログへ残す。方式を変更する場合は技術設計を更新する。
+
+## 17. Discord権限と `allowed_mentions`
+
+### 17.1 利用者権限
+
+- 対象サーバーIDが設定値と一致することを最初に確認する。
+- 予約作成はサーバー管理者または許可ロール所有者だけに許可する。
+- 作成者は自分の予約だけを操作できる。
+- サーバー管理者は対象サーバーのすべての予約を操作できる。
+- 権限はコマンド受付時とDB更新直前に確認する。
+- ロール名ではなくロールIDを使用する。
+
+### 17.2 Discord Intents
+
+Phase 1ではPrivileged Members Intentを原則使用しない。スラッシュコマンドの `Interaction` に含まれるメンバー、権限、ロール情報を使って判定し、全メンバー一覧の取得やメンバーキャッシュへ依存しない。
+
+実装検証で必要な権限・ロール情報を取得できないことが判明した場合だけ、取得できない具体的情報、代替案、追加権限の影響を文書化して再検討する。理由を記録せず有効化してはならない。
+
+`message_content` Intentも使用しない。BotへAdministrator権限を付与しない。
+
+### 17.3 メンション
+
+- 登録・編集時に `@everyone` と `@here` を含む本文を拒否する。
+- UnicodeやDiscord表記の差を考慮し、送信時制限も必ず行う。
+- Phase 1ではユーザー、ロール、返信のメンション解析も無効にする。
+- Discord送信時は毎回、概念的に `AllowedMentions(everyone=False, users=False, roles=False, replied_user=False)` を明示する。
+- ライブラリのグローバル既定値だけに依存しない。
+
+## 18. 環境変数
+
+| 環境変数 | 必須 | 例 | 用途 |
+| --- | --- | --- | --- |
+| `APP_ENV` | 必須 | `development` | `development`、`test`、`production` |
+| `LOG_LEVEL` | 任意 | `INFO` | ログレベル。既定 `INFO` |
+| `TIMEZONE` | 必須 | `Asia/Tokyo` | Phase 1ではこの値以外を拒否 |
+| `DISCORD_BOT_TOKEN` | 必須 | 空欄 | Botトークン |
+| `DISCORD_GUILD_ID` | 必須 | `123456789012345678` | 対象サーバーID |
+| `DISCORD_ALLOWED_ROLE_IDS` | 必須 | `111...,222...` | カンマ区切りの許可ロールID。最低1件 |
+| `DISCORD_OPERATOR_USER_ID` | 必須 | `123...` | 通知フォールバック先の運営者 |
+| `DISCORD_OPERATOR_CHANNEL_ID` | 必須 | `456...` | 運営者通知チャンネル |
+| `DATABASE_URL` | 必須 | `postgresql+psycopg://...` | PostgreSQL接続URL |
+| `SCHEDULER_POLL_INTERVAL_SECONDS` | 任意 | `10` | ポーリング間隔。既定10 |
+| `SCHEDULER_BATCH_SIZE` | 任意 | `20` | 1回の取得件数。既定20 |
+| `SCHEDULER_MAX_CONCURRENCY` | 任意 | `5` | Discord送信の最大並行数。既定5 |
+| `SCHEDULER_PROCESSING_TIMEOUT_SECONDS` | 任意 | `120` | 送信開始前リースの期限。既定120 |
+
+確定要件である再試行間隔、最大4回、15分の復旧猶予、30日の保存期間は、Phase 1では環境変数にせず型付き定数とする。
+
+設定は起動時に一度読み込み、不足、不正な数値、重複ロール、対象外タイムゾーンを検出したらDiscordへ接続せず終了する。秘密値を設定オブジェクトの文字列表現やログへ出さない。
+
+## 19. ログ設計
+
+Python標準 `logging` を使用する。開発環境は人が読みやすい形式、本番環境は1行JSON形式とする。
+
+共通項目:
+
+- UTCのタイムスタンプ
+- ログレベル
+- イベント名
+- `worker_id`
+- 予約ID
+- 実行履歴ID
+- 送信試行IDと試行番号
+- DiscordサーバーID、チャンネルID、利用者ID
+- エラー分類と安全化した概要
+
+主なイベント:
+
+- Bot起動・停止
+- DB接続・マイグレーション不一致
+- 処理権取得
+- 投稿成功・一時失敗・最終失敗・結果不明
+- 再試行予約
+- 復旧開始・完了
+- 下書き通知・運営者通知
+- 通知フォールバック失敗
+- 自動削除結果
+
+投稿本文、Botトークン、DBパスワード、完全な接続URL、内部例外全文を通常ログへ出さない。開発時の例外スタックも、秘密値をマスクしたうえで `ERROR` ログへ出す。
+
+## 20. テスト設計
+
+### 20.1 単体テスト
+
+外部通信と実DBを使わず、次を検証する。
+
+- 単発、毎日、毎週の次回日時
+- `Asia/Tokyo` とUTCの変換
+- 終了日当日を含む判定と `ended`
+- 予約・実行の許可遷移と禁止遷移
+- 単発の一時停止・再開拒否
+- 5分前の編集制限
+- 15分以内・超過の復旧判定
+- 1分、5分、15分と最大4回
+- 下書き通知時刻
+- `@everyone`、`@here` の拒否
+- 権限判定
+- 30日後の削除判定
+
+現在時刻は差し替え可能なClockを使用し、実際の待機を行わない。
+
+### 20.2 PostgreSQL統合テスト
+
+SQLiteでは代用せず、テスト専用PostgreSQLを使用する。
+
+- Alembicを空DBへ適用できる
+- ORMモデル、NULL、CHECK、一意制約、外部キー
+- Repositoryの作成・更新・一覧
+- 同時処理で1プロセスだけが処理権を取得する
+- `FOR UPDATE SKIP LOCKED`
+- 試行番号と予定回の重複防止
+- 状態更新の競合検出
+- 起動時復旧
+- 30日後の関連データ削除
+
+テスト用DB名に明示的な接尾辞を要求し、本番URLに見える接続先では破壊的テストを拒否する。
+
+### 20.3 Discord境界テスト
+
+Discord APIを実際に呼ばず、Gatewayを偽物へ差し替える。
+
+- 投稿成功とメッセージID保存
+- 一時エラー、恒久エラー、Rate Limit
+- 送信開始前停止と送信結果不明
+- DM失敗、チャンネル通知失敗、両方失敗
+- `allowed_mentions` の明示設定
+- 対象外サーバー、一般メンバー、他人の予約の拒否
+- 本人だけに見える応答
+
+### 20.4 手動確認
+
+対象Discordサーバーと開発DBを使用し、要件書の完成条件をチェックリストとして確認する。Bot停止・再起動、チャンネル削除、権限剥奪、DM拒否、定期投稿終了も含める。
+
+## 21. Docker Compose構成
+
+ComposeではPostgreSQLサービスだけを起動する。
+
+```text
+services:
+  postgres:
+    image: postgres:<固定したメジャー・マイナーバージョン>
+    ports:
+      - 127.0.0.1:<開発用ポート>:5432
+    environment:
+      POSTGRES_DB: <開発DB>
+      POSTGRES_USER: <開発ユーザー>
+      POSTGRES_PASSWORD: <開発専用パスワード>
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck: ...
+```
+
+採用方針:
+
+- PostgreSQLイメージは実装開始時の安定版から具体的なバージョンへ固定する。
+- ポートは `127.0.0.1` だけへ公開し、外部ネットワークへ公開しない。
+- 名前付きVolumeで再起動後もデータを保持する。
+- ヘルスチェックには `pg_isready` を使う。
+- Composeファイルへ本番資格情報を書かない。
+- Bot、Alembic、pytest、RuffはWSLの `.venv` で動かす。
+- 開発DBとテストDBを分離する。
+
+## 22. 実装順序
+
+1. `pyproject.toml` をCPython 3.14へ統一し、必要な依存を追加する。
+2. `.env.example` と設定読込・起動時検証を整備する。
+3. PostgreSQLのComposeと接続確認手順を作る。
+4. SQLAlchemyのDB基盤とAlembicを導入する。
+5. 本書のテーブルと初回マイグレーションを作る。
+6. 日時計算、状態遷移、本文検証をドメイン層へ実装する。
+7. Repositoryと予約作成・一覧・編集・削除を実装する。
+8. 処理権取得と送信試行記録を実装する。
+9. 偽物のDiscord Gatewayで単発投稿と最大4回の再試行を完成させる。
+10. 毎日・毎週、pause、resume、endedを実装する。
+11. 起動時復旧と送信結果不明の処理を実装する。
+12. 下書き通知、運営者通知、フォールバックを実装する。
+13. 30日後の自動削除を実装する。
+14. discord.pyのBotとスラッシュコマンドを接続する。
+15. 権限、Intents、`allowed_mentions` を対象サーバーで確認する。
+16. PostgreSQL統合テストと手動テストを完了する。
+17. セットアップ、マイグレーション、起動、停止、バックアップ、復元、障害対応を文書化する。
+
+各段階で単体テストを追加し、後の段階までまとめてテストを先送りしない。
+
+## 23. Phase 2への拡張方針
+
+### 23.1 AI文章作成
+
+AIプロバイダーを `infrastructure/ai/` に置き、アプリケーション層の文章生成ユースケースからインターフェース越しに呼ぶ。Discordコマンドや予約RepositoryからAI SDKを直接呼ばない。生成結果は利用者が確認してから予約本文へ反映する。
+
+### 23.2 文体反映
+
+文体設定と本人が登録した例文を予約本文から分離したテーブルへ保存する。AIへ送る情報を組み立てる処理はアプリケーション層へ置き、削除・保存期間・同意を管理できるようにする。
+
+### 23.3 PAY.JPサブスクリプション
+
+PAY.JP顧客ID、契約ID、契約状態を専用テーブルへ保存する。カード情報は保存しない。Webhook受信用Webプロセスを追加し、Discord Botと同じアプリケーションサービス・Repositoryを再利用する。Webhookの重複受信に備えてイベントIDを一意に保存する。
+
+### 23.4 複数サーバー対応
+
+Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数の単一サーバー設定を `guild_settings` テーブルへ移し、許可ロール、運営者チャンネル、タイムゾーン、契約をサーバー単位で管理する。すべてのRepository検索に `guild_id` 条件を含め、サーバー間のデータ参照を防ぐ。
+
+### 23.5 プロセス分離
+
+負荷が増えた場合、Bot、予約ワーカー、Webhook APIを別プロセスへ分離する。PostgreSQLの処理権取得をすでに採用しているため、Phase 1の予約データと排他方式を維持したままワーカー数を増やせる。Celeryなどの追加は、DBポーリングで運用上の限界が確認された場合に改めて判断する。
