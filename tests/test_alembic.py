@@ -9,5 +9,14 @@ def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
     scripts = ScriptDirectory.from_config(config)
 
     assert config.get_main_option("sqlalchemy.url") is None
-    assert Base.metadata.tables == {}
-    assert list(scripts.walk_revisions()) == []
+    assert set(Base.metadata.tables) == {
+        "schedules",
+        "schedule_runs",
+        "delivery_attempts",
+        "operation_logs",
+        "notification_logs",
+    }
+    revisions = list(scripts.walk_revisions())
+    assert len(revisions) == 1
+    assert revisions[0].revision == "ffc99a7e1d4f"
+    assert revisions[0].down_revision is None

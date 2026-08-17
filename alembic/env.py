@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from discord_ai_reminder_bot.config import load_database_settings
+from discord_ai_reminder_bot.infrastructure.database import models as database_models
 from discord_ai_reminder_bot.infrastructure.database.base import Base
+
+_ = database_models
 
 config = context.config
 

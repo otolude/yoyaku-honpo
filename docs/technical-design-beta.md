@@ -223,7 +223,7 @@ discord-ai-reminder-bot/
 | `creator_user_id` | BIGINT | 不可 | 作成者のDiscordユーザーID |
 | `schedule_type` | VARCHAR(16) | 不可 | `once`、`daily`、`weekly` |
 | `status` | VARCHAR(16) | 不可 | `draft`、`active`、`paused`、`failed`、`completed`、`ended`、`deleted` |
-| `content` | VARCHAR(2000) | 可 | 投稿本文。下書き、または本文を消した一時停止中の定期投稿だけNULL可。空文字は保存しない |
+| `content` | VARCHAR(2000) | 可 | 投稿本文。下書き、一時停止中、または本文なしの状態から削除された予約はNULL可。削除時は削除前の値を保持し、空文字やダミー本文は保存しない |
 | `next_run_at` | TIMESTAMPTZ | 可 | 次回予定日時。実行対象がない状態ではNULL |
 | `local_time` | TIME | 可 | 毎日・毎週の日本時間。単発はNULL |
 | `weekday` | SMALLINT | 可 | 毎週の曜日。月曜0から日曜6。毎週以外はNULL |
@@ -241,7 +241,10 @@ discord-ai-reminder-bot/
 - `schedule_type` は `once`、`daily`、`weekly` のいずれか
 - `status` は定義済み予約状態のいずれか
 - `content` はNULLまたは1～2,000文字
-- `content` がNULLの場合、状態は `draft` または `paused` に限る
+- `draft` の `content` はNULL
+- `paused` の `content` はNULLまたは本文あり
+- `deleted` の `content` は削除前の値を保持するためNULLまたは本文あり
+- `active`、`failed`、`completed`、`ended` の `content` は必須
 - `daily` は `local_time` 必須、`weekday` はNULL
 - `weekly` は `local_time` と `weekday` 必須
 - `once` は `local_time` と `weekday` がNULL
@@ -325,7 +328,7 @@ discord-ai-reminder-bot/
 - `attempt_number` は1～4
 - `(status, claimed_at)`：異常終了試行の検索
 
-### 6.5 `schedule_audit_logs`：操作履歴
+### 6.5 `operation_logs`：操作履歴
 
 | カラム | 型 | NULL | 説明 |
 | --- | --- | --- | --- |
@@ -641,7 +644,7 @@ Bot内の保守ループを1日1回、日本時間04:00に実行する。APSched
 - `terminal_at` から30日以上経過
 - 関連する `schedule_runs`
 - 関連する `delivery_attempts`
-- 関連する `schedule_audit_logs`
+- 関連する `operation_logs`
 - 関連する `notification_logs`
 
 削除順序は子テーブルから親テーブルとし、1予約単位のトランザクションで削除する。1回100件まで処理し、残りは次のバッチで続行する。
