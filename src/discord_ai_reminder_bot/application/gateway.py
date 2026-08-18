@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from discord_ai_reminder_bot.domain.recurrence import require_utc
@@ -31,6 +31,7 @@ class OutboundMessage:
     allowed_mentions: AllowedMentionsPolicy = SAFE_ALLOWED_MENTIONS
 
 
+@runtime_checkable
 class MessageGateway(Protocol):
     async def send(self, message: OutboundMessage) -> int:
         """Send one message and return its positive Discord message ID."""
