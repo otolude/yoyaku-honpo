@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, time
 
 import discord
 from discord import app_commands
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from discord_ai_reminder_bot.application.schedule_creation import (
     DuplicateScheduleWarning,
     OnceScheduleCreationService,
+    RecurringScheduleCreationService,
 )
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
@@ -27,15 +29,19 @@ from discord_ai_reminder_bot.bot.interactions import (
 )
 from discord_ai_reminder_bot.bot.post_presenter import (
     STATUS_LABELS,
+    WEEKDAY_LABELS,
+    created_recurring_schedule_embed,
     created_schedule_embed,
     schedule_detail_embed,
     schedule_list_embed,
 )
 from discord_ai_reminder_bot.domain.clock import Clock
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus
+from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.schedule_creation import (
     InvalidScheduleContentError,
+    parse_end_date,
+    parse_local_time,
     parse_once_scheduled_at,
     validate_create_content,
 )
@@ -153,6 +159,70 @@ class PostCommands(app_commands.Group):
             return
         await self._respond_embed(interaction, lambda: created_schedule_embed(created))
 
+    @app_commands.command(name="create-daily", description="毎日の予約投稿を作成します")
+    @app_commands.describe(
+        channel="投稿先のテキストチャンネルです",
+        local_time="日本時間をHH:MMで指定します",
+        end_date="終了日をYYYY-MM-DDで指定します",
+        content="投稿本文です。未指定の場合は下書きになります",
+        allow_duplicate="重複候補があっても意図的に作成します",
+    )
+    async def create_daily_command(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        local_time: app_commands.Range[str, 5, 5],
+        end_date: app_commands.Range[str, 10, 10] | None = None,
+        content: app_commands.Range[str, 1, 2_000] | None = None,
+        allow_duplicate: bool = False,
+    ) -> None:
+        await self._create_recurring_command(
+            interaction,
+            channel=channel,
+            schedule_type=ScheduleType.DAILY,
+            local_time_value=local_time,
+            weekday=None,
+            end_date_value=end_date,
+            content=content,
+            allow_duplicate=allow_duplicate,
+        )
+
+    @app_commands.command(name="create-weekly", description="毎週の予約投稿を作成します")
+    @app_commands.describe(
+        channel="投稿先のテキストチャンネルです",
+        weekday="投稿する曜日です",
+        local_time="日本時間をHH:MMで指定します",
+        end_date="終了日をYYYY-MM-DDで指定します",
+        content="投稿本文です。未指定の場合は下書きになります",
+        allow_duplicate="重複候補があっても意図的に作成します",
+    )
+    @app_commands.choices(
+        weekday=[
+            app_commands.Choice(name=label, value=value)
+            for value, label in enumerate(WEEKDAY_LABELS)
+        ]
+    )
+    async def create_weekly_command(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        weekday: app_commands.Choice[int],
+        local_time: app_commands.Range[str, 5, 5],
+        end_date: app_commands.Range[str, 10, 10] | None = None,
+        content: app_commands.Range[str, 1, 2_000] | None = None,
+        allow_duplicate: bool = False,
+    ) -> None:
+        await self._create_recurring_command(
+            interaction,
+            channel=channel,
+            schedule_type=ScheduleType.WEEKLY,
+            local_time_value=local_time,
+            weekday=weekday.value,
+            end_date_value=end_date,
+            content=content,
+            allow_duplicate=allow_duplicate,
+        )
+
     @app_commands.command(name="list", description="操作できる予約を一覧表示します")
     @app_commands.describe(status="状態で絞り込みます", page="1から始まるページ番号です")
     @app_commands.choices(
@@ -224,6 +294,61 @@ class PostCommands(app_commands.Group):
         if actor is None:
             await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
         return actor
+
+    async def _create_recurring_command(
+        self,
+        interaction: discord.Interaction,
+        *,
+        channel: discord.TextChannel,
+        schedule_type: ScheduleType,
+        local_time_value: str,
+        weekday: int | None,
+        end_date_value: str | None,
+        content: str | None,
+        allow_duplicate: bool,
+    ) -> None:
+        actor = await self._actor_or_respond(interaction)
+        if actor is None:
+            return
+        try:
+            channel_id = self._validated_channel(interaction, channel)
+            parsed_time: time = parse_local_time(local_time_value)
+            parsed_end_date: date | None = parse_end_date(end_date_value)
+            content = validate_create_content(content)
+            now = self._clock.now()
+        except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:  # noqa: BLE001 - Discord response details must remain private
+            self._logger.error("schedule_create_defer_failed")
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                created = await RecurringScheduleCreationService(session).create(
+                    guild_id=interaction.guild_id,
+                    channel_id=channel_id,
+                    creator_user_id=actor.user_id,
+                    schedule_type=schedule_type,
+                    local_time=parsed_time,
+                    weekday=weekday,
+                    end_date=parsed_end_date,
+                    content=content,
+                    allow_duplicate=allow_duplicate,
+                    now=now,
+                )
+        except DuplicateScheduleWarning:
+            await respond_ephemeral(interaction, DUPLICATE_WARNING_MESSAGE, logger=self._logger)
+            return
+        except InvalidDateTimeError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        except Exception:  # noqa: BLE001 - database details must not reach Discord or logs
+            self._logger.error("schedule_create_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await self._respond_embed(interaction, lambda: created_recurring_schedule_embed(created))
 
     def _validated_channel(
         self, interaction: discord.Interaction, channel: discord.TextChannel

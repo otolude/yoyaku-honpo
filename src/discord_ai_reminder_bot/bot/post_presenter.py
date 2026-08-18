@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 
 import discord
 
-from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
+from discord_ai_reminder_bot.application.schedule_creation import (
+    CreatedOnceSchedule,
+    CreatedRecurringSchedule,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 
@@ -52,6 +55,7 @@ STATUS_COLOURS = {
     ScheduleStatus.ENDED: 0x6C3483,
     ScheduleStatus.DELETED: 0x7F8C8D,
 }
+WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
 
 
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
@@ -59,6 +63,24 @@ def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
     _field(embed, "状態", status_text(created.status), inline=True)
     _field(embed, "📍 投稿先", channel_text(created.channel_id), inline=True)
     _field(embed, "🗓️ 投稿予定", datetime_text(created.scheduled_for), inline=False)
+    _field(embed, "📝 本文", content_preview(created.content), inline=False)
+    _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
+    return _validated(embed)
+
+
+def created_recurring_schedule_embed(created: CreatedRecurringSchedule) -> discord.Embed:
+    type_label = TYPE_LABELS[created.schedule_type]
+    embed = _embed(title=f"{type_label}予約を作成しました", status=created.status)
+    _field(embed, "状態", status_text(created.status), inline=True)
+    _field(embed, "種別", type_label, inline=True)
+    _field(embed, "📍 投稿先", channel_text(created.channel_id), inline=False)
+    if created.schedule_type is ScheduleType.WEEKLY:
+        _field(embed, "曜日", weekday_text(created.weekday), inline=True)
+    _field(embed, "投稿時刻", created.local_time.strftime("%H:%M JST"), inline=True)
+    _field(
+        embed, "終了日", created.end_date.isoformat() if created.end_date else "なし", inline=True
+    )
+    _field(embed, "🗓️ 次回投稿", datetime_text(created.next_run_at), inline=False)
     _field(embed, "📝 本文", content_preview(created.content), inline=False)
     _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
     return _validated(embed)
@@ -99,6 +121,10 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     _field(embed, "状態", status_text(schedule.status), inline=True)
     _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    if schedule.schedule_type is ScheduleType.WEEKLY:
+        _field(embed, "曜日", weekday_text(schedule.weekday), inline=True)
+    if schedule.schedule_type is not ScheduleType.ONCE:
+        _field(embed, "投稿時刻", local_time_text(schedule.local_time), inline=True)
     if schedule.next_run_at is not None:
         _field(
             embed,
@@ -136,6 +162,18 @@ def datetime_text(value: datetime | None) -> str:
 
 def datetime_label(schedule_type: ScheduleType) -> str:
     return "投稿予定" if schedule_type is ScheduleType.ONCE else "次回投稿"
+
+
+def weekday_text(weekday: int | None) -> str:
+    if weekday is None or isinstance(weekday, bool) or not 0 <= weekday < len(WEEKDAY_LABELS):
+        return "曜日不明"
+    return WEEKDAY_LABELS[weekday]
+
+
+def local_time_text(value) -> str:
+    if value is None or value.tzinfo is not None:
+        return "時刻不明"
+    return value.strftime("%H:%M JST")
 
 
 def content_preview(content: str | None) -> str:

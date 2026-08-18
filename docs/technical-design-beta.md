@@ -270,6 +270,10 @@ discord-ai-reminder-bot/
 
 単発作成の重複候補は、同一サーバー、投稿先、予定日時、本文（NULL同士を含む）、`once`、かつ状態が `draft`、`active`、`paused` の予約とする。`allow_duplicate=false` では保存せず、trueなら作成する。この確認は誤操作防止であり、同時実行を直列化するロックや一意制約は設けないため、完全な重複防止は保証しない。作成時はDB不要の検証後にephemeralでdeferし、1つのトランザクションでScheduleと最初のpending ScheduleRunを保存してからfollowupする。下書き通知用NotificationLogは作成せず、将来の通知ワーカーがScheduleRunの予定日時を基準に通知時刻を算出する。
 
+定期作成は既存の `/post create` を変更せず、毎日を `/post create-daily channel:<TextChannel> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週を `/post create-weekly channel:<TextChannel> weekday:<月曜日0～日曜日6> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。開始日は保存しない。重複候補は同一サーバー、投稿先、種別、`local_time`、`weekday`、`end_date`、本文（各NULL同士を含む）、かつ状態が `draft`、`active`、`paused` の予約とする。作成者、`next_run_at`、内部IDは比較しない。単発と同様に警告のみとし、`allow_duplicate=true`で作成を許可するため、同時実行による完全な重複防止は保証しない。
+
+定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側が所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。RepositoryとApplication Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。NotificationLogは作成しない。
+
 ### 6.3 `schedule_runs`：各回の実行履歴
 
 | カラム | 型 | NULL | 説明 |
@@ -482,9 +486,13 @@ discord-ai-reminder-bot/
 
 終了日当日の候補は実行対象に含める。
 
+新規作成時だけは `now + 5分` を含む最初の候補を計算する。今日の指定時刻が境界以上なら今日、境界未満なら翌日とする。初回候補が終了日を超える場合は入力エラーとして何も保存しない。通常の実行確定時は従来どおり基準日時より厳密に未来の候補を求める。
+
 ### 8.4 毎週
 
 指定曜日と `local_time` について、基準日時から0～6日先の候補を求める。同じ曜日でも時刻を過ぎていれば7日後とする。候補日が `end_date` と同じなら実行し、超えていれば次回なしとする。
+
+新規作成時は `now + 5分` を含む最初の候補を計算する。当日が指定曜日で指定時刻が境界以上なら当日、境界未満なら7日後とし、別曜日なら次に到来する曜日とする。初回候補が終了日を超える場合は入力エラーとして保存しない。通常の実行確定時の厳密未来計算は変更しない。
 
 ### 8.5 編集と再開
 

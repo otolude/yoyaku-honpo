@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import Select, and_, or_, select, update
@@ -172,6 +172,46 @@ class ScheduleRepository:
                 )
             ),
             and_(content_match),
+        )
+        return await self._session.scalar(statement.limit(1)) is not None
+
+    async def has_recurring_duplicate(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        schedule_type: ScheduleType,
+        local_time: time,
+        weekday: int | None,
+        end_date: date | None,
+        content: str | None,
+    ) -> bool:
+        if schedule_type not in (ScheduleType.DAILY, ScheduleType.WEEKLY):
+            raise ValueError("recurring schedule type is required")
+        content_match = (
+            Schedule.content.is_(None) if content is None else Schedule.content == content
+        )
+        end_date_match = (
+            Schedule.end_date.is_(None) if end_date is None else Schedule.end_date == end_date
+        )
+        weekday_match = (
+            Schedule.weekday.is_(None) if weekday is None else Schedule.weekday == weekday
+        )
+        statement = select(Schedule.id).where(
+            Schedule.guild_id == guild_id,
+            Schedule.channel_id == channel_id,
+            Schedule.schedule_type == schedule_type.value,
+            Schedule.local_time == local_time,
+            weekday_match,
+            end_date_match,
+            content_match,
+            Schedule.status.in_(
+                (
+                    ScheduleStatus.DRAFT.value,
+                    ScheduleStatus.ACTIVE.value,
+                    ScheduleStatus.PAUSED.value,
+                )
+            ),
         )
         return await self._session.scalar(statement.limit(1)) is not None
 

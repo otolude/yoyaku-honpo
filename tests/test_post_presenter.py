@@ -1,9 +1,12 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 import pytest
 
-from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
+from discord_ai_reminder_bot.application.schedule_creation import (
+    CreatedOnceSchedule,
+    CreatedRecurringSchedule,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_LIMIT,
@@ -12,6 +15,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_TOTAL_LIMIT,
     STATUS_COLOURS,
     STATUS_LABELS,
+    created_recurring_schedule_embed,
     created_schedule_embed,
     schedule_detail_embed,
     schedule_list_embed,
@@ -36,8 +40,8 @@ def view(
         status=status,
         content=content,
         next_run_at=next_run_at,
-        local_time=None,
-        weekday=None,
+        local_time=time(9, 15) if schedule_type is not ScheduleType.ONCE else None,
+        weekday=0 if schedule_type is ScheduleType.WEEKLY else None,
         end_date=date(2026, 8, 31) if schedule_type is not ScheduleType.ONCE else None,
     )
 
@@ -80,6 +84,41 @@ def test_create_embed_structure_draft_and_full_public_id() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("schedule_type", "weekday", "title"),
+    [
+        (ScheduleType.DAILY, None, "毎日予約を作成しました"),
+        (ScheduleType.WEEKLY, 0, "毎週予約を作成しました"),
+    ],
+)
+def test_recurring_create_embed_contains_definition_and_safe_limits(
+    schedule_type: ScheduleType, weekday: int | None, title: str
+) -> None:
+    created = CreatedRecurringSchedule(
+        public_id=uuid.uuid7(),
+        channel_id=400,
+        schedule_type=schedule_type,
+        status=ScheduleStatus.DRAFT,
+        content=None,
+        local_time=time(9, 15),
+        weekday=weekday,
+        end_date=date(2026, 8, 31),
+        next_run_at=NOW,
+    )
+    embed = created_recurring_schedule_embed(created)
+    text = all_text(embed)
+    assert embed.title == title
+    assert "09:15 JST" in text
+    assert "2026-08-31" in text
+    assert "🗓️ 次回投稿" in text
+    assert "本文なし" in text
+    assert f"`{created.public_id}`" in text
+    if schedule_type is ScheduleType.WEEKLY:
+        assert "月曜日" in text
+    assert len(embed.fields) <= EMBED_FIELD_LIMIT
+    assert len(embed) <= EMBED_TOTAL_LIMIT
+
+
 def test_list_ten_items_stays_within_all_embed_limits_and_order() -> None:
     schedules = [view(content=f"本文{i}") for i in range(10)]
     embed = schedule_list_embed(schedules, page=3, status_filter=ScheduleStatus.ACTIVE)
@@ -106,6 +145,10 @@ def test_recurring_list_and_show_use_next_post_label(schedule_type: ScheduleType
     assert any(field.name == "🗓️ 次回投稿" for field in detailed.fields)
     assert "次回:" not in all_text(listed)
     assert "次回：" not in all_text(listed)
+    detail_text = all_text(detailed)
+    assert "09:15 JST" in detail_text
+    if schedule_type is ScheduleType.WEEKLY:
+        assert "月曜日" in detail_text
 
 
 @pytest.mark.parametrize(

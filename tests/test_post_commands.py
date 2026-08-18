@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 from discord import app_commands
 
-from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
+from discord_ai_reminder_bot.application.schedule_creation import (
+    CreatedOnceSchedule,
+    CreatedRecurringSchedule,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
     INTERNAL_ERROR_MESSAGE,
@@ -182,6 +185,96 @@ async def test_create_database_failure_rolls_back_and_returns_safe_followup(
     assert value.followup.send.await_args.args == (INTERNAL_ERROR_MESSAGE,)
     assert secret not in caplog.text
     assert session.begin.return_value.__aexit__.await_args.args[0] is RuntimeError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schedule_type", "weekday"),
+    [(ScheduleType.DAILY, None), (ScheduleType.WEEKLY, 1)],
+)
+async def test_recurring_create_uses_safe_boundary_and_interaction_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    schedule_type: ScheduleType,
+    weekday: int | None,
+) -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    value.response.defer = AsyncMock()
+    value.response.is_done.return_value = True
+    channel = text_channel(value)
+    created = CreatedRecurringSchedule(
+        public_id=uuid.uuid7(),
+        channel_id=channel.id,
+        schedule_type=schedule_type,
+        status=ScheduleStatus.ACTIVE,
+        content="body",
+        local_time=time(12, 5),
+        weekday=weekday,
+        end_date=date(2026, 8, 31),
+        next_run_at=NOW.replace(minute=5),
+    )
+    service = AsyncMock()
+    service.create.return_value = created
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.RecurringScheduleCreationService",
+        lambda unused: service,
+    )
+    if schedule_type is ScheduleType.DAILY:
+        await group.create_daily_command.callback(
+            group, value, channel, "12:05", "2026-08-31", "body", False
+        )
+    else:
+        choice = app_commands.Choice(name="火曜日", value=1)
+        await group.create_weekly_command.callback(
+            group, value, channel, choice, "12:05", "2026-08-31", "body", False
+        )
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    arguments = service.create.await_args.kwargs
+    assert arguments["guild_id"] == value.guild_id
+    assert arguments["creator_user_id"] == value.user.id
+    assert arguments["schedule_type"] is schedule_type
+    assert arguments["local_time"] == time(12, 5)
+    assert arguments["weekday"] == weekday
+    assert arguments["end_date"] == date(2026, 8, 31)
+    kwargs = value.followup.send.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert kwargs["embed"].title.startswith("毎")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("local_time_value", "end_date_value"),
+    [("9:00", None), ("09:00", "2026-2-03"), ("25:00", "2026-08-31")],
+)
+async def test_recurring_create_rejects_invalid_local_input_before_defer(
+    local_time_value: str, end_date_value: str | None
+) -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    value.response.defer = AsyncMock()
+    channel = text_channel(value)
+    await group.create_daily_command.callback(
+        group, value, channel, local_time_value, end_date_value, "body", False
+    )
+    value.response.defer.assert_not_awaited()
+    value.response.send_message.assert_awaited_once()
+
+
+def test_weekly_command_exposes_all_seven_japanese_weekday_choices() -> None:
+    group = commands(AsyncMock())
+    parameter = next(
+        item for item in group.create_weekly_command.parameters if item.name == "weekday"
+    )
+    assert [(choice.name, choice.value) for choice in parameter.choices] == [
+        ("月曜日", 0),
+        ("火曜日", 1),
+        ("水曜日", 2),
+        ("木曜日", 3),
+        ("金曜日", 4),
+        ("土曜日", 5),
+        ("日曜日", 6),
+    ]
 
 
 @pytest.mark.asyncio

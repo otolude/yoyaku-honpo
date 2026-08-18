@@ -35,7 +35,14 @@ def utc_to_tokyo(value: datetime) -> datetime:
 def _candidate(day: date, local_time: time) -> datetime:
     if local_time.tzinfo is not None:
         raise InvalidDateTimeError("local schedule time must not contain timezone information")
-    return datetime.combine(day, local_time.replace(second=0, microsecond=0), TOKYO)
+    naive = datetime.combine(day, local_time.replace(second=0, microsecond=0))
+    first = naive.replace(tzinfo=TOKYO, fold=0)
+    second = naive.replace(tzinfo=TOKYO, fold=1)
+    if first.utcoffset() != second.utcoffset():
+        raise InvalidDateTimeError("ambiguous local schedule datetime")
+    if first.astimezone(UTC).astimezone(TOKYO).replace(tzinfo=None) != naive:
+        raise InvalidDateTimeError("nonexistent local schedule datetime")
+    return first
 
 
 def next_daily_run(
@@ -65,3 +72,26 @@ def next_weekly_run(
     if end_date is not None and candidate.date() > end_date:
         return None
     return candidate.astimezone(UTC)
+
+
+def first_daily_run(
+    *, local_time: time, not_before: datetime, end_date: date | None = None
+) -> datetime | None:
+    """Return the first daily occurrence at or after an inclusive UTC boundary."""
+    return next_daily_run(
+        local_time=local_time,
+        after=require_utc(not_before) - timedelta(microseconds=1),
+        end_date=end_date,
+    )
+
+
+def first_weekly_run(
+    *, weekday: int, local_time: time, not_before: datetime, end_date: date | None = None
+) -> datetime | None:
+    """Return the first weekly occurrence at or after an inclusive UTC boundary."""
+    return next_weekly_run(
+        weekday=weekday,
+        local_time=local_time,
+        after=require_utc(not_before) - timedelta(microseconds=1),
+        end_date=end_date,
+    )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
@@ -10,6 +10,8 @@ from discord_ai_reminder_bot.domain.recurrence import require_utc
 
 TOKYO = ZoneInfo("Asia/Tokyo")
 DATETIME_FORMAT = "%Y-%m-%d %H:%M"
+TIME_FORMAT = "%H:%M"
+DATE_FORMAT = "%Y-%m-%d"
 
 
 class InvalidScheduleContentError(ValueError):
@@ -52,3 +54,27 @@ def validate_create_content(content: str | None) -> str | None:
     if "@everyone" in lowered or "@here" in lowered:
         raise InvalidScheduleContentError("forbidden mention")
     return content
+
+
+def parse_local_time(value: str) -> time:
+    """Parse an exact zero-padded minute without attaching a timezone."""
+    try:
+        parsed = time.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise InvalidDateTimeError("invalid local time") from error
+    if parsed.strftime(TIME_FORMAT) != value:
+        raise InvalidDateTimeError("invalid local time")
+    return parsed.replace(second=0, microsecond=0)
+
+
+def parse_end_date(value: str | None) -> date | None:
+    """Parse an optional exact Tokyo-local calendar date."""
+    if value is None:
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise InvalidDateTimeError("invalid end date") from error
+    if parsed.strftime(DATE_FORMAT) != value:
+        raise InvalidDateTimeError("invalid end date")
+    return parsed
