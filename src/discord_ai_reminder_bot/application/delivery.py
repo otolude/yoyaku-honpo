@@ -72,6 +72,36 @@ class DeliveryService:
         )
         return DeliveryUpdate(attempt=attempt, run=run)
 
+    async def skip_before_send(
+        self,
+        *,
+        attempt_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        result_code: str,
+        error_summary: str,
+    ) -> DeliveryUpdate:
+        """Record a claimed attempt as failed and its run as skipped, without sending."""
+        now = require_utc(now)
+        result_code = validate_safe_error_text(result_code, field="result_code", maximum=64)
+        error_summary = validate_safe_error_text(error_summary, field="error_summary", maximum=500)
+        attempt = await self._attempts.mark_failed(
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            now=now,
+            error_kind=DeliveryErrorKind.PERMANENT.value,
+            error_code="skipped_before_send",
+            error_summary=error_summary,
+        )
+        run = await self._runs.mark_skipped(
+            run_id=attempt.schedule_run_id,
+            worker_id=worker_id,
+            now=now,
+            result_code=result_code,
+            error_summary=error_summary,
+        )
+        return DeliveryUpdate(attempt=attempt, run=run)
+
     async def complete_success(
         self,
         *,

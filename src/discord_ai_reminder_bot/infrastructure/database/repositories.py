@@ -391,6 +391,27 @@ class ScheduleRunRepository:
             error_summary=None,
         )
 
+    async def mark_skipped(
+        self,
+        *,
+        run_id: int,
+        worker_id: uuid.UUID,
+        now: datetime,
+        result_code: str,
+        error_summary: str,
+    ) -> ScheduleRun:
+        return await self._finish(
+            run_id=run_id,
+            worker_id=worker_id,
+            now=now,
+            status=RunStatus.SKIPPED,
+            next_attempt_at=None,
+            finished_at=require_utc(now),
+            message_id=None,
+            result_code=result_code,
+            error_summary=error_summary,
+        )
+
     async def mark_failed_or_pending(
         self,
         *,
