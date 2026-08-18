@@ -98,6 +98,8 @@ class ReminderBot(commands.Bot):
         self._commands_synced = False
         self.post_commands = PostCommands(
             queries=ScheduleQueryService(session_factory),
+            session_factory=session_factory,
+            clock=clock,
             configured_guild_id=settings.discord_guild_id,
             allowed_role_ids=settings.discord_allowed_role_ids,
             logger=logger,

@@ -266,6 +266,8 @@ discord-ai-reminder-bot/
 
 重複予約は警告に留め、DBの一意制約では禁止しない。利用者が意図的に同じ投稿を複数作る場合があるためである。
 
+単発作成の重複候補は、同一サーバー、投稿先、予定日時、本文（NULL同士を含む）、`once`、かつ状態が `draft`、`active`、`paused` の予約とする。`allow_duplicate=false` では保存せず、trueなら作成する。この確認は誤操作防止であり、同時実行を直列化するロックや一意制約は設けないため、完全な重複防止は保証しない。作成時はDB不要の検証後にephemeralでdeferし、1つのトランザクションでScheduleと最初のpending ScheduleRunを保存してからfollowupする。下書き通知用NotificationLogは作成せず、将来の通知ワーカーがScheduleRunの予定日時を基準に通知時刻を算出する。
+
 ### 6.3 `schedule_runs`：各回の実行履歴
 
 | カラム | 型 | NULL | 説明 |

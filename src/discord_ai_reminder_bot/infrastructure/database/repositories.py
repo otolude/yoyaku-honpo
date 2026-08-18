@@ -8,11 +8,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, or_, select, update
+from sqlalchemy import Select, and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from discord_ai_reminder_bot.domain.enums import DeliveryAttemptStatus, RunStatus, ScheduleStatus
+from discord_ai_reminder_bot.domain.enums import (
+    DeliveryAttemptStatus,
+    RunStatus,
+    ScheduleStatus,
+    ScheduleType,
+)
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.exceptions import (
     DuplicateRecordError,
@@ -141,6 +146,34 @@ class ScheduleRepository:
         if schedule is None:
             raise RepositoryNotFoundError("schedule was not found")
         return schedule
+
+    async def has_once_duplicate(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        scheduled_for: datetime,
+        content: str | None,
+    ) -> bool:
+        scheduled_for = require_utc(scheduled_for)
+        content_match = (
+            Schedule.content.is_(None) if content is None else Schedule.content == content
+        )
+        statement = select(Schedule.id).where(
+            Schedule.guild_id == guild_id,
+            Schedule.channel_id == channel_id,
+            Schedule.next_run_at == scheduled_for,
+            Schedule.schedule_type == ScheduleType.ONCE.value,
+            Schedule.status.in_(
+                (
+                    ScheduleStatus.DRAFT.value,
+                    ScheduleStatus.ACTIVE.value,
+                    ScheduleStatus.PAUSED.value,
+                )
+            ),
+            and_(content_match),
+        )
+        return await self._session.scalar(statement.limit(1)) is not None
 
     async def get_by_id(self, schedule_id: int) -> Schedule:
         """Return a row for internal application use; never expose this ID externally."""

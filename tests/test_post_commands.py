@@ -9,6 +9,7 @@ import discord
 import pytest
 from discord import app_commands
 
+from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
     DISCORD_MESSAGE_LIMIT,
@@ -19,11 +20,13 @@ from discord_ai_reminder_bot.bot.posts import (
     format_schedule_detail,
     format_schedule_list,
 )
+from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 
 GUILD_ID = 100
 USER_ID = 300
 ROLE_ID = 200
+NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
 
 
 def interaction(*, administrator: bool = False, done: bool = False) -> MagicMock:
@@ -65,13 +68,122 @@ def view(*, content: str | None = "本文", status: ScheduleStatus = ScheduleSta
     )
 
 
-def commands(queries: AsyncMock) -> PostCommands:
+def commands(queries: AsyncMock, *, session: MagicMock | None = None) -> PostCommands:
+    session = session or MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    session.begin.return_value = transaction
     return PostCommands(
         queries=queries,
+        session_factory=lambda: session,  # type: ignore[arg-type]
+        clock=FixedClock(NOW),
         configured_guild_id=GUILD_ID,
         allowed_role_ids=(ROLE_ID,),
         logger=logging.getLogger("test.posts"),
     )
+
+
+def text_channel(value: MagicMock, *, guild_id: int = GUILD_ID) -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 400
+    channel.guild = MagicMock(spec=discord.Guild)
+    channel.guild.id = guild_id
+    permissions = MagicMock(spec=discord.Permissions)
+    permissions.view_channel = True
+    permissions.send_messages = True
+    channel.permissions_for.return_value = permissions
+    value.guild.me = MagicMock(spec=discord.Member)
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_create_defers_then_commits_and_uses_interaction_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries = AsyncMock()
+    group = commands(queries)
+    value = interaction()
+    value.response.defer = AsyncMock()
+    value.response.is_done.return_value = True
+    channel = text_channel(value)
+    created = CreatedOnceSchedule(
+        public_id=uuid.uuid7(),
+        channel_id=channel.id,
+        status=ScheduleStatus.ACTIVE,
+        content="line 1\nline 2",
+        scheduled_for=datetime(2026, 8, 20, 10, 30, tzinfo=UTC),
+    )
+    service = AsyncMock()
+    service.create.return_value = created
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.OnceScheduleCreationService", lambda unused: service
+    )
+
+    await group.create_command.callback(
+        group,
+        value,
+        channel,
+        "2026-08-20 19:30",
+        "line 1\nline 2",
+        False,
+    )
+
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    service.create.assert_awaited_once()
+    arguments = service.create.await_args.kwargs
+    assert arguments["guild_id"] == value.guild_id == GUILD_ID
+    assert arguments["creator_user_id"] == value.user.id == USER_ID
+    assert arguments["channel_id"] == channel.id
+    assert arguments["scheduled_for"] == datetime(2026, 8, 20, 10, 30, tzinfo=UTC)
+    value.followup.send.assert_awaited_once()
+    assert value.followup.send.await_args.kwargs["ephemeral"] is True
+    assert value.followup.send.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert "line 1 line 2" in value.followup.send.await_args.args[0]
+
+
+@pytest.mark.parametrize("kind", ["other_guild", "voice", "view", "send"])
+@pytest.mark.asyncio
+async def test_create_rejects_invalid_channel_before_defer(kind: str) -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    value.response.defer = AsyncMock()
+    channel = text_channel(value, guild_id=999 if kind == "other_guild" else GUILD_ID)
+    if kind == "voice":
+        channel = MagicMock(spec=discord.VoiceChannel)
+    elif kind in {"view", "send"}:
+        permissions = channel.permissions_for.return_value
+        setattr(permissions, "view_channel" if kind == "view" else "send_messages", False)
+    await group.create_command.callback(group, value, channel, "2026-08-20 19:30", "body", False)
+    value.response.defer.assert_not_awaited()
+    value.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_database_failure_rolls_back_and_returns_safe_followup(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "postgresql+psycopg://user:password@localhost/private"
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    value.response.defer = AsyncMock()
+    value.response.is_done.return_value = True
+    channel = text_channel(value)
+    service = AsyncMock()
+    service.create.side_effect = RuntimeError(secret)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.OnceScheduleCreationService", lambda unused: service
+    )
+    with caplog.at_level(logging.ERROR):
+        await group.create_command.callback(
+            group, value, channel, "2026-08-20 19:30", "body", False
+        )
+    assert value.followup.send.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    assert secret not in caplog.text
+    assert session.begin.return_value.__aexit__.await_args.args[0] is RuntimeError
 
 
 @pytest.mark.asyncio
