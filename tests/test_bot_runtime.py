@@ -137,6 +137,13 @@ def test_add_guild_command_never_registers_globally() -> None:
     assert bot.tree.get_command("probe") is None
 
 
+def test_post_group_is_registered_only_for_configured_guild() -> None:
+    bot = make_bot()
+    guild = discord.Object(id=bot.settings.discord_guild_id)
+    assert bot.tree.get_command("post", guild=guild) is bot.post_commands
+    assert bot.tree.get_command("post") is None
+
+
 @pytest.mark.asyncio
 async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     bot = make_bot()

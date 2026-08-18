@@ -50,6 +50,11 @@ def _validate_limit(limit: int) -> None:
         raise ValueError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
 
 
+def _validate_offset(offset: int) -> None:
+    if isinstance(offset, bool) or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+
+
 @dataclass(frozen=True)
 class ClaimedScheduleRun:
     """A locked run and the delivery attempt created for its current claim."""
@@ -164,12 +169,20 @@ class ScheduleRepository:
         creator_user_id: int,
         status: ScheduleStatus | None = None,
         limit: int = 10,
+        offset: int = 0,
+        exclude_deleted: bool = False,
     ) -> list[Schedule]:
         statement = select(Schedule).where(
             Schedule.guild_id == guild_id,
             Schedule.creator_user_id == creator_user_id,
         )
-        return await self._list(statement, status=status, limit=limit)
+        return await self._list(
+            statement,
+            status=status,
+            limit=limit,
+            offset=offset,
+            exclude_deleted=exclude_deleted,
+        )
 
     async def list_by_guild(
         self,
@@ -177,18 +190,35 @@ class ScheduleRepository:
         guild_id: int,
         status: ScheduleStatus | None = None,
         limit: int = 10,
+        offset: int = 0,
+        exclude_deleted: bool = False,
     ) -> list[Schedule]:
         statement = select(Schedule).where(Schedule.guild_id == guild_id)
-        return await self._list(statement, status=status, limit=limit)
+        return await self._list(
+            statement,
+            status=status,
+            limit=limit,
+            offset=offset,
+            exclude_deleted=exclude_deleted,
+        )
 
     async def _list(
-        self, statement, *, status: ScheduleStatus | None, limit: int
+        self,
+        statement,
+        *,
+        status: ScheduleStatus | None,
+        limit: int,
+        offset: int,
+        exclude_deleted: bool,
     ) -> list[Schedule]:
         _validate_limit(limit)
+        _validate_offset(offset)
         if status is not None:
             statement = statement.where(Schedule.status == status.value)
+        elif exclude_deleted:
+            statement = statement.where(Schedule.status != ScheduleStatus.DELETED.value)
         statement = statement.order_by(Schedule.next_run_at.asc().nulls_last(), Schedule.id.asc())
-        result = await self._session.execute(statement.limit(limit))
+        result = await self._session.execute(statement.offset(offset).limit(limit))
         return list(result.scalars())
 
     async def update_with_version(

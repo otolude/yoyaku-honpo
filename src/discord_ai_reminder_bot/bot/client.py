@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
 from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryService
+from discord_ai_reminder_bot.application.schedule_queries import ScheduleQueryService
 from discord_ai_reminder_bot.application.worker import PollingWorker
 from discord_ai_reminder_bot.bot.interactions import Phase1CommandTree
+from discord_ai_reminder_bot.bot.posts import PostCommands
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.recurrence import require_utc
@@ -94,6 +96,13 @@ class ReminderBot(commands.Bot):
         self._closed_once = False
         self._command_sync_lock = asyncio.Lock()
         self._commands_synced = False
+        self.post_commands = PostCommands(
+            queries=ScheduleQueryService(session_factory),
+            configured_guild_id=settings.discord_guild_id,
+            allowed_role_ids=settings.discord_allowed_role_ids,
+            logger=logger,
+        )
+        self.add_guild_command(self.post_commands)
         self.polling_loop.change_interval(seconds=settings.scheduler_poll_interval_seconds)
 
     async def setup_hook(self) -> None:
