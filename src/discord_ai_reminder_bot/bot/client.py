@@ -9,12 +9,14 @@ import uuid
 from datetime import timedelta
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
 from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryService
 from discord_ai_reminder_bot.application.worker import PollingWorker
+from discord_ai_reminder_bot.bot.interactions import Phase1CommandTree
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.recurrence import require_utc
@@ -57,6 +59,7 @@ class ReminderBot(commands.Bot):
         super().__init__(
             command_prefix=SLASH_ONLY_PREFIX,
             help_command=None,
+            tree_cls=Phase1CommandTree,
             intents=minimal_intents(),
             member_cache_flags=discord.MemberCacheFlags.none(),
             allowed_mentions=discord.AllowedMentions.none(),
@@ -89,6 +92,8 @@ class ReminderBot(commands.Bot):
         self._startup_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed_once = False
+        self._command_sync_lock = asyncio.Lock()
+        self._commands_synced = False
         self.polling_loop.change_interval(seconds=settings.scheduler_poll_interval_seconds)
 
     async def setup_hook(self) -> None:
@@ -97,6 +102,33 @@ class ReminderBot(commands.Bot):
             "database_schema_verified",
             extra={"worker_id": str(self.worker_id), "revision": revision},
         )
+        await self.sync_guild_commands()
+
+    def add_guild_command(
+        self,
+        command: app_commands.Command | app_commands.Group | app_commands.ContextMenu,
+        *,
+        override: bool = False,
+    ) -> None:
+        """Register a command only for the configured Phase 1 guild."""
+        self.tree.add_command(
+            command,
+            guild=discord.Object(id=self.settings.discord_guild_id),
+            override=override,
+        )
+
+    async def sync_guild_commands(self) -> int:
+        """Synchronize the configured guild at most once per process."""
+        async with self._command_sync_lock:
+            if self._commands_synced:
+                return 0
+            synced = await self.tree.sync(guild=discord.Object(id=self.settings.discord_guild_id))
+            self._commands_synced = True
+            self.logger.info(
+                "application_commands_synced",
+                extra={"worker_id": str(self.worker_id), "command_count": len(synced)},
+            )
+            return len(synced)
 
     async def on_ready(self) -> None:
         async with self._startup_lock:

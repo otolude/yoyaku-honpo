@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from discord import app_commands
 from discord.ext import commands
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
@@ -83,9 +84,57 @@ def test_bot_configuration_is_minimal_and_does_not_connect() -> None:
 async def test_setup_hook_verifies_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     bot = make_bot()
     verify = AsyncMock(return_value="bf82b90bcd5e")
+    sync = AsyncMock(return_value=[])
     monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
     await bot.setup_hook()
     verify.assert_awaited_once_with(bot.engine)
+    sync.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_syncs_configured_guild_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    verify = AsyncMock(return_value="bf82b90bcd5e")
+    sync = AsyncMock(return_value=[object(), object()])
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+
+    await bot.setup_hook()
+    await bot.setup_hook()
+
+    assert sync.await_count == 1
+    guild = sync.await_args.kwargs["guild"]
+    assert guild.id == bot.settings.discord_guild_id
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_does_not_sync_when_schema_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    verify = AsyncMock(side_effect=RuntimeError("schema mismatch"))
+    sync = AsyncMock()
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        await bot.setup_hook()
+    sync.assert_not_awaited()
+
+
+def test_add_guild_command_never_registers_globally() -> None:
+    bot = make_bot()
+
+    async def callback(interaction: discord.Interaction) -> None:
+        pass
+
+    command = app_commands.Command(name="probe", description="test command", callback=callback)
+    bot.add_guild_command(command)
+    guild = discord.Object(id=bot.settings.discord_guild_id)
+    assert bot.tree.get_command("probe", guild=guild) is command
+    assert bot.tree.get_command("probe") is None
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ class UtcEventFormatter(logging.Formatter):
             "skipped",
             "internal_errors",
             "recovered",
+            "command_count",
         ):
             if not hasattr(record, field):
                 setattr(record, field, "-")
@@ -37,7 +38,8 @@ def configure_logging(level: str) -> None:
                 "%(asctime)sZ %(levelname)s %(name)s %(message)s "
                 "worker_id=%(worker_id)s claimed=%(claimed)s succeeded=%(succeeded)s "
                 "retry_scheduled=%(retry_scheduled)s failed=%(failed)s unknown=%(unknown)s "
-                "skipped=%(skipped)s internal_errors=%(internal_errors)s recovered=%(recovered)s"
+                "skipped=%(skipped)s internal_errors=%(internal_errors)s recovered=%(recovered)s "
+                "command_count=%(command_count)s"
             ),
             datefmt="%Y-%m-%dT%H:%M:%S",
         )
