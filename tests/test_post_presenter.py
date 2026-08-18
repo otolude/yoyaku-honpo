@@ -26,6 +26,7 @@ def view(
     status: ScheduleStatus = ScheduleStatus.ACTIVE,
     content: str | None = "本文",
     schedule_type: ScheduleType = ScheduleType.ONCE,
+    next_run_at: datetime | None = NOW,
 ) -> ScheduleView:
     return ScheduleView(
         public_id=uuid.uuid7(),
@@ -34,7 +35,7 @@ def view(
         schedule_type=schedule_type,
         status=status,
         content=content,
-        next_run_at=NOW,
+        next_run_at=next_run_at,
         local_time=None,
         weekday=None,
         end_date=date(2026, 8, 31) if schedule_type is not ScheduleType.ONCE else None,
@@ -71,20 +72,61 @@ def test_create_embed_structure_draft_and_full_public_id() -> None:
     assert "本文なし" in text
     assert f"`{public_id}`" in text
     assert "2026-08-20 19:30 JST" in text
+    assert [field.name for field in embed.fields[1:]] == [
+        "📍 投稿先",
+        "🗓️ 投稿予定",
+        "📝 本文",
+        "🆔 予約ID",
+    ]
 
 
 def test_list_ten_items_stays_within_all_embed_limits_and_order() -> None:
     schedules = [view(content=f"本文{i}") for i in range(10)]
     embed = schedule_list_embed(schedules, page=3, status_filter=ScheduleStatus.ACTIVE)
     assert embed.title == "予約一覧"
-    assert "ページ: 3" in embed.description
-    assert "状態フィルター: 有効" in embed.description
+    assert embed.description == "ページ 3｜表示：有効｜日本時間（JST）"
     assert len(embed.fields) == 10 <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT
     assert all(len(field.name) <= EMBED_FIELD_NAME_LIMIT for field in embed.fields)
     assert all(len(field.value) <= EMBED_FIELD_VALUE_LIMIT for field in embed.fields)
     positions = [all_text(embed).index(str(item.public_id)) for item in schedules]
     assert positions == sorted(positions)
+    assert all("📍 投稿先：" in field.value for field in embed.fields)
+    assert all("🗓️ 投稿予定：" in field.value for field in embed.fields)
+    assert all("📝 本文：" in field.value for field in embed.fields)
+    assert all("🆔 予約ID：" in field.value for field in embed.fields)
+
+
+@pytest.mark.parametrize("schedule_type", [ScheduleType.DAILY, ScheduleType.WEEKLY])
+def test_recurring_list_and_show_use_next_post_label(schedule_type: ScheduleType) -> None:
+    item = view(schedule_type=schedule_type)
+    listed = schedule_list_embed([item], page=1, status_filter=None)
+    detailed = schedule_detail_embed(item)
+    assert "🗓️ 次回投稿：" in listed.fields[0].value
+    assert any(field.name == "🗓️ 次回投稿" for field in detailed.fields)
+    assert "次回:" not in all_text(listed)
+    assert "次回：" not in all_text(listed)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ScheduleStatus.COMPLETED,
+        ScheduleStatus.FAILED,
+        ScheduleStatus.ENDED,
+        ScheduleStatus.DELETED,
+    ],
+)
+def test_terminal_without_next_run_omits_datetime_from_list_and_show(
+    status: ScheduleStatus,
+) -> None:
+    item = view(status=status, next_run_at=None)
+    listed = schedule_list_embed([item], page=1, status_filter=status)
+    detailed = schedule_detail_embed(item)
+    assert "🗓️" not in listed.fields[0].value
+    assert all(not field.name.startswith("🗓️") for field in detailed.fields)
+    assert "次回:" not in all_text(listed) + all_text(detailed)
+    assert "次回：" not in all_text(listed) + all_text(detailed)
 
 
 def test_list_preview_collapses_lines_escapes_markup_mentions_and_truncates() -> None:
@@ -106,6 +148,9 @@ def test_show_two_thousand_markup_characters_stays_within_limits() -> None:
     assert len(embed.fields) <= EMBED_FIELD_LIMIT
     assert all(len(field.value) <= EMBED_FIELD_VALUE_LIMIT for field in embed.fields)
     assert f"`{item.public_id}`" in all_text(embed)
+    content_fields = [field for field in embed.fields if field.name.startswith("📝 本文")]
+    assert content_fields[0].name == "📝 本文"
+    assert all(field.name == "📝 本文（続き）" for field in content_fields[1:])
 
 
 def test_show_preserves_line_breaks_but_escapes_user_markup_and_mentions() -> None:
@@ -124,3 +169,4 @@ def test_empty_list_is_an_embed() -> None:
     embed = schedule_list_embed([], page=99, status_filter=ScheduleStatus.DELETED)
     assert len(embed.fields) == 1
     assert "表示できる予約はありません" in embed.fields[0].value
+    assert embed.description == "ページ 99｜表示：削除済み｜日本時間（JST）"

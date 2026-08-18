@@ -57,20 +57,20 @@ STATUS_COLOURS = {
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
     embed = _embed(title="単発予約を作成しました", status=created.status)
     _field(embed, "状態", status_text(created.status), inline=True)
-    _field(embed, "投稿先", channel_text(created.channel_id), inline=True)
-    _field(embed, "予定日時", datetime_text(created.scheduled_for), inline=False)
-    _field(embed, "本文プレビュー", content_preview(created.content), inline=False)
-    _field(embed, "予約ID", public_id_text(created.public_id), inline=False)
+    _field(embed, "📍 投稿先", channel_text(created.channel_id), inline=True)
+    _field(embed, "🗓️ 投稿予定", datetime_text(created.scheduled_for), inline=False)
+    _field(embed, "📝 本文", content_preview(created.content), inline=False)
+    _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
     return _validated(embed)
 
 
 def schedule_list_embed(
     schedules: list[ScheduleView], *, page: int, status_filter: ScheduleStatus | None
 ) -> discord.Embed:
-    filter_label = STATUS_LABELS[status_filter] if status_filter is not None else "指定なし"
+    filter_label = STATUS_LABELS[status_filter] if status_filter is not None else "すべて"
     embed = discord.Embed(
         title="予約一覧",
-        description=f"ページ: {page} / 状態フィルター: {filter_label} / 日時: Asia/Tokyo (JST)",
+        description=f"ページ {page}｜表示：{filter_label}｜日本時間（JST）",
         colour=0x5865F2,
     )
     if not schedules:
@@ -78,14 +78,18 @@ def schedule_list_embed(
         return _validated(embed)
     for schedule in schedules:
         name = f"{status_text(schedule.status)}・{TYPE_LABELS[schedule.schedule_type]}"
-        value = "\n".join(
+        lines = [f"📍 投稿先：{channel_text(schedule.channel_id)}"]
+        if schedule.next_run_at is not None:
+            lines.append(
+                f"🗓️ {datetime_label(schedule.schedule_type)}：{datetime_text(schedule.next_run_at)}"
+            )
+        lines.extend(
             (
-                f"投稿先: {channel_text(schedule.channel_id)}",
-                f"次回: {datetime_text(schedule.next_run_at)}",
-                f"本文: {content_preview(schedule.content)}",
-                f"予約ID: {public_id_text(schedule.public_id)}",
+                f"📝 本文：{content_preview(schedule.content)}",
+                f"🆔 予約ID：{public_id_text(schedule.public_id)}",
             )
         )
+        value = "\n".join(lines)
         _field(embed, name, value, inline=False)
     return _validated(embed)
 
@@ -94,13 +98,19 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     embed = _embed(title="予約詳細", status=schedule.status)
     _field(embed, "状態", status_text(schedule.status), inline=True)
     _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
-    _field(embed, "投稿先", channel_text(schedule.channel_id), inline=False)
-    _field(embed, "次回日時", datetime_text(schedule.next_run_at), inline=True)
+    _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    if schedule.next_run_at is not None:
+        _field(
+            embed,
+            f"🗓️ {datetime_label(schedule.schedule_type)}",
+            datetime_text(schedule.next_run_at),
+            inline=True,
+        )
     _field(
         embed, "終了日", schedule.end_date.isoformat() if schedule.end_date else "なし", inline=True
     )
     _add_detail_content(embed, schedule.content)
-    _field(embed, "予約ID", public_id_text(schedule.public_id), inline=False)
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
     return _validated(embed)
 
 
@@ -122,6 +132,10 @@ def datetime_text(value: datetime | None) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         return "日時不明"
     return value.astimezone(UTC).astimezone(_TOKYO).strftime("%Y-%m-%d %H:%M JST")
+
+
+def datetime_label(schedule_type: ScheduleType) -> str:
+    return "投稿予定" if schedule_type is ScheduleType.ONCE else "次回投稿"
 
 
 def content_preview(content: str | None) -> str:
@@ -147,7 +161,7 @@ def escape_user_text(value: str) -> str:
 
 def _add_detail_content(embed: discord.Embed, content: str | None) -> None:
     if content is None:
-        _field(embed, "本文", "本文なし", inline=False)
+        _field(embed, "📝 本文", "本文なし", inline=False)
         return
     escaped = escape_user_text(content)
     maximum = EMBED_FIELD_VALUE_LIMIT * DETAIL_CONTENT_FIELDS
@@ -160,7 +174,7 @@ def _add_detail_content(embed: discord.Embed, content: str | None) -> None:
         for index in range(0, len(escaped), EMBED_FIELD_VALUE_LIMIT)
     ]
     for index, chunk in enumerate(chunks, start=1):
-        name = "本文" if index == 1 else f"本文（続き {index}）"
+        name = "📝 本文" if index == 1 else "📝 本文（続き）"
         _field(embed, name, chunk, inline=False)
 
 
