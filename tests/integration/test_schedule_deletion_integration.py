@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from discord_ai_reminder_bot.application.delivery import DeliveryService
 from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryService
 from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
 )
@@ -100,7 +101,7 @@ async def delete(
     *,
     actor_user_id: int = CREATOR_ID,
     administrator: bool = False,
-    reason: str = "  planned deletion  ",
+    reason: str | None = "  planned deletion  ",
 ):
     return await ScheduleDeletionService(session).delete(
         guild_id=schedule.guild_id,
@@ -246,6 +247,62 @@ async def test_real_postgres_admin_own_failed_is_creator_deleted(
     ).one()
     assert operation.delete_kind == "creator_deleted"
     assert runs[0].status == "failed"
+
+
+async def test_real_postgres_creator_without_reason_stores_fixed_value(
+    db_session: AsyncSession,
+) -> None:
+    schedule, _ = await add_schedule(db_session)
+    await delete(db_session, schedule, reason=None)
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(OperationLog.schedule_id == schedule.id)
+        )
+    ).one()
+    assert operation.delete_reason == "理由未入力"
+    assert operation.delete_kind == "creator_deleted"
+
+
+async def test_real_postgres_admin_own_schedule_without_reason_is_creator_deleted(
+    db_session: AsyncSession,
+) -> None:
+    schedule, _ = await add_schedule(
+        db_session,
+        status="failed",
+        creator_user_id=ADMIN_ID,
+        current_run_status=None,
+    )
+    await delete(
+        db_session,
+        schedule,
+        actor_user_id=ADMIN_ID,
+        administrator=True,
+        reason=None,
+    )
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(OperationLog.schedule_id == schedule.id)
+        )
+    ).one()
+    assert operation.delete_reason == "理由未入力"
+    assert operation.delete_kind == "creator_deleted"
+
+
+async def test_real_postgres_admin_other_without_reason_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    schedule, runs = await add_schedule(db_session)
+    with pytest.raises(DeleteReasonRequired):
+        await delete(
+            db_session,
+            schedule,
+            actor_user_id=ADMIN_ID,
+            administrator=True,
+            reason=None,
+        )
+    assert schedule.status == "active"
+    assert runs[0].status == "pending"
+    assert await db_session.scalar(select(func.count()).select_from(OperationLog)) == 0
 
 
 async def test_real_postgres_preview_and_other_guild_do_not_update(

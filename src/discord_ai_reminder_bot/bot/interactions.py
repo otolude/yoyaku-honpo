@@ -56,6 +56,7 @@ async def respond_ephemeral(
     content: str | None = None,
     *,
     embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
     logger: logging.Logger,
 ) -> bool:
     """Send one safe ephemeral response or followup without leaking failures."""
@@ -63,6 +64,8 @@ async def respond_ephemeral(
         raise ValueError("exactly one of content or embed is required")
     mentions = discord.AllowedMentions.none()
     arguments = {"ephemeral": True, "allowed_mentions": mentions}
+    if view is not None:
+        arguments["view"] = view
     if embed is not None:
         arguments["embed"] = embed
     try:

@@ -241,9 +241,25 @@ def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_c
     assert "line 1 line 2" in text
     assert "\\*\\*reason\\*\\*" in text
     assert "@\u200beveryone" in text
-    assert "confirm:true" in text
+    assert "下のボタン" in text
     assert len(embed.fields) <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT
+
+
+def test_delete_embeds_show_missing_reason_as_unentered() -> None:
+    public_id = uuid.uuid7()
+    preview = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="理由未入力",
+    )
+    assert "未入力" in all_text(schedule_deletion_preview_embed(preview))
+    deleted = DeletedSchedule(**vars(preview), deleted_at=NOW, pending_runs_skipped=1)
+    assert "未入力" in all_text(deleted_schedule_embed(deleted))
 
 
 def test_deleted_embed_has_safe_fixed_result_without_thirty_day_promise() -> None:

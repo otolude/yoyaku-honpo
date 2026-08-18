@@ -6,11 +6,13 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
 )
 from discord_ai_reminder_bot.domain.enums import DeleteKind, ScheduleStatus
 from discord_ai_reminder_bot.domain.schedule_deletion import (
+    MISSING_DELETE_REASON,
     InvalidDeleteReasonError,
     deletion_kind,
     validate_delete_reason,
@@ -58,15 +60,41 @@ def pending_run(value: Schedule, *, run_id: int = 20) -> ScheduleRun:
     return run
 
 
-@pytest.mark.parametrize("value", ["", " ", "\n\t", "x" * 501])
-def test_delete_reason_rejects_empty_or_too_long(value: str) -> None:
+def test_delete_reason_rejects_too_long() -> None:
     with pytest.raises(InvalidDeleteReasonError):
-        validate_delete_reason(value)
+        validate_delete_reason("x" * 501)
+
+
+@pytest.mark.parametrize("value", [None, "", " ", "\n\t"])
+def test_missing_delete_reason_uses_fixed_database_value(value: str | None) -> None:
+    assert validate_delete_reason(value) == MISSING_DELETE_REASON
 
 
 def test_delete_reason_is_trimmed_and_preserved() -> None:
+    assert validate_delete_reason("x") == "x"
     assert validate_delete_reason("  理由\n ") == "理由"
     assert validate_delete_reason("x" * 500) == "x" * 500
+
+
+@pytest.mark.asyncio
+async def test_admin_deleting_other_creator_requires_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = schedule()
+    schedules = AsyncMock()
+    schedules.get_by_public_id.return_value = value
+    runs = AsyncMock()
+    runs.list_for_deletion.return_value = [pending_run(value)]
+    operations = AsyncMock()
+    _patch_repositories(monkeypatch, schedules, runs, operations)
+    with pytest.raises(DeleteReasonRequired):
+        await ScheduleDeletionService(AsyncMock()).preview(
+            guild_id=GUILD_ID,
+            public_id=str(value.public_id),
+            actor_user_id=CREATOR_ID + 1,
+            administrator=True,
+            reason=None,
+        )
 
 
 @pytest.mark.parametrize(

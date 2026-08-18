@@ -274,7 +274,9 @@ discord-ai-reminder-bot/
 
 定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側が所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。RepositoryとApplication Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。NotificationLogは作成しない。
 
-削除は `/post delete public_id:<canonical UUIDv7> reason:<1～500文字> confirm:<任意、既定false>` とする。理由は前後空白を除去し、空白だけを拒否する。`confirm=false` は読み取り専用で対象、所有者、状態、runを確認してephemeral Embedを返し、更新やOperationLog作成を行わない。`confirm=true` は最新状態を再検証し、確認時点のスナップショットは保証しない。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
+削除は `/post delete public_id:<canonical UUIDv7> reason:<任意、最大500文字>` とする。理由は前後空白を除去し、未指定または空白だけなら`理由未入力`として扱う。ただし管理者が他人の予約を削除する場合は理由を必須とする。作成者本人（管理者を含む）の理由省略時はOperationLogへ`理由未入力`を保存し、表示は`未入力`とする。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
+
+コマンド実行時は読み取り専用で対象、所有者、状態、runを確認し、ephemeral Embedと赤色の削除・灰色のキャンセルボタンを持つ非永続Viewを表示する。Viewのtimeoutは120秒で、起動時のpersistent View登録は行わず、custom_idへ予約・利用者データを含めない。確認を開いた本人だけが操作でき、ボタン時にもguildと共通認可を再確認する。同一Viewの操作はロックで直列化し、成功、キャンセル、timeout後はViewを除去する。View待機中はDB Sessionやトランザクションを保持せず、削除ボタン時に新しいトランザクションを開始して最新状態を再検証する。確認時点のスナップショットは保証しない。
 
 論理削除できる状態は `draft`、処理・確定待ちでない `active`、`paused`、`failed` とし、`completed`、`ended`、`deleted`、processing、claimed、sending、Schedule確定待ちは拒否する。再削除は成功扱いにせず、OperationLogを追加しない。削除時はScheduleを`deleted`、`next_run_at = NULL`、`deleted_at = terminal_at = updated_at = now`、`version + 1`とし、本文と定期設定および関連履歴を保持する。物理削除ワーカーの実装まではDiscord応答で30日後の自動削除を断定しない。
 

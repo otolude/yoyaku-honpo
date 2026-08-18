@@ -366,12 +366,15 @@ async def test_close_cancels_tasks_closes_client_disposes_engine_and_is_idempote
     monkeypatch.setattr(bot.polling_loop, "get_task", lambda: None)
     client_close = AsyncMock()
     monkeypatch.setattr(commands.Bot, "close", client_close)
+    close_views = AsyncMock()
+    bot.post_commands.close_delete_views = close_views
 
     await bot.close()
     await bot.close()
 
     cancel.assert_called_once()
     client_close.assert_awaited_once_with()
+    close_views.assert_awaited_once_with()
     bot.engine.dispose.assert_awaited_once()
 
 

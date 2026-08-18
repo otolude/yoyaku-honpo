@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     RecurringScheduleCreationService,
 )
 from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
 )
@@ -62,12 +64,83 @@ DUPLICATE_WARNING_MESSAGE = (
     "同一予約の可能性があります。意図的に作成する場合はallow_duplicate=trueで再実行してください。"
 )
 DELETE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、削除できません。"
+DELETE_REASON_REQUIRED_MESSAGE = (
+    "他の利用者が作成した予約を削除する場合は、削除理由を入力してください。"
+)
+DELETE_CANCELLED_MESSAGE = "予約の削除をキャンセルしました。"
+DELETE_EXPIRED_MESSAGE = (
+    "確認の有効期限が切れました。必要な場合はもう一度 /post delete を実行してください。"
+)
 
 
 @dataclass(frozen=True)
 class InteractionActor:
     user_id: int
     administrator: bool
+
+
+class ScheduleDeletionConfirmView(discord.ui.View):
+    """One-user, non-persistent confirmation state with no open DB resources."""
+
+    def __init__(
+        self,
+        *,
+        commands: PostCommands,
+        interaction: discord.Interaction,
+        public_id: str,
+        reason: str,
+        actor_user_id: int,
+    ) -> None:
+        super().__init__(timeout=120.0)
+        self.commands = commands
+        self.initial_interaction = interaction
+        self.public_id = public_id
+        self.reason = reason
+        self.actor_user_id = actor_user_id
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self.commands._configured_guild_id,
+            allowed_role_ids=self.commands._allowed_role_ids,
+        )
+        if actor is not None and actor.user_id == self.actor_user_id:
+            return True
+        await respond_ephemeral(
+            interaction,
+            PERMISSION_DENIED_MESSAGE,
+            logger=self.commands._logger,
+        )
+        return False
+
+    @discord.ui.button(
+        label="削除する",
+        style=discord.ButtonStyle.danger,
+        custom_id="post_delete_confirm",
+    )
+    async def confirm_button(
+        self,
+        interaction: discord.Interaction,
+        unused: discord.ui.Button[ScheduleDeletionConfirmView],
+    ) -> None:
+        await self.commands._confirm_deletion(self, interaction)
+
+    @discord.ui.button(
+        label="キャンセル",
+        style=discord.ButtonStyle.secondary,
+        custom_id="post_delete_cancel",
+    )
+    async def cancel_button(
+        self,
+        interaction: discord.Interaction,
+        unused: discord.ui.Button[ScheduleDeletionConfirmView],
+    ) -> None:
+        await self.commands._cancel_deletion(self, interaction)
+
+    async def on_timeout(self) -> None:
+        await self.commands._expire_deletion(self)
 
 
 def authorized_actor(
@@ -118,6 +191,7 @@ class PostCommands(app_commands.Group):
         self._configured_guild_id = configured_guild_id
         self._allowed_role_ids = allowed_role_ids
         self._logger = logger
+        self._delete_views: set[ScheduleDeletionConfirmView] = set()
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
@@ -299,15 +373,13 @@ class PostCommands(app_commands.Group):
     @app_commands.command(name="delete", description="予約を確認して論理削除します")
     @app_commands.describe(
         public_id="予約IDを指定します",
-        reason="削除理由を指定します",
-        confirm="確認後にtrueを指定すると削除します",
+        reason="削除理由です。他の利用者の予約を管理者が削除する場合は必須です",
     )
     async def delete_command(
         self,
         interaction: discord.Interaction,
         public_id: str,
-        reason: app_commands.Range[str, 1, 500],
-        confirm: bool = False,
+        reason: app_commands.Range[str, 1, 500] | None = None,
     ) -> None:
         actor = await self._actor_or_respond(interaction)
         if actor is None:
@@ -317,50 +389,168 @@ class PostCommands(app_commands.Group):
         except InvalidDeleteReasonError:
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
             return
-        if not confirm:
-            try:
-                async with self._session_factory() as session:
-                    preview = await ScheduleDeletionService(session).preview(
-                        guild_id=self._configured_guild_id,
-                        public_id=public_id,
-                        actor_user_id=actor.user_id,
-                        administrator=actor.administrator,
-                        reason=reason,
-                    )
-            except ScheduleDeletionUnavailable:
-                await respond_ephemeral(
-                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
-                )
-                return
-            except Exception:  # noqa: BLE001 - database details must remain private
-                self._logger.error("schedule_delete_preview_failed")
-                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
-                return
-            await self._respond_embed(interaction, lambda: schedule_deletion_preview_embed(preview))
-            return
         try:
-            await interaction.response.defer(ephemeral=True)
-        except Exception:  # noqa: BLE001 - Discord response details must remain private
-            self._logger.error("schedule_delete_defer_failed")
-            return
-        try:
-            async with self._session_factory() as session, session.begin():
-                deleted = await ScheduleDeletionService(session).delete(
+            async with self._session_factory() as session:
+                preview = await ScheduleDeletionService(session).preview(
                     guild_id=self._configured_guild_id,
                     public_id=public_id,
                     actor_user_id=actor.user_id,
                     administrator=actor.administrator,
                     reason=reason,
-                    deleted_at=self._clock.now(),
                 )
+        except DeleteReasonRequired:
+            await respond_ephemeral(
+                interaction, DELETE_REASON_REQUIRED_MESSAGE, logger=self._logger
+            )
+            return
         except ScheduleDeletionUnavailable:
             await respond_ephemeral(interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger)
             return
         except Exception:  # noqa: BLE001 - database details must remain private
-            self._logger.error("schedule_delete_failed")
+            self._logger.error("schedule_delete_preview_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        await self._respond_embed(interaction, lambda: deleted_schedule_embed(deleted))
+        try:
+            embed = schedule_deletion_preview_embed(preview)
+        except Exception:  # noqa: BLE001 - presentation failures must remain sanitized
+            self._logger.error("schedule_presentation_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        view = ScheduleDeletionConfirmView(
+            commands=self,
+            interaction=interaction,
+            public_id=public_id,
+            reason=preview.reason,
+            actor_user_id=actor.user_id,
+        )
+        if await respond_ephemeral(interaction, embed=embed, view=view, logger=self._logger):
+            self._delete_views.add(view)
+
+    async def _confirm_deletion(
+        self, view: ScheduleDeletionConfirmView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:  # noqa: BLE001 - Discord response details must remain private
+                self._logger.error("schedule_delete_defer_failed")
+                return
+            try:
+                async with self._session_factory() as session, session.begin():
+                    deleted = await ScheduleDeletionService(session).delete(
+                        guild_id=self._configured_guild_id,
+                        public_id=view.public_id,
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        reason=view.reason,
+                        deleted_at=self._clock.now(),
+                    )
+            except DeleteReasonRequired:
+                await self._finish_delete_view(
+                    view, interaction, content=DELETE_REASON_REQUIRED_MESSAGE
+                )
+                return
+            except ScheduleDeletionUnavailable:
+                await self._finish_delete_view(
+                    view, interaction, content=DELETE_UNAVAILABLE_MESSAGE
+                )
+                return
+            except Exception:  # noqa: BLE001 - database details must remain private
+                self._logger.error("schedule_delete_failed")
+                await self._finish_delete_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
+                return
+            try:
+                embed = deleted_schedule_embed(deleted)
+            except Exception:  # noqa: BLE001 - presentation failures must remain sanitized
+                self._logger.error("schedule_presentation_failed")
+                await self._finish_delete_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
+                return
+            await self._finish_delete_view(view, interaction, embed=embed)
+
+    async def _cancel_deletion(
+        self, view: ScheduleDeletionConfirmView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            view.finished = True
+            view.stop()
+            self._delete_views.discard(view)
+            try:
+                await interaction.response.edit_message(
+                    content=DELETE_CANCELLED_MESSAGE,
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - Discord failures can include private details
+                self._logger.error("schedule_delete_cancel_response_failed")
+
+    async def _expire_deletion(self, view: ScheduleDeletionConfirmView) -> None:
+        async with view.action_lock:
+            if view.finished:
+                return
+            view.finished = True
+            view.stop()
+            self._delete_views.discard(view)
+            try:
+                await view.initial_interaction.edit_original_response(
+                    content=DELETE_EXPIRED_MESSAGE,
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - Discord failures can include private details
+                self._logger.error("schedule_delete_timeout_response_failed")
+
+    async def _finish_delete_view(
+        self,
+        view: ScheduleDeletionConfirmView,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        view.finished = True
+        view.stop()
+        self._delete_views.discard(view)
+        arguments: dict[str, object] = {
+            "view": None,
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        if embed is not None:
+            arguments["embed"] = embed
+            arguments["content"] = None
+        else:
+            arguments["content"] = content
+            arguments["embed"] = None
+        try:
+            await interaction.edit_original_response(**arguments)
+        except Exception:  # noqa: BLE001 - Discord failures can include private details
+            self._logger.error("schedule_delete_result_response_failed")
+
+    async def close_delete_views(self) -> None:
+        views = tuple(self._delete_views)
+        self._delete_views.clear()
+        for view in views:
+            view.finished = True
+            view.stop()
+        if views:
+            await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(

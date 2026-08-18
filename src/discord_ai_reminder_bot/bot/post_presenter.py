@@ -18,6 +18,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
 )
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.schedule_deletion import MISSING_DELETE_REASON
 
 EMBED_TOTAL_LIMIT = 6_000
 EMBED_FIELD_LIMIT = 25
@@ -104,11 +105,11 @@ def schedule_deletion_preview_embed(schedule: ScheduleDeletionView) -> discord.E
         )
     _field(embed, "📝 本文", content_preview(schedule.content), inline=False)
     _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
-    _field(embed, "削除理由", escape_user_text(schedule.reason), inline=False)
+    _field(embed, "削除理由", _delete_reason_text(schedule.reason), inline=False)
     _field(
         embed,
         "確認方法",
-        "同じ予約IDと削除理由を指定し、`confirm:true`で再実行してください。",
+        "下のボタンから削除またはキャンセルを選択してください。",
         inline=False,
     )
     return _validated(embed)
@@ -121,7 +122,7 @@ def deleted_schedule_embed(schedule: DeletedSchedule) -> discord.Embed:
     _field(embed, "削除前の状態", status_text(schedule.previous_status), inline=True)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
     _field(embed, "削除日時", datetime_text(schedule.deleted_at), inline=False)
-    _field(embed, "削除理由", escape_user_text(schedule.reason), inline=False)
+    _field(embed, "削除理由", _delete_reason_text(schedule.reason), inline=False)
     _field(
         embed,
         "削除結果",
@@ -129,6 +130,12 @@ def deleted_schedule_embed(schedule: DeletedSchedule) -> discord.Embed:
         inline=False,
     )
     return _validated(embed)
+
+
+def _delete_reason_text(reason: str) -> str:
+    if reason == MISSING_DELETE_REASON:
+        return "未入力"
+    return escape_user_text(reason)
 
 
 def schedule_list_embed(

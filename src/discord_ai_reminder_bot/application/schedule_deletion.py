@@ -19,6 +19,7 @@ from discord_ai_reminder_bot.domain.enums import (
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.domain.schedule_deletion import (
     DELETABLE_STATUSES,
+    MISSING_DELETE_REASON,
     deletion_kind,
     validate_delete_reason,
 )
@@ -37,6 +38,10 @@ from discord_ai_reminder_bot.infrastructure.database.repositories import (
 
 class ScheduleDeletionUnavailable(Exception):
     """The target is absent, unauthorized, conflicting, or not deletable."""
+
+
+class DeleteReasonRequired(Exception):
+    """An administrator must explain deletion of another creator's schedule."""
 
 
 @dataclass(frozen=True)
@@ -80,9 +85,8 @@ class ScheduleDeletionService:
         public_id: str,
         actor_user_id: int,
         administrator: bool,
-        reason: str,
+        reason: str | None,
     ) -> ScheduleDeletionView:
-        reason = validate_delete_reason(reason)
         schedule = await self._find(guild_id=guild_id, public_id=public_id)
         runs = await self._runs.list_for_deletion(
             schedule_id=schedule.id,
@@ -90,6 +94,12 @@ class ScheduleDeletionService:
             lock=False,
         )
         self._validate(schedule, runs, actor_user_id=actor_user_id, administrator=administrator)
+        reason = _validated_reason(
+            reason,
+            actor_user_id=actor_user_id,
+            creator_user_id=schedule.creator_user_id,
+            administrator=administrator,
+        )
         return _to_view(schedule, reason=reason)
 
     async def delete(
@@ -99,11 +109,10 @@ class ScheduleDeletionService:
         public_id: str,
         actor_user_id: int,
         administrator: bool,
-        reason: str,
+        reason: str | None,
         deleted_at: datetime,
     ) -> DeletedSchedule:
         deleted_at = require_utc(deleted_at)
-        reason = validate_delete_reason(reason)
         unlocked = await self._find(guild_id=guild_id, public_id=public_id)
         snapshot = _snapshot(unlocked)
         runs = await self._runs.list_for_deletion(
@@ -123,6 +132,12 @@ class ScheduleDeletionService:
         ):
             raise ScheduleDeletionUnavailable
         self._validate(schedule, runs, actor_user_id=actor_user_id, administrator=administrator)
+        reason = _validated_reason(
+            reason,
+            actor_user_id=actor_user_id,
+            creator_user_id=schedule.creator_user_id,
+            administrator=administrator,
+        )
         previous_status = ScheduleStatus(schedule.status)
         kind = deletion_kind(
             actor_user_id=actor_user_id,
@@ -219,3 +234,16 @@ def _to_view(
         next_run_at=schedule.next_run_at,
         reason=reason,
     )
+
+
+def _validated_reason(
+    reason: str | None,
+    *,
+    actor_user_id: int,
+    creator_user_id: int,
+    administrator: bool,
+) -> str:
+    normalized = validate_delete_reason(reason)
+    if normalized == MISSING_DELETE_REASON and actor_user_id != creator_user_id and administrator:
+        raise DeleteReasonRequired
+    return normalized

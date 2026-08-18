@@ -15,11 +15,15 @@ from discord_ai_reminder_bot.application.schedule_creation import (
 )
 from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
+    DeleteReasonRequired,
     ScheduleDeletionUnavailable,
     ScheduleDeletionView,
 )
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
+    DELETE_CANCELLED_MESSAGE,
+    DELETE_EXPIRED_MESSAGE,
+    DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
@@ -54,6 +58,9 @@ def interaction(*, administrator: bool = False, done: bool = False) -> MagicMock
     value.response.send_message = AsyncMock()
     value.followup = MagicMock(spec=discord.Webhook)
     value.followup.send = AsyncMock()
+    value.edit_original_response = AsyncMock()
+    value.response.defer = AsyncMock()
+    value.response.edit_message = AsyncMock()
     value.extras = {}
     return value
 
@@ -367,7 +374,7 @@ async def test_delete_preview_is_read_only_ephemeral_and_uses_interaction_identi
     )
     value = interaction()
     group = commands(AsyncMock())
-    await group.delete_command.callback(group, value, str(public_id), "  planned  ", False)
+    await group.delete_command.callback(group, value, str(public_id), "  planned  ")
     service.preview.assert_awaited_once_with(
         guild_id=GUILD_ID,
         public_id=str(public_id),
@@ -380,10 +387,26 @@ async def test_delete_preview_is_read_only_ephemeral_and_uses_interaction_identi
     assert kwargs["ephemeral"] is True
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert kwargs["embed"].title == "予約削除の確認"
+    confirm_view = kwargs["view"]
+    assert confirm_view.timeout == 120.0
+    assert confirm_view.is_persistent() is False
+    assert {item.custom_id for item in confirm_view.children} == {
+        "post_delete_confirm",
+        "post_delete_cancel",
+    }
+
+
+def test_delete_command_has_no_confirm_option_and_optional_reason() -> None:
+    group = commands(AsyncMock())
+    assert [parameter.name for parameter in group.delete_command.parameters] == [
+        "public_id",
+        "reason",
+    ]
+    assert group.delete_command.parameters[1].required is False
 
 
 @pytest.mark.asyncio
-async def test_confirmed_delete_defers_commits_and_returns_safe_followup(
+async def test_delete_button_defers_commits_and_replaces_original_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     public_id = uuid.uuid7()
@@ -399,16 +422,26 @@ async def test_confirmed_delete_defers_commits_and_returns_safe_followup(
         pending_runs_skipped=0,
     )
     service = AsyncMock()
+    service.preview.return_value = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.DAILY,
+        previous_status=ScheduleStatus.PAUSED,
+        content=None,
+        next_run_at=NOW,
+        reason="planned",
+    )
     service.delete.return_value = deleted
     monkeypatch.setattr(
         "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
     )
     value = interaction(administrator=True)
-    value.response.defer = AsyncMock()
-    value.response.is_done.return_value = True
     group = commands(AsyncMock())
-    await group.delete_command.callback(group, value, str(public_id), "planned", True)
-    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    await group.delete_command.callback(group, value, str(public_id), "planned")
+    confirm_view = value.response.send_message.await_args.kwargs["view"]
+    button = interaction(administrator=True)
+    await group._confirm_deletion(confirm_view, button)
+    button.response.defer.assert_awaited_once_with(ephemeral=True)
     service.delete.assert_awaited_once_with(
         guild_id=GUILD_ID,
         public_id=str(public_id),
@@ -417,10 +450,11 @@ async def test_confirmed_delete_defers_commits_and_returns_safe_followup(
         reason="planned",
         deleted_at=NOW,
     )
-    kwargs = value.followup.send.await_args.kwargs
-    assert kwargs["ephemeral"] is True
+    kwargs = button.edit_original_response.await_args.kwargs
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert kwargs["embed"].title == "予約を削除しました"
+    assert kwargs["view"] is None
+    assert confirm_view.finished is True
 
 
 @pytest.mark.asyncio
@@ -435,24 +469,41 @@ async def test_delete_unavailable_uses_same_safe_response(
     )
     value = interaction()
     group = commands(AsyncMock())
-    await group.delete_command.callback(group, value, public_id, "reason", False)
+    await group.delete_command.callback(group, value, public_id, "reason")
     assert value.response.send_message.await_args.args == (DELETE_UNAVAILABLE_MESSAGE,)
 
 
 @pytest.mark.asyncio
-async def test_delete_rejects_blank_reason_before_database() -> None:
-    value = interaction()
+async def test_admin_other_without_reason_gets_specific_safe_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock()
+    service.preview.side_effect = DeleteReasonRequired
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    value = interaction(administrator=True)
     group = commands(AsyncMock())
-    await group.delete_command.callback(group, value, str(uuid.uuid7()), " \n ", False)
-    assert value.response.send_message.await_args.args == ("入力内容を確認してください。",)
+    await group.delete_command.callback(group, value, str(uuid.uuid7()), None)
+    assert value.response.send_message.await_args.args == (DELETE_REASON_REQUIRED_MESSAGE,)
 
 
 @pytest.mark.asyncio
-async def test_delete_database_failure_rolls_back_without_secret_log(
+async def test_delete_button_database_failure_rolls_back_without_secret_log(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     secret = "postgresql+psycopg://user:password@localhost/private-delete"
     service = AsyncMock()
+    public_id = uuid.uuid7()
+    service.preview.return_value = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="reason",
+    )
     service.delete.side_effect = RuntimeError(secret)
     monkeypatch.setattr(
         "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
@@ -460,13 +511,150 @@ async def test_delete_database_failure_rolls_back_without_secret_log(
     session = MagicMock()
     group = commands(AsyncMock(), session=session)
     value = interaction()
-    value.response.defer = AsyncMock()
-    value.response.is_done.return_value = True
+    await group.delete_command.callback(group, value, str(public_id), "reason")
+    confirm_view = value.response.send_message.await_args.kwargs["view"]
+    button = interaction()
     with caplog.at_level(logging.ERROR):
-        await group.delete_command.callback(group, value, str(uuid.uuid7()), "reason", True)
-    assert value.followup.send.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+        await group._confirm_deletion(confirm_view, button)
+    assert button.edit_original_response.await_args.kwargs["content"] == INTERNAL_ERROR_MESSAGE
     assert secret not in caplog.text
     assert session.begin.return_value.__aexit__.await_args.args[0] is RuntimeError
+
+
+@pytest.mark.asyncio
+async def test_delete_cancel_and_timeout_never_open_delete_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    preview = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="理由未入力",
+    )
+    service = AsyncMock()
+    service.preview.return_value = preview
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+
+    original = interaction()
+    await group.delete_command.callback(group, original, str(public_id), None)
+    cancel_view = original.response.send_message.await_args.kwargs["view"]
+    button = interaction()
+    await group._cancel_deletion(cancel_view, button)
+    assert button.response.edit_message.await_args.kwargs["content"] == DELETE_CANCELLED_MESSAGE
+    assert button.response.edit_message.await_args.kwargs["view"] is None
+
+    original = interaction()
+    await group.delete_command.callback(group, original, str(public_id), None)
+    timeout_view = original.response.send_message.await_args.kwargs["view"]
+    await group._expire_deletion(timeout_view)
+    assert original.edit_original_response.await_args.kwargs["content"] == DELETE_EXPIRED_MESSAGE
+    assert original.edit_original_response.await_args.kwargs["view"] is None
+    service.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_view_rejects_other_user_and_double_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    preview = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="理由未入力",
+    )
+    deleted = DeletedSchedule(**vars(preview), deleted_at=NOW, pending_runs_skipped=1)
+    service = AsyncMock()
+    service.preview.return_value = preview
+    service.delete.return_value = deleted
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    original = interaction()
+    await group.delete_command.callback(group, original, str(public_id), None)
+    confirm_view = original.response.send_message.await_args.kwargs["view"]
+
+    other = interaction()
+    other.user.id = USER_ID + 1
+    assert await confirm_view.interaction_check(other) is False
+    assert other.response.send_message.await_args.args == ("この操作を実行する権限がありません。",)
+
+    button = interaction()
+    await group._confirm_deletion(confirm_view, button)
+    await group._confirm_deletion(confirm_view, interaction())
+    service.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["dm", "other_guild", "authorization_lost"])
+async def test_delete_view_rejects_invalid_context_without_database(
+    monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    public_id = uuid.uuid7()
+    service = AsyncMock()
+    service.preview.return_value = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="理由未入力",
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    original = interaction()
+    await group.delete_command.callback(group, original, str(public_id), None)
+    confirm_view = original.response.send_message.await_args.kwargs["view"]
+    button = interaction()
+    if invalid == "dm":
+        button.guild_id = None
+        button.guild = None
+    elif invalid == "other_guild":
+        button.guild_id = GUILD_ID + 1
+        button.guild.id = GUILD_ID + 1
+    else:
+        button.user.roles = []
+    assert await confirm_view.interaction_check(button) is False
+    service.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_stops_and_collects_delete_views(monkeypatch: pytest.MonkeyPatch) -> None:
+    public_id = uuid.uuid7()
+    service = AsyncMock()
+    service.preview.return_value = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="理由未入力",
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    value = interaction()
+    await group.delete_command.callback(group, value, str(public_id), None)
+    confirm_view = value.response.send_message.await_args.kwargs["view"]
+    await group.close_delete_views()
+    assert confirm_view.is_finished()
+    assert not group._delete_views
 
 
 @pytest.mark.asyncio

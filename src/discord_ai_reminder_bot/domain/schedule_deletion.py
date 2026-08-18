@@ -12,18 +12,23 @@ DELETABLE_STATUSES = frozenset(
         ScheduleStatus.FAILED,
     }
 )
+MISSING_DELETE_REASON = "理由未入力"
 
 
 class InvalidDeleteReasonError(ValueError):
     """A user-supplied deletion reason is empty or exceeds the DB limit."""
 
 
-def validate_delete_reason(reason: str) -> str:
+def validate_delete_reason(reason: str | None) -> str:
     """Trim and validate a reason before it reaches persistence or presentation."""
+    if reason is None:
+        return MISSING_DELETE_REASON
     if not isinstance(reason, str):
         raise InvalidDeleteReasonError("invalid delete reason")
     normalized = reason.strip()
-    if not 1 <= len(normalized) <= 500:
+    if not normalized:
+        return MISSING_DELETE_REASON
+    if len(normalized) > 500:
         raise InvalidDeleteReasonError("invalid delete reason")
     return normalized
 
