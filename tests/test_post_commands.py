@@ -13,8 +13,14 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     CreatedOnceSchedule,
     CreatedRecurringSchedule,
 )
+from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeletedSchedule,
+    ScheduleDeletionUnavailable,
+    ScheduleDeletionView,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
+    DELETE_UNAVAILABLE_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
     PostCommands,
@@ -338,6 +344,129 @@ async def test_show_uses_followup_when_interaction_already_responded() -> None:
     assert value.followup.send.await_args.kwargs["ephemeral"] is True
     assert value.followup.send.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert value.followup.send.await_args.kwargs["embed"].title == "予約詳細"
+
+
+@pytest.mark.asyncio
+async def test_delete_preview_is_read_only_ephemeral_and_uses_interaction_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    preview = ScheduleDeletionView(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        previous_status=ScheduleStatus.ACTIVE,
+        content="body",
+        next_run_at=NOW,
+        reason="planned",
+    )
+    service = AsyncMock()
+    service.preview.return_value = preview
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    value = interaction()
+    group = commands(AsyncMock())
+    await group.delete_command.callback(group, value, str(public_id), "  planned  ", False)
+    service.preview.assert_awaited_once_with(
+        guild_id=GUILD_ID,
+        public_id=str(public_id),
+        actor_user_id=USER_ID,
+        administrator=False,
+        reason="planned",
+    )
+    service.delete.assert_not_awaited()
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert kwargs["embed"].title == "予約削除の確認"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_delete_defers_commits_and_returns_safe_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    deleted = DeletedSchedule(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.DAILY,
+        previous_status=ScheduleStatus.PAUSED,
+        content=None,
+        next_run_at=None,
+        reason="planned",
+        deleted_at=NOW,
+        pending_runs_skipped=0,
+    )
+    service = AsyncMock()
+    service.delete.return_value = deleted
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    value = interaction(administrator=True)
+    value.response.defer = AsyncMock()
+    value.response.is_done.return_value = True
+    group = commands(AsyncMock())
+    await group.delete_command.callback(group, value, str(public_id), "planned", True)
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    service.delete.assert_awaited_once_with(
+        guild_id=GUILD_ID,
+        public_id=str(public_id),
+        actor_user_id=USER_ID,
+        administrator=True,
+        reason="planned",
+        deleted_at=NOW,
+    )
+    kwargs = value.followup.send.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert kwargs["embed"].title == "予約を削除しました"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("public_id", ["invalid", str(uuid.uuid4())])
+async def test_delete_unavailable_uses_same_safe_response(
+    monkeypatch: pytest.MonkeyPatch, public_id: str
+) -> None:
+    service = AsyncMock()
+    service.preview.side_effect = ScheduleDeletionUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    value = interaction()
+    group = commands(AsyncMock())
+    await group.delete_command.callback(group, value, public_id, "reason", False)
+    assert value.response.send_message.await_args.args == (DELETE_UNAVAILABLE_MESSAGE,)
+
+
+@pytest.mark.asyncio
+async def test_delete_rejects_blank_reason_before_database() -> None:
+    value = interaction()
+    group = commands(AsyncMock())
+    await group.delete_command.callback(group, value, str(uuid.uuid7()), " \n ", False)
+    assert value.response.send_message.await_args.args == ("入力内容を確認してください。",)
+
+
+@pytest.mark.asyncio
+async def test_delete_database_failure_rolls_back_without_secret_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "postgresql+psycopg://user:password@localhost/private-delete"
+    service = AsyncMock()
+    service.delete.side_effect = RuntimeError(secret)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    value.response.defer = AsyncMock()
+    value.response.is_done.return_value = True
+    with caplog.at_level(logging.ERROR):
+        await group.delete_command.callback(group, value, str(uuid.uuid7()), "reason", True)
+    assert value.followup.send.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    assert secret not in caplog.text
+    assert session.begin.return_value.__aexit__.await_args.args[0] is RuntimeError
 
 
 @pytest.mark.asyncio

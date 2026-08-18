@@ -12,6 +12,10 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     CreatedOnceSchedule,
     CreatedRecurringSchedule,
 )
+from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeletedSchedule,
+    ScheduleDeletionView,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 
@@ -83,6 +87,47 @@ def created_recurring_schedule_embed(created: CreatedRecurringSchedule) -> disco
     _field(embed, "🗓️ 次回投稿", datetime_text(created.next_run_at), inline=False)
     _field(embed, "📝 本文", content_preview(created.content), inline=False)
     _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
+    return _validated(embed)
+
+
+def schedule_deletion_preview_embed(schedule: ScheduleDeletionView) -> discord.Embed:
+    embed = _embed(title="予約削除の確認", status=schedule.previous_status)
+    _field(embed, "削除前の状態", status_text(schedule.previous_status), inline=True)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    if schedule.next_run_at is not None:
+        _field(
+            embed,
+            f"🗓️ {datetime_label(schedule.schedule_type)}",
+            datetime_text(schedule.next_run_at),
+            inline=False,
+        )
+    _field(embed, "📝 本文", content_preview(schedule.content), inline=False)
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    _field(embed, "削除理由", escape_user_text(schedule.reason), inline=False)
+    _field(
+        embed,
+        "確認方法",
+        "同じ予約IDと削除理由を指定し、`confirm:true`で再実行してください。",
+        inline=False,
+    )
+    return _validated(embed)
+
+
+def deleted_schedule_embed(schedule: DeletedSchedule) -> discord.Embed:
+    embed = _embed(title="予約を削除しました", status=ScheduleStatus.DELETED)
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "削除前の状態", status_text(schedule.previous_status), inline=True)
+    _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    _field(embed, "削除日時", datetime_text(schedule.deleted_at), inline=False)
+    _field(embed, "削除理由", escape_user_text(schedule.reason), inline=False)
+    _field(
+        embed,
+        "削除結果",
+        "削除済みとして記録しました。\nすでにDiscordへ投稿されたメッセージは削除されません。",
+        inline=False,
+    )
     return _validated(embed)
 
 

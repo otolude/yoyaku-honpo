@@ -274,6 +274,14 @@ discord-ai-reminder-bot/
 
 定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側が所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。RepositoryとApplication Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。NotificationLogは作成しない。
 
+削除は `/post delete public_id:<canonical UUIDv7> reason:<1～500文字> confirm:<任意、既定false>` とする。理由は前後空白を除去し、空白だけを拒否する。`confirm=false` は読み取り専用で対象、所有者、状態、runを確認してephemeral Embedを返し、更新やOperationLog作成を行わない。`confirm=true` は最新状態を再検証し、確認時点のスナップショットは保証しない。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
+
+論理削除できる状態は `draft`、処理・確定待ちでない `active`、`paused`、`failed` とし、`completed`、`ended`、`deleted`、processing、claimed、sending、Schedule確定待ちは拒否する。再削除は成功扱いにせず、OperationLogを追加しない。削除時はScheduleを`deleted`、`next_run_at = NULL`、`deleted_at = terminal_at = updated_at = now`、`version + 1`とし、本文と定期設定および関連履歴を保持する。物理削除ワーカーの実装まではDiscord応答で30日後の自動削除を断定しない。
+
+削除トランザクションは、ロックなしで対象Scheduleの内部参照、version、next_run_atを解決し、現在runとpending/processing runをID昇順でロックしてからScheduleをロックする。Scheduleロック後にrunをロックしてはならない。version、所有者、状態、next_run_at、run状態を再検証し、processingまたは確定待ちなら無変更で失敗する。pending runはDeliveryAttemptを作らず同じトランザクションで`skipped`、`next_attempt_at = NULL`、`finished_at = updated_at = now`、`result_code = 'schedule_deleted'`としてclaim・lease・message IDをNULLにする。終端runは変更しない。
+
+Schedule、pending run、OperationLogは同一トランザクションで更新する。削除履歴は`action = 'deleted'`、`actor_type = 'user'`、実行者ID、検証済み理由、UTC削除日時を保存する。作成者本人は`creator_deleted`を優先し、管理者による他人の通常削除は`admin_deleted`、他人のfailed削除は`operator_resolved_failed`とする。`changes`には削除前後の状態とskipしたpending件数だけを保存し、本文、public_id、内部ID、versionを複製しない。RepositoryとApplication Serviceはcommitまたはrollbackしない。
+
 ### 6.3 `schedule_runs`：各回の実行履歴
 
 | カラム | 型 | NULL | 説明 |

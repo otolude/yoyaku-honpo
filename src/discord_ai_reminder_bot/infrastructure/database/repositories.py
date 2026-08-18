@@ -123,6 +123,21 @@ def build_schedule_lock_statement(*, schedule_id: int) -> Select[tuple[Schedule]
     return select(Schedule).where(Schedule.id == schedule_id).with_for_update()
 
 
+def build_deletion_runs_statement(
+    *, schedule_id: int, current_scheduled_for: datetime | None, lock: bool
+) -> Select[tuple[ScheduleRun]]:
+    """Select current and nonterminal runs in stable run-before-schedule lock order."""
+    conditions = [ScheduleRun.status.in_((RunStatus.PENDING.value, RunStatus.PROCESSING.value))]
+    if current_scheduled_for is not None:
+        conditions.append(ScheduleRun.scheduled_for == require_utc(current_scheduled_for))
+    statement = (
+        select(ScheduleRun)
+        .where(ScheduleRun.schedule_id == schedule_id, or_(*conditions))
+        .order_by(ScheduleRun.id.asc())
+    )
+    return statement.with_for_update() if lock else statement
+
+
 class ScheduleRepository:
     """Read and write schedules while leaving commit and rollback to the caller."""
 
@@ -226,6 +241,16 @@ class ScheduleRepository:
         schedule = (
             await self._session.execute(build_schedule_lock_statement(schedule_id=schedule_id))
         ).scalar_one_or_none()
+        if schedule is None:
+            raise RepositoryNotFoundError("schedule was not found")
+        return schedule
+
+    async def lock_by_id_for_deletion(self, schedule_id: int) -> Schedule:
+        """Lock and refresh a deletion target after its runs have been locked."""
+        statement = build_schedule_lock_statement(schedule_id=schedule_id).execution_options(
+            populate_existing=True
+        )
+        schedule = (await self._session.execute(statement)).scalar_one_or_none()
         if schedule is None:
             raise RepositoryNotFoundError("schedule was not found")
         return schedule
@@ -357,6 +382,40 @@ class ScheduleRunRepository:
             .limit(limit)
         )
         return list((await self._session.execute(statement)).scalars())
+
+    async def list_for_deletion(
+        self,
+        *,
+        schedule_id: int,
+        current_scheduled_for: datetime | None,
+        lock: bool,
+    ) -> list[ScheduleRun]:
+        statement = build_deletion_runs_statement(
+            schedule_id=schedule_id,
+            current_scheduled_for=current_scheduled_for,
+            lock=lock,
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def skip_pending_for_deleted_schedule(
+        self, *, runs: list[ScheduleRun], deleted_at: datetime
+    ) -> list[ScheduleRun]:
+        deleted_at = require_utc(deleted_at)
+        for run in runs:
+            if run.status != RunStatus.PENDING.value:
+                continue
+            run.status = RunStatus.SKIPPED.value
+            run.next_attempt_at = None
+            run.claimed_by = None
+            run.claimed_at = None
+            run.lease_expires_at = None
+            run.discord_message_id = None
+            run.result_code = "schedule_deleted"
+            run.error_summary = "Schedule was deleted before Discord delivery"
+            run.finished_at = deleted_at
+            run.updated_at = deleted_at
+        await self._session.flush()
+        return runs
 
     async def lock_for_finalization(self, *, run_id: int) -> ScheduleRun:
         run = (

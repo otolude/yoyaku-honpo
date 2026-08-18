@@ -108,6 +108,8 @@ Phase 1では、次のスラッシュコマンドを提供する。コマンド�
 
 各予約には、利用者がコマンドで指定しやすい予約IDを付ける。削除時には対象の内容を示し、確認操作を行ってから削除を確定する。
 
+削除は `/post delete public_id:<UUIDv7> reason:<1～500文字> confirm:<任意、既定false>` とする。`confirm=false` では最新の対象と権限を読み取り専用で確認し、削除対象を本人だけに表示する。利用者は同じ予約IDと前後空白を除去した削除理由を指定して `confirm=true` で再実行し、その時点の最新状態を再検証して削除する。確認時点のスナップショットは保証しない。不存在、権限不足、状態不許可、処理中には同じ応答を返す。
+
 単発予約の作成は `/post create channel:<テキストチャンネル> scheduled_at:<YYYY-MM-DD HH:MM> content:<任意> allow_duplicate:<任意、既定false>` とする。`content` 未指定だけを下書きとし、指定された空文字、空白・改行だけ、2,000文字超過、`@everyone` または `@here` を含む本文は拒否する。重複候補がある場合は作成せず、`allow_duplicate=true` での再実行を案内する。
 
 毎日予約の作成は `/post create-daily channel:<テキストチャンネル> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週予約は `/post create-weekly channel:<テキストチャンネル> weekday:<月曜日～日曜日> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。曜日は月曜日0から日曜日6として保存する。開始日は設けず、作成時点から5分以上先にある最初の発生日時を初回投稿とし、ちょうど5分後を含む。終了日当日の投稿を含み、初回候補が終了日を超える場合は保存しない。本文と重複許可の規則は単発予約と同じとする。
@@ -128,6 +130,7 @@ Phase 1では、次のスラッシュコマンドを提供する。コマンド�
 - 次回投稿時刻の5分前を過ぎた予約は編集できない。
 - 編集後には、変更後の内容と次回投稿日時を表示する。
 - 誰がいつ作成、編集、削除、一時停止、再開したかを記録する。
+- `draft`、処理中でない`active`、`paused`、`failed`は論理削除できる。`completed`、`ended`、`deleted`、処理中または結果確定中の予約は削除できない。
 
 ### 7.2 単発予約
 

@@ -7,6 +7,10 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     CreatedOnceSchedule,
     CreatedRecurringSchedule,
 )
+from discord_ai_reminder_bot.application.schedule_deletion import (
+    DeletedSchedule,
+    ScheduleDeletionView,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_LIMIT,
@@ -17,6 +21,8 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     STATUS_LABELS,
     created_recurring_schedule_embed,
     created_schedule_embed,
+    deleted_schedule_embed,
+    schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
 )
@@ -213,3 +219,54 @@ def test_empty_list_is_an_embed() -> None:
     assert len(embed.fields) == 1
     assert "表示できる予約はありません" in embed.fields[0].value
     assert embed.description == "ページ 99｜表示：削除済み｜日本時間（JST）"
+
+
+def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_claims() -> None:
+    public_id = uuid.uuid7()
+    embed = schedule_deletion_preview_embed(
+        ScheduleDeletionView(
+            public_id=public_id,
+            channel_id=400,
+            schedule_type=ScheduleType.ONCE,
+            previous_status=ScheduleStatus.ACTIVE,
+            content="line 1\nline 2",
+            next_run_at=NOW,
+            reason="**reason** @everyone <@12345678901234567>",
+        )
+    )
+    text = all_text(embed)
+    assert embed.title == "予約削除の確認"
+    assert f"`{public_id}`" in text
+    assert "🗓️ 投稿予定" in text
+    assert "line 1 line 2" in text
+    assert "\\*\\*reason\\*\\*" in text
+    assert "@\u200beveryone" in text
+    assert "confirm:true" in text
+    assert len(embed.fields) <= EMBED_FIELD_LIMIT
+    assert len(embed) <= EMBED_TOTAL_LIMIT
+
+
+def test_deleted_embed_has_safe_fixed_result_without_thirty_day_promise() -> None:
+    public_id = uuid.uuid7()
+    embed = deleted_schedule_embed(
+        DeletedSchedule(
+            public_id=public_id,
+            channel_id=400,
+            schedule_type=ScheduleType.WEEKLY,
+            previous_status=ScheduleStatus.FAILED,
+            content="body",
+            next_run_at=None,
+            reason="operator _resolved_",
+            deleted_at=NOW,
+            pending_runs_skipped=0,
+        )
+    )
+    text = all_text(embed)
+    assert embed.title == "予約を削除しました"
+    assert f"`{public_id}`" in text
+    assert "削除済みとして記録しました" in text
+    assert "すでにDiscordへ投稿されたメッセージは削除されません" in text
+    assert "30日後" not in text
+    assert "\\_resolved\\_" in text
+    assert len(embed.fields) <= EMBED_FIELD_LIMIT
+    assert len(embed) <= EMBED_TOTAL_LIMIT

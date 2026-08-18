@@ -16,6 +16,10 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     OnceScheduleCreationService,
     RecurringScheduleCreationService,
 )
+from discord_ai_reminder_bot.application.schedule_deletion import (
+    ScheduleDeletionService,
+    ScheduleDeletionUnavailable,
+)
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
@@ -32,6 +36,8 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     WEEKDAY_LABELS,
     created_recurring_schedule_embed,
     created_schedule_embed,
+    deleted_schedule_embed,
+    schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
 )
@@ -45,12 +51,17 @@ from discord_ai_reminder_bot.domain.schedule_creation import (
     parse_once_scheduled_at,
     validate_create_content,
 )
+from discord_ai_reminder_bot.domain.schedule_deletion import (
+    InvalidDeleteReasonError,
+    validate_delete_reason,
+)
 
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
 INVALID_INPUT_MESSAGE = "入力内容を確認してください。"
 DUPLICATE_WARNING_MESSAGE = (
     "同一予約の可能性があります。意図的に作成する場合はallow_duplicate=trueで再実行してください。"
 )
+DELETE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、削除できません。"
 
 
 @dataclass(frozen=True)
@@ -284,6 +295,72 @@ class PostCommands(app_commands.Group):
             await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             return
         await self._respond_embed(interaction, lambda: schedule_detail_embed(schedule))
+
+    @app_commands.command(name="delete", description="予約を確認して論理削除します")
+    @app_commands.describe(
+        public_id="予約IDを指定します",
+        reason="削除理由を指定します",
+        confirm="確認後にtrueを指定すると削除します",
+    )
+    async def delete_command(
+        self,
+        interaction: discord.Interaction,
+        public_id: str,
+        reason: app_commands.Range[str, 1, 500],
+        confirm: bool = False,
+    ) -> None:
+        actor = await self._actor_or_respond(interaction)
+        if actor is None:
+            return
+        try:
+            reason = validate_delete_reason(reason)
+        except InvalidDeleteReasonError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        if not confirm:
+            try:
+                async with self._session_factory() as session:
+                    preview = await ScheduleDeletionService(session).preview(
+                        guild_id=self._configured_guild_id,
+                        public_id=public_id,
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        reason=reason,
+                    )
+            except ScheduleDeletionUnavailable:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            except Exception:  # noqa: BLE001 - database details must remain private
+                self._logger.error("schedule_delete_preview_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            await self._respond_embed(interaction, lambda: schedule_deletion_preview_embed(preview))
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:  # noqa: BLE001 - Discord response details must remain private
+            self._logger.error("schedule_delete_defer_failed")
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                deleted = await ScheduleDeletionService(session).delete(
+                    guild_id=self._configured_guild_id,
+                    public_id=public_id,
+                    actor_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    reason=reason,
+                    deleted_at=self._clock.now(),
+                )
+        except ScheduleDeletionUnavailable:
+            await respond_ephemeral(interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger)
+            return
+        except Exception:  # noqa: BLE001 - database details must remain private
+            self._logger.error("schedule_delete_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await self._respond_embed(interaction, lambda: deleted_schedule_embed(deleted))
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(
