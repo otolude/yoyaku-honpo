@@ -1,6 +1,6 @@
 """Clock abstraction for deterministic domain decisions."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 from discord_ai_reminder_bot.domain.recurrence import require_utc
@@ -20,3 +20,10 @@ class FixedClock:
 
     def now(self) -> datetime:
         return self._current
+
+
+class SystemClock:
+    """Production UTC clock."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
