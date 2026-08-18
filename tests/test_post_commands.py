@@ -12,13 +12,9 @@ from discord import app_commands
 from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
-    DISCORD_MESSAGE_LIMIT,
-    EMPTY_PAGE_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
     PostCommands,
-    format_schedule_detail,
-    format_schedule_list,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -141,7 +137,9 @@ async def test_create_defers_then_commits_and_uses_interaction_identity(
     value.followup.send.assert_awaited_once()
     assert value.followup.send.await_args.kwargs["ephemeral"] is True
     assert value.followup.send.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
-    assert "line 1 line 2" in value.followup.send.await_args.args[0]
+    embed = value.followup.send.await_args.kwargs["embed"]
+    assert embed.title == "単発予約を作成しました"
+    assert "line 1 line 2" in embed.fields[3].value
 
 
 @pytest.mark.parametrize("kind", ["other_guild", "voice", "view", "send"])
@@ -220,7 +218,9 @@ async def test_admin_list_passes_administrator_and_deleted_filter() -> None:
         status=ScheduleStatus.DELETED,
         page=2,
     )
-    assert value.response.send_message.await_args.args == (EMPTY_PAGE_MESSAGE,)
+    embed = value.response.send_message.await_args.kwargs["embed"]
+    assert embed.title == "予約一覧"
+    assert "表示できる予約はありません" in embed.fields[0].value
 
 
 @pytest.mark.asyncio
@@ -244,6 +244,7 @@ async def test_show_uses_followup_when_interaction_already_responded() -> None:
     value.followup.send.assert_awaited_once()
     assert value.followup.send.await_args.kwargs["ephemeral"] is True
     assert value.followup.send.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert value.followup.send.await_args.kwargs["embed"].title == "予約詳細"
 
 
 @pytest.mark.asyncio
@@ -259,30 +260,3 @@ async def test_database_error_returns_safe_message_and_log(
         await group.list_command.callback(group, value, None, 1)
     assert value.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
     assert secret not in caplog.text
-
-
-def test_list_is_stable_bounded_and_converts_utc_to_tokyo() -> None:
-    schedules = [view(content=f"本文{i}") for i in range(10)]
-    rendered = format_schedule_list(schedules, page=1)
-    positions = [rendered.index(str(item.public_id)) for item in schedules]
-    assert positions == sorted(positions)
-    assert "2026-08-20 19:30 JST" in rendered
-    assert len(rendered) <= DISCORD_MESSAGE_LIMIT
-
-
-def test_list_shows_only_content_prefix() -> None:
-    secret_tail = "do-not-show-full-body"
-    rendered = format_schedule_list([view(content="a" * 50 + secret_tail)], page=1)
-    assert secret_tail not in rendered
-
-
-def test_list_preview_collapses_line_breaks_without_changing_structure() -> None:
-    rendered = format_schedule_list([view(content="first\nsecond\r\nthird")], page=1)
-    assert "本文: first second third" in rendered
-    assert rendered.count("本文:") == 1
-
-
-def test_detail_truncates_content_to_discord_limit() -> None:
-    rendered = format_schedule_detail(view(content="x" * 2_000))
-    assert len(rendered) == DISCORD_MESSAGE_LIMIT
-    assert rendered.endswith("…")

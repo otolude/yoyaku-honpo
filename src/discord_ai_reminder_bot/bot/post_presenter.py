@@ -1,0 +1,182 @@
+"""Discord Embed presentation for schedule command DTOs."""
+
+from __future__ import annotations
+
+import re
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+import discord
+
+from discord_ai_reminder_bot.application.schedule_creation import CreatedOnceSchedule
+from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
+from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+
+EMBED_TOTAL_LIMIT = 6_000
+EMBED_FIELD_LIMIT = 25
+EMBED_FIELD_NAME_LIMIT = 256
+EMBED_FIELD_VALUE_LIMIT = 1_024
+DETAIL_CONTENT_FIELDS = 4
+CONTENT_PREVIEW_LIMIT = 40
+_TOKYO = ZoneInfo("Asia/Tokyo")
+
+TYPE_LABELS = {
+    ScheduleType.ONCE: "単発",
+    ScheduleType.DAILY: "毎日",
+    ScheduleType.WEEKLY: "毎週",
+}
+STATUS_LABELS = {
+    ScheduleStatus.DRAFT: "下書き",
+    ScheduleStatus.ACTIVE: "有効",
+    ScheduleStatus.PAUSED: "一時停止",
+    ScheduleStatus.FAILED: "失敗",
+    ScheduleStatus.COMPLETED: "完了",
+    ScheduleStatus.ENDED: "終了済み",
+    ScheduleStatus.DELETED: "削除済み",
+}
+STATUS_ICONS = {
+    ScheduleStatus.DRAFT: "🟡",
+    ScheduleStatus.ACTIVE: "🟢",
+    ScheduleStatus.PAUSED: "🟠",
+    ScheduleStatus.FAILED: "🔴",
+    ScheduleStatus.COMPLETED: "🔵",
+    ScheduleStatus.ENDED: "🟣",
+    ScheduleStatus.DELETED: "⚪",
+}
+STATUS_COLOURS = {
+    ScheduleStatus.DRAFT: 0xF1C40F,
+    ScheduleStatus.ACTIVE: 0x2ECC71,
+    ScheduleStatus.PAUSED: 0xE67E22,
+    ScheduleStatus.FAILED: 0xE74C3C,
+    ScheduleStatus.COMPLETED: 0x3498DB,
+    ScheduleStatus.ENDED: 0x6C3483,
+    ScheduleStatus.DELETED: 0x7F8C8D,
+}
+
+
+def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
+    embed = _embed(title="単発予約を作成しました", status=created.status)
+    _field(embed, "状態", status_text(created.status), inline=True)
+    _field(embed, "投稿先", channel_text(created.channel_id), inline=True)
+    _field(embed, "予定日時", datetime_text(created.scheduled_for), inline=False)
+    _field(embed, "本文プレビュー", content_preview(created.content), inline=False)
+    _field(embed, "予約ID", public_id_text(created.public_id), inline=False)
+    return _validated(embed)
+
+
+def schedule_list_embed(
+    schedules: list[ScheduleView], *, page: int, status_filter: ScheduleStatus | None
+) -> discord.Embed:
+    filter_label = STATUS_LABELS[status_filter] if status_filter is not None else "指定なし"
+    embed = discord.Embed(
+        title="予約一覧",
+        description=f"ページ: {page} / 状態フィルター: {filter_label} / 日時: Asia/Tokyo (JST)",
+        colour=0x5865F2,
+    )
+    if not schedules:
+        _field(embed, "表示結果", "このページに表示できる予約はありません。", inline=False)
+        return _validated(embed)
+    for schedule in schedules:
+        name = f"{status_text(schedule.status)}・{TYPE_LABELS[schedule.schedule_type]}"
+        value = "\n".join(
+            (
+                f"投稿先: {channel_text(schedule.channel_id)}",
+                f"次回: {datetime_text(schedule.next_run_at)}",
+                f"本文: {content_preview(schedule.content)}",
+                f"予約ID: {public_id_text(schedule.public_id)}",
+            )
+        )
+        _field(embed, name, value, inline=False)
+    return _validated(embed)
+
+
+def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
+    embed = _embed(title="予約詳細", status=schedule.status)
+    _field(embed, "状態", status_text(schedule.status), inline=True)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "投稿先", channel_text(schedule.channel_id), inline=False)
+    _field(embed, "次回日時", datetime_text(schedule.next_run_at), inline=True)
+    _field(
+        embed, "終了日", schedule.end_date.isoformat() if schedule.end_date else "なし", inline=True
+    )
+    _add_detail_content(embed, schedule.content)
+    _field(embed, "予約ID", public_id_text(schedule.public_id), inline=False)
+    return _validated(embed)
+
+
+def status_text(status: ScheduleStatus) -> str:
+    return f"{STATUS_ICONS[status]} {STATUS_LABELS[status]}"
+
+
+def channel_text(channel_id: int) -> str:
+    return f"<#{channel_id}>"
+
+
+def public_id_text(public_id) -> str:
+    return f"`{public_id}`"
+
+
+def datetime_text(value: datetime | None) -> str:
+    if value is None:
+        return "なし"
+    if value.tzinfo is None or value.utcoffset() is None:
+        return "日時不明"
+    return value.astimezone(UTC).astimezone(_TOKYO).strftime("%Y-%m-%d %H:%M JST")
+
+
+def content_preview(content: str | None) -> str:
+    if content is None:
+        return "本文なし"
+    compact = " ".join(content.splitlines())
+    shortened = compact if len(compact) <= CONTENT_PREVIEW_LIMIT else compact[:39] + "…"
+    return escape_user_text(shortened)
+
+
+def escape_user_text(value: str) -> str:
+    escaped = re.sub(
+        r"@(everyone|here|[!&]?[0-9]{17,20})",
+        "@\u200b\\1",
+        value,
+        flags=re.IGNORECASE,
+    )
+    escaped = re.sub(r"<(?=[@#])", "<\u200b", escaped)
+    for marker in ("\\", "`", "*", "_", "~", "|", ">", "#", "-"):
+        escaped = escaped.replace(marker, f"\\{marker}")
+    return escaped
+
+
+def _add_detail_content(embed: discord.Embed, content: str | None) -> None:
+    if content is None:
+        _field(embed, "本文", "本文なし", inline=False)
+        return
+    escaped = escape_user_text(content)
+    maximum = EMBED_FIELD_VALUE_LIMIT * DETAIL_CONTENT_FIELDS
+    omitted = len(escaped) > maximum
+    if omitted:
+        suffix = "\n…（表示上省略）"
+        escaped = escaped[: maximum - len(suffix)] + suffix
+    chunks = [
+        escaped[index : index + EMBED_FIELD_VALUE_LIMIT]
+        for index in range(0, len(escaped), EMBED_FIELD_VALUE_LIMIT)
+    ]
+    for index, chunk in enumerate(chunks, start=1):
+        name = "本文" if index == 1 else f"本文（続き {index}）"
+        _field(embed, name, chunk, inline=False)
+
+
+def _embed(*, title: str, status: ScheduleStatus) -> discord.Embed:
+    return discord.Embed(title=title, colour=STATUS_COLOURS[status])
+
+
+def _field(embed: discord.Embed, name: str, value: str, *, inline: bool) -> None:
+    if not name or len(name) > EMBED_FIELD_NAME_LIMIT:
+        raise ValueError("invalid embed field name")
+    if not value or len(value) > EMBED_FIELD_VALUE_LIMIT:
+        raise ValueError("invalid embed field value")
+    embed.add_field(name=name, value=value, inline=inline)
+
+
+def _validated(embed: discord.Embed) -> discord.Embed:
+    if len(embed.fields) > EMBED_FIELD_LIMIT or len(embed) > EMBED_TOTAL_LIMIT:
+        raise ValueError("embed exceeds Discord limits")
+    return embed

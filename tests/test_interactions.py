@@ -122,6 +122,36 @@ async def test_initial_and_followup_responses_are_ephemeral_with_mentions_disabl
     assert kwargs["ephemeral"] is True
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
 
+
+@pytest.mark.asyncio
+async def test_embed_responses_support_initial_and_followup_without_content() -> None:
+    logger = logging.getLogger("test.interaction")
+    embed = discord.Embed(title="safe")
+    initial = interaction()
+    assert await respond_ephemeral(initial, embed=embed, logger=logger)
+    assert initial.response.send_message.await_args.args == ()
+    assert initial.response.send_message.await_args.kwargs["embed"] is embed
+    assert initial.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert initial.response.send_message.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
+
+    followup = interaction()
+    followup.response.is_done.return_value = True
+    assert await respond_ephemeral(followup, embed=embed, logger=logger)
+    assert followup.followup.send.await_args.args == ()
+    assert followup.followup.send.await_args.kwargs["embed"] is embed
+
+
+@pytest.mark.asyncio
+async def test_response_requires_exactly_one_of_content_or_embed() -> None:
+    value = interaction()
+    logger = logging.getLogger("test.interaction")
+    with pytest.raises(ValueError):
+        await respond_ephemeral(value, logger=logger)
+    with pytest.raises(ValueError):
+        await respond_ephemeral(value, "content", embed=discord.Embed(), logger=logger)
+
     followup = interaction()
     followup.response.is_done.return_value = True
     assert await respond_ephemeral(followup, "safe", logger=logger)

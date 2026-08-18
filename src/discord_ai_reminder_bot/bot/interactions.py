@@ -53,25 +53,29 @@ def is_authorized_interaction(
 
 async def respond_ephemeral(
     interaction: discord.Interaction,
-    content: str,
+    content: str | None = None,
     *,
+    embed: discord.Embed | None = None,
     logger: logging.Logger,
 ) -> bool:
     """Send one safe ephemeral response or followup without leaking failures."""
+    if (content is None) == (embed is None):
+        raise ValueError("exactly one of content or embed is required")
     mentions = discord.AllowedMentions.none()
+    arguments = {"ephemeral": True, "allowed_mentions": mentions}
+    if embed is not None:
+        arguments["embed"] = embed
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(
-                content,
-                ephemeral=True,
-                allowed_mentions=mentions,
-            )
+            if content is None:
+                await interaction.followup.send(**arguments)
+            else:
+                await interaction.followup.send(content, **arguments)
         else:
-            await interaction.response.send_message(
-                content,
-                ephemeral=True,
-                allowed_mentions=mentions,
-            )
+            if content is None:
+                await interaction.response.send_message(**arguments)
+            else:
+                await interaction.response.send_message(content, **arguments)
     except Exception:  # noqa: BLE001 - Discord errors can contain response bodies
         logger.error("interaction_response_failed")
         return False
