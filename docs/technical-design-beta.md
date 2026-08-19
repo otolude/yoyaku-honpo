@@ -274,6 +274,34 @@ discord-ai-reminder-bot/
 
 定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側が所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。RepositoryとApplication Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。NotificationLogは作成しない。
 
+編集は単一の `/post edit` とし、`public_id`を必須、`channel`、`scheduled_at`、
+`local_time`、`weekday`、`end_date`、`content`、`clear_content`、`clear_end_date`を任意とする。
+単発、毎日、毎週で許可する項目は要件定義どおりに検証し、予約種別、guild、作成者、
+public_idは不変とする。confirm、View、Modalは使わず、ローカル検証後にephemeralでdeferし、
+コマンド所有のトランザクションをcommitした後で成功Embedをfollowupする。変更指定なし、
+clear=falseだけ、排他的な値とclearの同時指定、実値が変わらないno-opでは更新と履歴追加をしない。
+
+編集可能状態は`draft`、`active`、および定期の`paused`だけとする。`draft`と`active`は
+現在の`next_run_at >= edited_at + 5分`を必要とし、新しい単発日時または定期候補も同じ
+包含境界を満たす。本文・channelだけならpendingと再試行待ちpendingを維持する。
+日時・繰り返し設定が実際に変わり新候補が現在日時と異なる場合、全pendingをDeliveryAttemptを
+追加せず`skipped`、`result_code = 'schedule_edited'`として新しいattempt_count=0のpendingを作る。
+既存DeliveryAttemptと終端runは変更しない。
+
+定期の新候補は`edited_at + 5分`以降の最初の発生から求める。候補が現在pendingと同日時なら
+維持し、それ以外の既存runと同日時なら、最大でも既存run件数+1回の候補評価で次の発生へ進む。
+終了日を超えれば次回なしとする。本文ありactiveは`ended`、本文なしdraftは編集全体を拒否する。
+pausedは設定だけを保存してpausedとNULLのnext_run_atを維持し、再開時に編集後設定を使う。
+retry待ちpendingも編集可能で、本文・channel変更は維持、日時・recurrence変更はskipする。
+
+編集トランザクションはロックなしでScheduleの内部参照、version、next_run_atを得て、全runを
+ID昇順で`FOR UPDATE`して必要なDeliveryAttempt段階を確認し、その後Scheduleを`FOR UPDATE`する。
+guild、public_id、作成者、version、状態、next_run_at、run状態を再検証し、processing、claimed、
+sending、送信成功後のSchedule確定待ちは無変更で拒否する。run、Schedule、`action='edited'`の
+OperationLogを同一トランザクションで変更する。本文は`content_changed: true`だけを記録し、
+channel、日時、曜日、終了日、状態、skip件数、次回再計算の有無だけをchangesへ保存できる。
+内部ID、public_id、version、本文、Discord message ID、例外全文は複製しない。
+
 削除は `/post delete public_id:<canonical UUIDv7> reason:<任意、最大500文字>` とする。理由は前後空白を除去し、未指定または空白だけなら`理由未入力`として扱う。ただし管理者が他人の予約を削除する場合は理由を必須とする。作成者本人（管理者を含む）の理由省略時はOperationLogへ`理由未入力`を保存し、表示は`未入力`とする。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
 
 コマンド実行時は読み取り専用で対象、所有者、状態、runを確認し、ephemeral Embedと赤色の削除・灰色のキャンセルボタンを持つ非永続Viewを表示する。Viewのtimeoutは120秒で、起動時のpersistent View登録は行わず、custom_idへ予約・利用者データを含めない。確認を開いた本人だけが操作でき、ボタン時にもguildと共通認可を再確認する。同一Viewの操作はロックで直列化し、成功、キャンセル、timeout後はViewを除去する。View待機中はDB Sessionやトランザクションを保持せず、削除ボタン時に新しいトランザクションを開始して最新状態を再検証する。確認時点のスナップショットは保証しない。

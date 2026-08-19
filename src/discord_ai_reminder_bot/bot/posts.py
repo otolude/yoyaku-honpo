@@ -22,6 +22,13 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
 )
+from discord_ai_reminder_bot.application.schedule_editing import (
+    EditValues,
+    InvalidScheduleEditOptions,
+    ScheduleEditingService,
+    ScheduleEditNoChanges,
+    ScheduleEditUnavailable,
+)
 from discord_ai_reminder_bot.application.schedule_pause import (
     SchedulePauseService,
     ScheduleStateChangeUnavailable,
@@ -44,6 +51,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_recurring_schedule_embed,
     created_schedule_embed,
     deleted_schedule_embed,
+    edited_schedule_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
     schedule_deletion_preview_embed,
@@ -79,6 +87,12 @@ DELETE_EXPIRED_MESSAGE = (
     "確認の有効期限が切れました。必要な場合はもう一度 /post delete を実行してください。"
 )
 STATE_CHANGE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、この操作を実行できません。"
+EDIT_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、編集できません。"
+EDIT_NO_CHANGES_MESSAGE = "実際に変更される項目がありません。"
+EDIT_TYPE_OPTIONS_MESSAGE = (
+    "予約種別に使用できない編集項目があります。予約種別を変更する場合は、現在の予約を削除し、"
+    "希望する種別で新しく作成してください。"
+)
 
 
 @dataclass(frozen=True)
@@ -377,6 +391,127 @@ class PostCommands(app_commands.Group):
             await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             return
         await self._respond_embed(interaction, lambda: schedule_detail_embed(schedule))
+
+    @app_commands.command(name="edit", description="予約内容を編集します")
+    @app_commands.describe(
+        public_id="予約IDを指定します",
+        channel="変更後の投稿先テキストチャンネルです",
+        scheduled_at="単発の投稿日時を日本時間YYYY-MM-DD HH:MMで指定します",
+        local_time="定期の投稿時刻を日本時間HH:MMで指定します",
+        weekday="毎週投稿の曜日です",
+        end_date="定期投稿の終了日をYYYY-MM-DDで指定します",
+        content="変更後の投稿本文です",
+        clear_content="本文を削除して下書きにします",
+        clear_end_date="終了日を解除します",
+    )
+    @app_commands.choices(
+        weekday=[
+            app_commands.Choice(name=label, value=value)
+            for value, label in enumerate(WEEKDAY_LABELS)
+        ]
+    )
+    async def edit_command(
+        self,
+        interaction: discord.Interaction,
+        public_id: str,
+        channel: discord.TextChannel | None = None,
+        scheduled_at: app_commands.Range[str, 16, 16] | None = None,
+        local_time: app_commands.Range[str, 5, 5] | None = None,
+        weekday: app_commands.Choice[int] | None = None,
+        end_date: app_commands.Range[str, 10, 10] | None = None,
+        content: app_commands.Range[str, 1, 2_000] | None = None,
+        clear_content: bool = False,
+        clear_end_date: bool = False,
+    ) -> None:
+        actor = await self._actor_or_respond(interaction)
+        if actor is None:
+            return
+        has_request = any(
+            (
+                channel is not None,
+                scheduled_at is not None,
+                local_time is not None,
+                weekday is not None,
+                end_date is not None,
+                content is not None,
+                clear_content,
+                clear_end_date,
+            )
+        )
+        if (
+            not has_request
+            or (content is not None and clear_content)
+            or (end_date is not None and clear_end_date)
+        ):
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
+            parse_public_id(public_id)
+            now = self._clock.now()
+            channel_id = self._validated_channel(interaction, channel) if channel else None
+            parsed_scheduled = (
+                parse_once_scheduled_at(scheduled_at, now=now) if scheduled_at else None
+            )
+            parsed_time = parse_local_time(local_time) if local_time else None
+            parsed_end = parse_end_date(end_date) if end_date else None
+            if content is not None:
+                content = validate_create_content(content)
+        except (
+            InvalidScheduleQueryError,
+            InvalidDateTimeError,
+            InvalidScheduleContentError,
+            ValueError,
+        ):
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:  # noqa: BLE001 - Discord response details must remain private
+            self._logger.error("schedule_edit_defer_failed")
+            return
+        current_actor = authorized_actor(
+            interaction,
+            configured_guild_id=self._configured_guild_id,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        if current_actor is None or current_actor.user_id != actor.user_id:
+            await respond_ephemeral(interaction, EDIT_UNAVAILABLE_MESSAGE, logger=self._logger)
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                edited = await ScheduleEditingService(session).edit(
+                    guild_id=interaction.guild_id,
+                    public_id=public_id,
+                    actor_user_id=current_actor.user_id,
+                    administrator=current_actor.administrator,
+                    values=EditValues(
+                        channel_id=channel_id,
+                        scheduled_at=parsed_scheduled,
+                        local_time=parsed_time,
+                        weekday=weekday.value if weekday is not None else None,
+                        weekday_supplied=weekday is not None,
+                        end_date=parsed_end,
+                        end_date_supplied=end_date is not None,
+                        content=content,
+                        clear_content=clear_content,
+                        clear_end_date=clear_end_date,
+                    ),
+                    edited_at=now,
+                )
+        except ScheduleEditNoChanges:
+            await respond_ephemeral(interaction, EDIT_NO_CHANGES_MESSAGE, logger=self._logger)
+            return
+        except InvalidScheduleEditOptions:
+            await respond_ephemeral(interaction, EDIT_TYPE_OPTIONS_MESSAGE, logger=self._logger)
+            return
+        except ScheduleEditUnavailable:
+            await respond_ephemeral(interaction, EDIT_UNAVAILABLE_MESSAGE, logger=self._logger)
+            return
+        except Exception:  # noqa: BLE001 - database details must remain private
+            self._logger.error("schedule_edit_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await self._respond_embed(interaction, lambda: edited_schedule_embed(edited))
 
     @app_commands.command(name="pause", description="定期投稿を一時停止します")
     @app_commands.describe(public_id="予約IDを指定します")

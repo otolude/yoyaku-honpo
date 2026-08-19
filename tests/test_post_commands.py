@@ -411,6 +411,24 @@ def test_delete_command_has_no_confirm_option_and_optional_reason() -> None:
     assert group.delete_command.parameters[1].required is False
 
 
+def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> None:
+    group = commands(AsyncMock())
+    assert [parameter.name for parameter in group.edit_command.parameters] == [
+        "public_id",
+        "channel",
+        "scheduled_at",
+        "local_time",
+        "weekday",
+        "end_date",
+        "content",
+        "clear_content",
+        "clear_end_date",
+    ]
+    assert group.edit_command.parameters[0].required is True
+    assert all(not parameter.required for parameter in group.edit_command.parameters[1:])
+    assert [choice.value for choice in group.edit_command.parameters[4].choices] == list(range(7))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True])
 async def test_pause_resume_defer_commit_and_use_interaction_identity(

@@ -16,6 +16,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
     ScheduleDeletionView,
 )
+from discord_ai_reminder_bot.application.schedule_editing import EditedSchedule
 from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -89,6 +90,61 @@ def created_recurring_schedule_embed(created: CreatedRecurringSchedule) -> disco
     _field(embed, "🗓️ 次回投稿", datetime_text(created.next_run_at), inline=False)
     _field(embed, "📝 本文", content_preview(created.content), inline=False)
     _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
+    return _validated(embed)
+
+
+def edited_schedule_embed(edited: EditedSchedule) -> discord.Embed:
+    embed = _embed(title="予約を編集しました", status=edited.status)
+    _field(embed, "状態", status_text(edited.status), inline=True)
+    _field(embed, "種別", TYPE_LABELS[edited.schedule_type], inline=True)
+    _field(embed, "📍 投稿先", channel_text(edited.channel_id), inline=False)
+    if edited.schedule_type is ScheduleType.WEEKLY:
+        _field(embed, "曜日", weekday_text(edited.weekday), inline=True)
+    if edited.schedule_type is not ScheduleType.ONCE:
+        _field(embed, "投稿時刻", local_time_text(edited.local_time), inline=True)
+        _field(
+            embed,
+            "終了日",
+            edited.end_date.isoformat() if edited.end_date else "なし",
+            inline=True,
+        )
+    _field(
+        embed,
+        f"🗓️ {datetime_label(edited.schedule_type)}",
+        datetime_text(edited.next_run_at),
+        inline=False,
+    )
+    _field(embed, "📝 本文", content_preview(edited.content), inline=False)
+    _field(embed, "🆔 予約ID", public_id_text(edited.public_id), inline=False)
+    labels = {
+        "channel_id": "投稿先",
+        "content": "本文",
+        "scheduled_at": "投稿予定",
+        "local_time": "投稿時刻",
+        "weekday": "曜日",
+        "end_date": "終了日",
+    }
+    _field(
+        embed,
+        "変更した項目",
+        "、".join(labels[item] for item in edited.changed_fields),
+        inline=False,
+    )
+    notes: list[str] = []
+    if edited.status is ScheduleStatus.PAUSED:
+        notes.append("一時停止を維持しています。再開するまで投稿されません。")
+    if edited.previous_status is ScheduleStatus.ACTIVE and edited.status is ScheduleStatus.DRAFT:
+        notes.append("本文削除により下書きになりました。")
+    if edited.previous_status is ScheduleStatus.DRAFT and edited.status is ScheduleStatus.ACTIVE:
+        notes.append("本文設定により有効になりました。")
+    if edited.status is ScheduleStatus.ENDED:
+        notes.append("終了日内に次回投稿がないため終了済みになりました。")
+    if edited.run_replaced:
+        notes.append("変更前の実行予定を見送り、新しい次回投稿を作成しました。")
+    if edited.retry_pending_preserved:
+        notes.append("次回試行は変更後の内容を使用します。")
+    if notes:
+        _field(embed, "補足", "\n".join(notes), inline=False)
     return _validated(embed)
 
 

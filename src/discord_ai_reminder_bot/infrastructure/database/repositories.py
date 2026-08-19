@@ -37,7 +37,6 @@ MAX_LIST_LIMIT = 100
 MAX_CLAIM_BATCH_SIZE = 20
 _UPDATABLE_SCHEDULE_FIELDS = {
     "channel_id",
-    "schedule_type",
     "status",
     "content",
     "next_run_at",
@@ -148,6 +147,13 @@ def build_schedule_state_change_runs_statement(
         .order_by(ScheduleRun.id.asc())
     )
     return statement.with_for_update() if lock else statement
+
+
+def build_schedule_edit_runs_statement(
+    *, schedule_id: int, lock: bool
+) -> Select[tuple[ScheduleRun]]:
+    """Select all occurrence history in the common run-before-schedule lock order."""
+    return build_schedule_state_change_runs_statement(schedule_id=schedule_id, lock=lock)
 
 
 class ScheduleRepository:
@@ -417,6 +423,30 @@ class ScheduleRunRepository:
             lock=lock,
         )
         return list((await self._session.execute(statement)).scalars())
+
+    async def list_for_edit(self, *, schedule_id: int, lock: bool) -> list[ScheduleRun]:
+        statement = build_schedule_edit_runs_statement(schedule_id=schedule_id, lock=lock)
+        return list((await self._session.execute(statement)).scalars())
+
+    async def skip_pending_for_edited_schedule(
+        self, *, runs: list[ScheduleRun], edited_at: datetime
+    ) -> list[ScheduleRun]:
+        edited_at = require_utc(edited_at)
+        for run in runs:
+            if run.status != RunStatus.PENDING.value:
+                continue
+            run.status = RunStatus.SKIPPED.value
+            run.next_attempt_at = None
+            run.claimed_by = None
+            run.claimed_at = None
+            run.lease_expires_at = None
+            run.discord_message_id = None
+            run.result_code = "schedule_edited"
+            run.error_summary = "Schedule occurrence was replaced by a user edit"
+            run.finished_at = edited_at
+            run.updated_at = edited_at
+        await self._session.flush()
+        return runs
 
     async def skip_pending_for_paused_schedule(
         self, *, runs: list[ScheduleRun], paused_at: datetime
@@ -699,6 +729,24 @@ class DeliveryAttemptRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def list_in_flight_for_runs(self, *, run_ids: list[int]) -> list[DeliveryAttempt]:
+        if not run_ids:
+            return []
+        statement = (
+            select(DeliveryAttempt)
+            .where(
+                DeliveryAttempt.schedule_run_id.in_(run_ids),
+                DeliveryAttempt.status.in_(
+                    (
+                        DeliveryAttemptStatus.CLAIMED.value,
+                        DeliveryAttemptStatus.SENDING.value,
+                    )
+                ),
+            )
+            .order_by(DeliveryAttempt.schedule_run_id.asc(), DeliveryAttempt.id.asc())
+        )
+        return list((await self._session.execute(statement)).scalars())
 
     async def get_by_id(self, attempt_id: int) -> DeliveryAttempt:
         attempt = await self._session.get(DeliveryAttempt, attempt_id)

@@ -11,6 +11,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
     ScheduleDeletionView,
 )
+from discord_ai_reminder_bot.application.schedule_editing import EditedSchedule
 from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.post_presenter import (
@@ -23,6 +24,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_recurring_schedule_embed,
     created_schedule_embed,
     deleted_schedule_embed,
+    edited_schedule_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
     schedule_deletion_preview_embed,
@@ -77,6 +79,36 @@ def test_pause_embed_explains_preservation_and_skipped_occurrence() -> None:
     assert "一時停止中は投稿されません" in text
     assert "本文と繰り返し設定は保持" in text
     assert "再開しても送信されません" in text
+
+
+def test_edit_embed_shows_changes_and_safe_state_notes() -> None:
+    public_id = uuid.uuid7()
+    embed = edited_schedule_embed(
+        EditedSchedule(
+            public_id=public_id,
+            channel_id=400,
+            schedule_type=ScheduleType.WEEKLY,
+            status=ScheduleStatus.PAUSED,
+            content="<@123456789012345678> **本文**",
+            next_run_at=None,
+            local_time=time(9, 15),
+            weekday=2,
+            end_date=None,
+            changed_fields=("channel_id", "content", "weekday"),
+            pending_runs_skipped=0,
+            run_replaced=False,
+            retry_pending_preserved=True,
+            previous_status=ScheduleStatus.PAUSED,
+        )
+    )
+    text = all_text(embed)
+    assert embed.title == "予約を編集しました"
+    assert "投稿先、本文、曜日" in text
+    assert "再開するまで投稿されません" in text
+    assert "次回試行は変更後の内容を使用します" in text
+    assert "<@123456789012345678>" not in text
+    assert f"`{public_id}`" in text
+    assert len(embed.fields) <= EMBED_FIELD_LIMIT and len(embed) <= EMBED_TOTAL_LIMIT
 
 
 @pytest.mark.parametrize(
