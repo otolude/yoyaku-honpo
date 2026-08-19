@@ -394,15 +394,15 @@ class PostCommands(app_commands.Group):
 
     @app_commands.command(name="edit", description="予約内容を編集します")
     @app_commands.describe(
-        public_id="予約IDを指定します",
-        channel="変更後の投稿先テキストチャンネルです",
-        scheduled_at="単発の投稿日時を日本時間YYYY-MM-DD HH:MMで指定します",
-        local_time="定期の投稿時刻を日本時間HH:MMで指定します",
-        weekday="毎週投稿の曜日です",
-        end_date="定期投稿の終了日をYYYY-MM-DDで指定します",
-        content="変更後の投稿本文です",
-        clear_content="本文を削除して下書きにします",
-        clear_end_date="終了日を解除します",
+        public_id="編集する予約ID",
+        channel="変更後の投稿先",
+        scheduled_at="単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
+        local_time="毎日・毎週のみ｜投稿時刻（HH:MM）",
+        weekday="毎週のみ｜投稿する曜日",
+        end_date="毎日・毎週のみ｜変更後の終了日（YYYY-MM-DD）",
+        content="変更後の本文｜本文削除とは併用不可",
+        clear_content="本文を削除｜新しい本文とは併用不可",
+        clear_end_date="毎日・毎週のみ｜終了日を解除",
     )
     @app_commands.choices(
         weekday=[

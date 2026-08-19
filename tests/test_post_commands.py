@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
 from datetime import UTC, date, datetime, time
@@ -413,7 +414,8 @@ def test_delete_command_has_no_confirm_option_and_optional_reason() -> None:
 
 def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> None:
     group = commands(AsyncMock())
-    assert [parameter.name for parameter in group.edit_command.parameters] == [
+    parameters = group.edit_command.parameters
+    assert [parameter.name for parameter in parameters] == [
         "public_id",
         "channel",
         "scheduled_at",
@@ -424,9 +426,36 @@ def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> No
         "clear_content",
         "clear_end_date",
     ]
-    assert group.edit_command.parameters[0].required is True
-    assert all(not parameter.required for parameter in group.edit_command.parameters[1:])
-    assert [choice.value for choice in group.edit_command.parameters[4].choices] == list(range(7))
+    assert parameters[0].required is True
+    assert all(not parameter.required for parameter in parameters[1:])
+    assert [parameter.type for parameter in parameters] == [
+        discord.AppCommandOptionType.string,
+        discord.AppCommandOptionType.channel,
+        discord.AppCommandOptionType.string,
+        discord.AppCommandOptionType.string,
+        discord.AppCommandOptionType.integer,
+        discord.AppCommandOptionType.string,
+        discord.AppCommandOptionType.string,
+        discord.AppCommandOptionType.boolean,
+        discord.AppCommandOptionType.boolean,
+    ]
+    assert [parameter.description for parameter in parameters] == [
+        "編集する予約ID",
+        "変更後の投稿先",
+        "単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
+        "毎日・毎週のみ｜投稿時刻（HH:MM）",
+        "毎週のみ｜投稿する曜日",
+        "毎日・毎週のみ｜変更後の終了日（YYYY-MM-DD）",
+        "変更後の本文｜本文削除とは併用不可",
+        "本文を削除｜新しい本文とは併用不可",
+        "毎日・毎週のみ｜終了日を解除",
+    ]
+    assert all(len(parameter.description) <= 100 for parameter in parameters)
+    assert [choice.value for choice in parameters[4].choices] == list(range(7))
+
+    callback_parameters = inspect.signature(group.edit_command.callback).parameters
+    assert callback_parameters["clear_content"].default is False
+    assert callback_parameters["clear_end_date"].default is False
 
 
 @pytest.mark.asyncio
