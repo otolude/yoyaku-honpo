@@ -79,6 +79,23 @@ def global_notification_deduplication_key(
     return key
 
 
+def fallback_notification_deduplication_key(
+    original_key: str, recipient_type: NotificationRecipientType
+) -> str:
+    """Keep a logical event identity while selecting a distinct fallback route."""
+    if not isinstance(original_key, str) or not 1 <= len(original_key) <= 160:
+        raise ValueError("original notification key is invalid")
+    parts = original_key.split("|")
+    if len(parts) != 6 or parts[0] not in {"v1", "v1g"}:
+        raise ValueError("original notification key is not canonical")
+    NotificationRecipientType(parts[-1])
+    route = NotificationRecipientType(recipient_type).value
+    key = "|".join((*parts[:-1], route))
+    if len(key) > 160:
+        raise ValueError("fallback notification key exceeds 160 characters")
+    return key
+
+
 def decide_notification_result(
     *,
     attempt_number: int,

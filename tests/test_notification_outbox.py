@@ -10,6 +10,7 @@ from discord_ai_reminder_bot.domain.notification import (
     NotificationDecisionAction,
     NotificationOutcome,
     decide_notification_result,
+    fallback_notification_deduplication_key,
     global_notification_deduplication_key,
     notification_deduplication_key,
 )
@@ -70,6 +71,16 @@ def test_global_key_uses_public_event_uuid() -> None:
     )
     assert value.startswith("v1g|database_recovery|")
     assert len(value) <= 160
+
+
+def test_fallback_key_preserves_event_and_changes_only_route() -> None:
+    original = key(recipient=NotificationRecipientType.CREATOR_DM)
+    fallback = fallback_notification_deduplication_key(
+        original, NotificationRecipientType.OPERATOR_CHANNEL
+    )
+    assert fallback.rsplit("|", 1)[0] == original.rsplit("|", 1)[0]
+    assert fallback.endswith("|operator_channel")
+    assert fallback != original
 
 
 @pytest.mark.parametrize(

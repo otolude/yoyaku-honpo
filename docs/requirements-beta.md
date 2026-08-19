@@ -257,6 +257,10 @@ activeからdraftへ編集した場合、次回まで24時間以上なら通常�
 
 Recovery未完了、DB障害、通知Worker自身の障害はDiscord通知の対象にせず、安全なERRORログと外部監視の境界とする。通知Workerは起動Recoveryが完全に成功した後だけ開始する。
 
+通知outboxは予約投稿Workerとは独立した通知Workerが処理する。1サイクルでclaimをcommitし、短い送信前再検証トランザクションを閉じてからDiscordへ1回だけ送信し、結果を別トランザクションで保存する。最大並行数、batch、poll間隔、processing leaseは通知専用設定を使用する。expired leaseのclaimedは1分・5分の規則で再試行し、sendingは結果不明として再送しない。不整合もunknownへ安全に終端化する。
+
+permanentまたは3回上限だけ、`creator_dm → operator_channel → operator_dm → log`の順で別outbox行を冪等作成する。unknown、retry中、cancelledではfallbackを作らない。`log`経路はDiscord APIを呼ばず安全なERRORイベントだけを記録する。通知本文は固定plain text、2,000文字以内、投稿本文なし、メンション無効とする。通知イベントを業務処理から生成する接続は後続工程とする。
+
 ## 9. 失敗時の再試行
 
 最初の送信を1回行い、一時的な通信障害などで失敗した場合は、次の間隔で最大3回再試行する。

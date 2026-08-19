@@ -21,6 +21,10 @@ ENVIRONMENT_KEYS = (
     "SCHEDULER_BATCH_SIZE",
     "SCHEDULER_MAX_CONCURRENCY",
     "SCHEDULER_PROCESSING_TIMEOUT_SECONDS",
+    "NOTIFICATION_POLL_INTERVAL_SECONDS",
+    "NOTIFICATION_BATCH_SIZE",
+    "NOTIFICATION_MAX_CONCURRENCY",
+    "NOTIFICATION_PROCESSING_TIMEOUT_SECONDS",
 )
 
 
@@ -45,6 +49,10 @@ def valid_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         "SCHEDULER_BATCH_SIZE": "20",
         "SCHEDULER_MAX_CONCURRENCY": "5",
         "SCHEDULER_PROCESSING_TIMEOUT_SECONDS": "120",
+        "NOTIFICATION_POLL_INTERVAL_SECONDS": "10",
+        "NOTIFICATION_BATCH_SIZE": "20",
+        "NOTIFICATION_MAX_CONCURRENCY": "5",
+        "NOTIFICATION_PROCESSING_TIMEOUT_SECONDS": "120",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -66,6 +74,33 @@ def test_loads_valid_settings(valid_environment: dict[str, str]) -> None:
     assert settings.timezone == "Asia/Tokyo"
     assert settings.discord_guild_id == 100000000000000001
     assert settings.scheduler_poll_interval_seconds == 10
+    assert settings.notification_poll_interval_seconds == 10
+    assert settings.notification_batch_size == 20
+    assert settings.notification_max_concurrency == 5
+    assert settings.notification_processing_timeout_seconds == 120
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("NOTIFICATION_POLL_INTERVAL_SECONDS", "0"),
+        ("NOTIFICATION_POLL_INTERVAL_SECONDS", "nan"),
+        ("NOTIFICATION_BATCH_SIZE", "0"),
+        ("NOTIFICATION_BATCH_SIZE", "21"),
+        ("NOTIFICATION_MAX_CONCURRENCY", "0"),
+        ("NOTIFICATION_MAX_CONCURRENCY", "21"),
+        ("NOTIFICATION_PROCESSING_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_rejects_invalid_notification_settings(
+    valid_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValidationError):
+        load_without_env_file()
 
 
 def test_detects_missing_required_value(

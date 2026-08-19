@@ -693,7 +693,7 @@ pending Recoveryは`FOR UPDATE SKIP LOCKED`で`scheduled_for, id`の安定順序
 
 各定期予約で1回の起動時に補完する過去発生回は最大500回とし、超えた場合はRecovery未完了として通常ポーラーを開始しない。既存の終端runを再利用せず、未来日時も履歴で使用済みなら次の未使用発生日時へ進む。`paused`および既に終端状態のScheduleにpendingが残る場合はrunだけを安全に終端化し、Schedule状態を自動修復しない。startupでは終了日を過ぎた`paused`を`ended`へ変更しない。
 
-pendingとDeliveryAttemptの状態が一致せず二重送信を否定できない場合、runを`startup_inconsistent_pending`で`failed`にして既存Attempt履歴は変更しない。単発activeだけはScheduleも`failed`にし、定期および既に終端状態のScheduleは現在状態を維持する。通知送信、NotificationLog作成、通知ワーカーは後続の通知機能工程で実装する。
+pendingとDeliveryAttemptの状態が一致せず二重送信を否定できない場合、runを`startup_inconsistent_pending`で`failed`にして既存Attempt履歴は変更しない。単発activeだけはScheduleも`failed`にし、定期および既に終端状態のScheduleは現在状態を維持する。この業務処理からNotificationLogを生成する接続は後続の通知イベント生成工程で実装する。
 
 ## 15. 下書き通知と運営者通知
 
@@ -723,6 +723,14 @@ pendingとDeliveryAttemptの状態が一致せず二重送信を否定できな�
 通知には予約ID、実行履歴ID、発生時刻、投稿先、短い原因、必要な対応を含める。Botトークン、DB接続情報、投稿本文、内部例外全文は含めない。各経路の成功・失敗を `notification_logs` に残す。
 
 通知はplain text 2,000文字以内とし、投稿本文と本文プレビューを含めず、AllowedMentionsをすべて無効にする。transientだけを1分後・5分後に再試行し、初回を含め最大3回とする。Rate Limitは未来のRetry-Afterを優先し、permanentまたは上限到達ではフォールバックを許可する。unknownは再送もフォールバックもしない。通知Workerは起動Recovery完全成功後だけ開始し、Recovery未完了、DB障害、通知Worker自身の障害は安全なERRORログと外部監視へ委ねる。バックグラウンド通知はephemeralではなく、追加IntentやAdministrator権限を要求しない。
+
+NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サイクルを実行する。Transaction Aでdue行を`FOR UPDATE SKIP LOCKED`によりclaimしてcommitし、Transaction BでLog、Attempt、関連Schedule/Runを再検証してsendingまたはcancelledへ更新してcommitする。DB Sessionを閉じた後にGatewayを1回だけ呼び、Transaction Cでsuccess、retry、failed、unknownと必要なfallbackを保存する。Gateway成功後にTransaction Cが失敗した場合はsendingを維持し、再送せずlease Recoveryでunknownへ移す。
+
+送信前再検証で不要になった通知はNotificationLogを`cancelled`とし、Attemptにはcancelled状態がないため、Discord送信を行わなかった確定結果として`failed / permanent / notification_stale`へ終端化する。このAttemptは配送障害の再試行やfallback対象にはしない。
+
+通知Gatewayはconfigured guildのキャッシュ済みTextChannelと権限を検証し、DMは`get_user`、cache miss時だけ`fetch_user`を使用する。Bot自身、固定operator ID不一致、別guild、TextChannel以外を拒否し、`fetch_channel`、独自sleep、独自retryを使用しない。fallbackは`creator_dm → operator_channel → operator_dm → log`で別NotificationLogとして作り、元の論理イベントkeyを維持して経路だけを変える。
+
+起動時は予約processing、期限超過pending、notification leaseの順に同じcutoffで各最大25 batchを復旧し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。通知イベント生成者との接続はこの段階では未実装とする。
 
 ## 16. 30日後の自動削除
 

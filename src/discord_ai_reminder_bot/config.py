@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -62,6 +63,55 @@ class Settings(DatabaseSettings):
     scheduler_processing_timeout_seconds: int = Field(
         default=120, gt=0, validation_alias="SCHEDULER_PROCESSING_TIMEOUT_SECONDS"
     )
+    notification_poll_interval_seconds: float = Field(
+        default=10, validation_alias="NOTIFICATION_POLL_INTERVAL_SECONDS"
+    )
+    notification_batch_size: int = Field(default=20, validation_alias="NOTIFICATION_BATCH_SIZE")
+    notification_max_concurrency: int = Field(
+        default=5, validation_alias="NOTIFICATION_MAX_CONCURRENCY"
+    )
+    notification_processing_timeout_seconds: int = Field(
+        default=120, validation_alias="NOTIFICATION_PROCESSING_TIMEOUT_SECONDS"
+    )
+
+    @field_validator("notification_poll_interval_seconds", mode="before")
+    @classmethod
+    def validate_notification_poll_interval(cls, value: object) -> float:
+        if isinstance(value, bool):
+            raise ValueError("通知確認間隔は正の有限値にしてください")  # noqa: TRY004
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as error:
+            raise ValueError("通知確認間隔は正の有限値にしてください") from error
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("通知確認間隔は正の有限値にしてください")
+        return parsed
+
+    @field_validator("notification_batch_size", "notification_max_concurrency", mode="before")
+    @classmethod
+    def validate_notification_bounded_integer(cls, value: object) -> int:
+        if isinstance(value, bool):
+            raise ValueError("通知件数は1から20にしてください")  # noqa: TRY004
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as error:
+            raise ValueError("通知件数は1から20にしてください") from error
+        if str(value).strip() != str(parsed) or not 1 <= parsed <= 20:
+            raise ValueError("通知件数は1から20にしてください")
+        return parsed
+
+    @field_validator("notification_processing_timeout_seconds", mode="before")
+    @classmethod
+    def validate_notification_timeout(cls, value: object) -> int:
+        if isinstance(value, bool):
+            raise ValueError("通知処理期限は正の整数にしてください")  # noqa: TRY004
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as error:
+            raise ValueError("通知処理期限は正の整数にしてください") from error
+        if str(value).strip() != str(parsed) or parsed <= 0:
+            raise ValueError("通知処理期限は正の整数にしてください")
+        return parsed
 
     @field_validator("discord_allowed_role_ids", mode="before")
     @classmethod
@@ -96,6 +146,8 @@ class Settings(DatabaseSettings):
     def validate_scheduler_limits(self) -> Self:
         if self.scheduler_max_concurrency > self.scheduler_batch_size:
             raise ValueError("最大並行数は1回の取得件数以下にしてください")
+        if self.notification_max_concurrency > self.notification_batch_size:
+            raise ValueError("通知最大並行数は1回の通知取得件数以下にしてください")
         return self
 
 

@@ -14,6 +14,12 @@ from discord.ext import commands, tasks
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.notification_gateway import NotificationGateway
+from discord_ai_reminder_bot.application.notification_recovery import (
+    NotificationRecoveryService,
+    NotificationRecoverySummary,
+)
+from discord_ai_reminder_bot.application.notification_worker import NotificationWorker
 from discord_ai_reminder_bot.application.pending_recovery import (
     PendingRecoverySummary,
     PendingStartupRecoveryService,
@@ -28,6 +34,9 @@ from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.schema import verify_schema_revision
 from discord_ai_reminder_bot.infrastructure.discord.gateway import DiscordMessageGateway
+from discord_ai_reminder_bot.infrastructure.discord.notification_gateway import (
+    DiscordNotificationGateway,
+)
 
 MAX_RATELIMIT_TIMEOUT_SECONDS = 30.0
 MAX_STARTUP_RECOVERY_BATCHES = 25
@@ -81,6 +90,14 @@ class ReminderBot(commands.Bot):
             configured_guild_id=settings.discord_guild_id,
             clock=clock,
         )
+        self.notification_gateway: NotificationGateway = DiscordNotificationGateway(
+            client=self,
+            configured_guild_id=settings.discord_guild_id,
+            operator_channel_id=settings.discord_operator_channel_id,
+            operator_user_id=settings.discord_operator_user_id,
+            clock=clock,
+            logger=logger,
+        )
         self.polling_worker = PollingWorker(
             session_factory=session_factory,
             gateway=self.gateway,
@@ -89,6 +106,19 @@ class ReminderBot(commands.Bot):
             batch_size=settings.scheduler_batch_size,
             max_concurrency=settings.scheduler_max_concurrency,
             lease_timeout=timedelta(seconds=settings.scheduler_processing_timeout_seconds),
+            logger=logger,
+        )
+        self.notification_worker = NotificationWorker(
+            session_factory=session_factory,
+            gateway=self.notification_gateway,
+            clock=clock,
+            worker_id=worker_id,
+            configured_guild_id=settings.discord_guild_id,
+            operator_channel_id=settings.discord_operator_channel_id,
+            operator_user_id=settings.discord_operator_user_id,
+            batch_size=settings.notification_batch_size,
+            max_concurrency=settings.notification_max_concurrency,
+            lease_timeout=timedelta(seconds=settings.notification_processing_timeout_seconds),
             logger=logger,
         )
         self._clock = clock
@@ -110,6 +140,9 @@ class ReminderBot(commands.Bot):
         )
         self.add_guild_command(self.post_commands)
         self.polling_loop.change_interval(seconds=settings.scheduler_poll_interval_seconds)
+        self.notification_polling_loop.change_interval(
+            seconds=settings.notification_poll_interval_seconds
+        )
 
     async def setup_hook(self) -> None:
         revision = await verify_schema_revision(self.engine)
@@ -172,6 +205,7 @@ class ReminderBot(commands.Bot):
         recovery_cutoff = require_utc(self._clock.now())
         recovered = await self.recover_expired_processing(recovery_cutoff=recovery_cutoff)
         pending = await self.recover_overdue_pending(recovery_cutoff=recovery_cutoff)
+        notification = await self.recover_expired_notifications(recovery_cutoff=recovery_cutoff)
         if self._closing:
             return
         self._recovery_complete.set()
@@ -187,10 +221,13 @@ class ReminderBot(commands.Bot):
                 "future_runs_created": pending.future_runs_created,
                 "schedules_ended": pending.schedules_ended,
                 "inconsistencies_detected": pending.inconsistencies_detected,
+                "notifications_recovered": notification.selected,
             },
         )
         if not self.polling_loop.is_running():
             self.polling_loop.start()
+        if not self.notification_polling_loop.is_running():
+            self.notification_polling_loop.start()
 
     async def recover_expired_processing(self, *, recovery_cutoff: datetime | None = None) -> int:
         recovery_cutoff = require_utc(recovery_cutoff or self._clock.now())
@@ -240,6 +277,34 @@ class ReminderBot(commands.Bot):
         )
         raise StartupRecoveryIncompleteError(total.selected)
 
+    async def recover_expired_notifications(
+        self, *, recovery_cutoff: datetime
+    ) -> NotificationRecoverySummary:
+        recovery_cutoff = require_utc(recovery_cutoff)
+        total = NotificationRecoverySummary()
+        for _ in range(MAX_STARTUP_RECOVERY_BATCHES):
+            async with self.session_factory() as session, session.begin():
+                recovered = await NotificationRecoveryService(
+                    session,
+                    operator_channel_id=self.settings.discord_operator_channel_id,
+                    operator_user_id=self.settings.discord_operator_user_id,
+                ).recover_expired(
+                    recovered_at=recovery_cutoff,
+                    batch_size=self.settings.notification_batch_size,
+                )
+            total = total.add(recovered)
+            if recovered.selected < self.settings.notification_batch_size:
+                self.logger.info(
+                    "startup_notification_recovery_complete",
+                    extra={"batches_completed": _ + 1, "recovered": total.selected},
+                )
+                return total
+        self.logger.error(
+            "startup_notification_recovery_incomplete",
+            extra={"batches_completed": MAX_STARTUP_RECOVERY_BATCHES},
+        )
+        raise StartupRecoveryIncompleteError(total.selected)
+
     @tasks.loop(seconds=10.0, reconnect=False, name="database-polling-loop")
     async def polling_loop(self) -> None:
         if self._closing:
@@ -263,17 +328,40 @@ class ReminderBot(commands.Bot):
         if self._closing:
             self.polling_loop.stop()
 
+    @tasks.loop(seconds=10.0, reconnect=False, name="notification-polling-loop")
+    async def notification_polling_loop(self) -> None:
+        if self._closing:
+            return
+        try:
+            result = await self.notification_worker.poll_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            self.logger.error("notification_poll_cycle_failed")
+            return
+        self.logger.info("notification_poll_cycle_complete", extra=vars(result))
+
+    @notification_polling_loop.before_loop
+    async def before_notification_polling_loop(self) -> None:
+        await self.wait_until_ready()
+        await self._recovery_complete.wait()
+        if self._closing:
+            self.notification_polling_loop.stop()
+
     async def close(self) -> None:
         if self._closed_once:
             return
         self._closed_once = True
         self._closing = True
 
-        self.polling_loop.cancel()
-        polling_task = self.polling_loop.get_task()
-        if polling_task is not None and polling_task is not asyncio.current_task():
-            with contextlib.suppress(asyncio.CancelledError):
-                await polling_task
+        self.polling_loop.stop()
+        self.notification_polling_loop.stop()
+        for loop in (self.polling_loop, self.notification_polling_loop):
+            loop.cancel()
+            polling_task = loop.get_task()
+            if polling_task is not None and polling_task is not asyncio.current_task():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await polling_task
 
         startup_task = self._startup_task
         if startup_task is not None and startup_task is not asyncio.current_task():

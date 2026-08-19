@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.notification_recovery import NotificationRecoverySummary
 from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
 from discord_ai_reminder_bot.application.worker import PollResult
 from discord_ai_reminder_bot.bot.client import (
@@ -51,7 +52,7 @@ def make_bot() -> ReminderBot:
     engine = MagicMock()
     engine.dispose = AsyncMock()
     sessions = MagicMock()
-    return ReminderBot(
+    bot = ReminderBot(
         settings=settings(),
         engine=engine,
         session_factory=sessions,
@@ -59,6 +60,10 @@ def make_bot() -> ReminderBot:
         worker_id=uuid.uuid7(),
         logger=logging.getLogger("test.bot"),
     )
+    bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=NotificationRecoverySummary()
+    )
+    return bot
 
 
 def test_bot_configuration_is_minimal_and_does_not_connect() -> None:
@@ -155,6 +160,9 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     start = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "start", start)
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
+    notification_start = MagicMock()
+    monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
+    monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
 
     await bot.on_ready()
     await bot.on_ready()
@@ -162,6 +170,7 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     bot.recover_expired_processing.assert_awaited_once()  # type: ignore[attr-defined]
     bot.recover_overdue_pending.assert_awaited_once()  # type: ignore[attr-defined]
     start.assert_called_once()
+    notification_start.assert_called_once()
     assert bot._recovery_complete.is_set()
 
 
@@ -176,11 +185,78 @@ async def test_startup_recoveries_share_one_fixed_cutoff(
     bot.recover_overdue_pending = pending  # type: ignore[method-assign]
     monkeypatch.setattr(bot.polling_loop, "start", MagicMock())
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
+    monkeypatch.setattr(bot.notification_polling_loop, "start", MagicMock())
+    monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
 
     await bot.on_ready()
 
     assert processing.await_args.kwargs["recovery_cutoff"] == NOW
     assert pending.await_args.kwargs["recovery_cutoff"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_order_and_both_loops_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    order: list[str] = []
+
+    async def processing(**kwargs):
+        order.append("processing")
+        return 0
+
+    async def pending(**kwargs):
+        order.append("pending")
+        return PendingRecoverySummary()
+
+    async def notification(**kwargs):
+        order.append("notification")
+        return NotificationRecoverySummary()
+
+    bot.recover_expired_processing = processing  # type: ignore[method-assign]
+    bot.recover_overdue_pending = pending  # type: ignore[method-assign]
+    bot.recover_expired_notifications = notification  # type: ignore[method-assign]
+    poll_start = MagicMock(side_effect=lambda: order.append("schedule_loop"))
+    notification_start = MagicMock(side_effect=lambda: order.append("notification_loop"))
+    monkeypatch.setattr(bot.polling_loop, "start", poll_start)
+    monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
+    monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
+    monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
+
+    await bot.on_ready()
+
+    assert order == [
+        "processing",
+        "pending",
+        "notification",
+        "schedule_loop",
+        "notification_loop",
+    ]
+    assert bot._recovery_complete.is_set()
+
+
+@pytest.mark.asyncio
+async def test_notification_recovery_failure_starts_neither_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    bot.recover_expired_processing = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        return_value=PendingRecoverySummary()
+    )
+    bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("safe notification recovery failure")
+    )
+    schedule_start = MagicMock()
+    notification_start = MagicMock()
+    monkeypatch.setattr(bot.polling_loop, "start", schedule_start)
+    monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
+
+    await bot.on_ready()
+
+    schedule_start.assert_not_called()
+    notification_start.assert_not_called()
+    assert not bot._recovery_complete.is_set()
 
 
 @pytest.mark.asyncio
@@ -420,6 +496,32 @@ async def test_full_twenty_fifth_pending_batch_is_incomplete(
     with pytest.raises(StartupRecoveryIncompleteError) as captured:
         await bot.recover_overdue_pending(recovery_cutoff=NOW)
     assert captured.value.recovered_count == 50
+    assert len(sessions) == MAX_STARTUP_RECOVERY_BATCHES
+    assert all(session.exits == [None] for session in sessions)
+
+
+@pytest.mark.asyncio
+async def test_full_twenty_fifth_notification_batch_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    sessions: list[Session] = []
+    bot.session_factory = lambda: sessions.append(Session()) or sessions[-1]  # type: ignore[assignment]
+
+    class NotificationRecovery:
+        def __init__(self, unused_session, **kwargs):
+            pass
+
+        async def recover_expired(self, **kwargs):
+            return NotificationRecoverySummary(selected=bot.settings.notification_batch_size)
+
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.NotificationRecoveryService",
+        NotificationRecovery,
+    )
+    with pytest.raises(StartupRecoveryIncompleteError) as captured:
+        await ReminderBot.recover_expired_notifications(bot, recovery_cutoff=NOW)
+    assert captured.value.recovered_count == 500
     assert len(sessions) == MAX_STARTUP_RECOVERY_BATCHES
     assert all(session.exits == [None] for session in sessions)
 

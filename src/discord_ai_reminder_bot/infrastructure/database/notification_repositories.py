@@ -110,6 +110,7 @@ class NotificationLogRepository:
         )
         inserted_id = (await self._session.execute(statement)).scalar_one_or_none()
         if inserted_id is not None:
+            notification.id = inserted_id
             stored = await self._session.get(NotificationLog, inserted_id)
             assert stored is not None
             return stored
@@ -411,6 +412,7 @@ class NotificationAttemptRepository:
                 .where(NotificationAttempt.notification_log_id == notification_id)
                 .order_by(NotificationAttempt.attempt_number.desc(), NotificationAttempt.id.desc())
                 .limit(1)
+                .with_for_update()
             )
         ).scalar_one_or_none()
 
