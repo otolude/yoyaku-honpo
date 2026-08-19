@@ -650,6 +650,10 @@ Discordから待機時間を指定された場合は、その時刻を `next_att
 
 Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord接続完了後、通常ポーラー開始前に次を行う。
 
+起動処理の開始時にClockからUTC awareな`recovery_cutoff`を一度だけ取得し、全バッチで固定する。期限切れprocessing Recoveryとpending Recoveryはこの同じ値を使用し、それぞれ独立して最大25バッチ（1バッチ1～20件）まで実行する。25バッチ目が満杯なら成功済みバッチはcommit済みのまま未完了として起動を停止し、通常ポーラーを開始しない。各RepositoryとApplication Serviceはcommitまたはrollbackせず、Bot runtimeがバッチ単位のトランザクションを所有する。
+
+pending Recoveryは`FOR UPDATE SKIP LOCKED`で`scheduled_for, id`の安定順序によりrunを取得し、関係runを安定順序でロックしてからScheduleをロックする。Recovery中はDiscord APIを呼ばず、DB整理がすべて完了した後に通常ポーラーへ送信可能なpendingを渡す。processing Recoveryが失敗した場合はpending Recoveryを開始せず、pending Recoveryが失敗または未完了の場合もRecovery完了Eventを設定しない。Discord再接続では同一プロセスのRecoveryを再実行しない。
+
 1. DB接続とマイグレーション状態を確認する。
 2. 期限切れの処理権を持つ `processing` 実行を確認する。
 3. `claimed` のままなら送信開始前として `pending` へ戻す。
@@ -669,6 +673,8 @@ Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord
 
 遅延投稿の送信エラーには通常の最大4回ルールを適用する。
 
+15分判定は初回の正常な`attempt_count = 0`のpendingだけに適用し、`recovery_cutoff - scheduled_for <= 15分`を期限内とする。15分ちょうどを含み、15分を1マイクロ秒でも超えれば期限超過とする。正常なattempt 1～3の再試行待ちpendingは予定時刻が古くても15分判定から除外し、`next_attempt_at`に従って通常ポーラーへ残す。単発draftは予定時刻到達時にrunを`draft_without_content`で`skipped`とするが、Scheduleの`draft`、`next_run_at`、versionを維持する。
+
 ### 14.2 定期投稿の期限超過
 
 - 過去の各回は送信せず `skipped` として記録する。
@@ -679,7 +685,11 @@ Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord
 - 次回が存在しない本文なしの `draft` または `paused` は `ended` にせず、利用者または管理者が本文を設定して終了処理するか削除する。
 - 本文なしの定期 `draft` の `skipped` 回を確定するときは、復旧時刻より後の次回があれば `draft` のまま1件だけ生成する。次回がなければ既存の `next_run_at` とversionを維持し、確認・削除対象として残す。
 
-長期間停止して大量の履歴が必要になった場合も、Phase 1ではスキップした各予定回を個別の `schedule_runs` として保存する。ただし1回の復旧処理は500件までとし、超過分は次の処理へ分割してBotの起動を長時間止めない。
+長期間停止して大量の履歴が必要になった場合も、Phase 1ではスキップした各予定回を個別の `schedule_runs` として保存する。
+
+各定期予約で1回の起動時に補完する過去発生回は最大500回とし、超えた場合はRecovery未完了として通常ポーラーを開始しない。既存の終端runを再利用せず、未来日時も履歴で使用済みなら次の未使用発生日時へ進む。`paused`および既に終端状態のScheduleにpendingが残る場合はrunだけを安全に終端化し、Schedule状態を自動修復しない。startupでは終了日を過ぎた`paused`を`ended`へ変更しない。
+
+pendingとDeliveryAttemptの状態が一致せず二重送信を否定できない場合、runを`startup_inconsistent_pending`で`failed`にして既存Attempt履歴は変更しない。単発activeだけはScheduleも`failed`にし、定期および既に終端状態のScheduleは現在状態を維持する。通知送信、NotificationLog作成、通知ワーカーは後続の通知機能工程で実装する。
 
 ## 15. 下書き通知と運営者通知
 

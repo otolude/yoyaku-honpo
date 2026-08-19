@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -14,6 +14,10 @@ from discord.ext import commands, tasks
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.pending_recovery import (
+    PendingRecoverySummary,
+    PendingStartupRecoveryService,
+)
 from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryService
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleQueryService
 from discord_ai_reminder_bot.application.worker import PollingWorker
@@ -165,29 +169,76 @@ class ReminderBot(commands.Bot):
             self.logger.error("startup_recovery_failed", extra={"worker_id": str(self.worker_id)})
 
     async def _recover_and_start(self) -> None:
-        recovered = await self.recover_expired_processing()
+        recovery_cutoff = require_utc(self._clock.now())
+        recovered = await self.recover_expired_processing(recovery_cutoff=recovery_cutoff)
+        pending = await self.recover_overdue_pending(recovery_cutoff=recovery_cutoff)
         if self._closing:
             return
         self._recovery_complete.set()
         self.logger.info(
             "startup_recovery_complete",
-            extra={"worker_id": str(self.worker_id), "recovered": recovered},
+            extra={
+                "worker_id": str(self.worker_id),
+                "processing_recovered": recovered,
+                "initial_pending_preserved": pending.initial_pending_preserved,
+                "retry_pending_preserved": pending.retry_pending_preserved,
+                "runs_skipped": pending.runs_skipped,
+                "once_schedules_failed": pending.once_schedules_failed,
+                "future_runs_created": pending.future_runs_created,
+                "schedules_ended": pending.schedules_ended,
+                "inconsistencies_detected": pending.inconsistencies_detected,
+            },
         )
         if not self.polling_loop.is_running():
             self.polling_loop.start()
 
-    async def recover_expired_processing(self) -> int:
+    async def recover_expired_processing(self, *, recovery_cutoff: datetime | None = None) -> int:
+        recovery_cutoff = require_utc(recovery_cutoff or self._clock.now())
         total = 0
         for _ in range(MAX_STARTUP_RECOVERY_BATCHES):
             async with self.session_factory() as session, session.begin():
                 recovered = await ProcessingRecoveryService(session).recover_expired(
-                    recovered_at=require_utc(self._clock.now()),
+                    recovered_at=recovery_cutoff,
                     batch_size=self.settings.scheduler_batch_size,
                 )
             total += len(recovered)
             if len(recovered) < self.settings.scheduler_batch_size:
                 return total
         raise StartupRecoveryIncompleteError(total)
+
+    async def recover_overdue_pending(self, *, recovery_cutoff: datetime) -> PendingRecoverySummary:
+        recovery_cutoff = require_utc(recovery_cutoff)
+        total = PendingRecoverySummary()
+        batches = 0
+        for _ in range(MAX_STARTUP_RECOVERY_BATCHES):
+            async with self.session_factory() as session, session.begin():
+                recovered = await PendingStartupRecoveryService(session).recover_pending(
+                    recovery_cutoff=recovery_cutoff,
+                    batch_size=self.settings.scheduler_batch_size,
+                )
+            batches += 1
+            total.add(recovered)
+            if recovered.selected < self.settings.scheduler_batch_size:
+                self.logger.info(
+                    "startup_pending_recovery_complete",
+                    extra={
+                        "worker_id": str(self.worker_id),
+                        "batches_completed": batches,
+                        "initial_pending_preserved": total.initial_pending_preserved,
+                        "retry_pending_preserved": total.retry_pending_preserved,
+                        "runs_skipped": total.runs_skipped,
+                        "once_schedules_failed": total.once_schedules_failed,
+                        "future_runs_created": total.future_runs_created,
+                        "schedules_ended": total.schedules_ended,
+                        "inconsistencies_detected": total.inconsistencies_detected,
+                    },
+                )
+                return total
+        self.logger.error(
+            "startup_pending_recovery_incomplete",
+            extra={"worker_id": str(self.worker_id), "batches_completed": batches},
+        )
+        raise StartupRecoveryIncompleteError(total.selected)
 
     @tasks.loop(seconds=10.0, reconnect=False, name="database-polling-loop")
     async def polling_loop(self) -> None:

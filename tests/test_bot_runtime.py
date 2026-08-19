@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
 from discord_ai_reminder_bot.application.worker import PollResult
 from discord_ai_reminder_bot.bot.client import (
     MAX_RATELIMIT_TIMEOUT_SECONDS,
@@ -148,6 +149,9 @@ def test_post_group_is_registered_only_for_configured_guild() -> None:
 async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     bot = make_bot()
     bot.recover_expired_processing = AsyncMock(return_value=3)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        return_value=PendingRecoverySummary()
+    )
     start = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "start", start)
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
@@ -156,8 +160,45 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     await bot.on_ready()
 
     bot.recover_expired_processing.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.recover_overdue_pending.assert_awaited_once()  # type: ignore[attr-defined]
     start.assert_called_once()
     assert bot._recovery_complete.is_set()
+
+
+@pytest.mark.asyncio
+async def test_startup_recoveries_share_one_fixed_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    processing = AsyncMock(return_value=0)
+    pending = AsyncMock(return_value=PendingRecoverySummary())
+    bot.recover_expired_processing = processing  # type: ignore[method-assign]
+    bot.recover_overdue_pending = pending  # type: ignore[method-assign]
+    monkeypatch.setattr(bot.polling_loop, "start", MagicMock())
+    monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
+
+    await bot.on_ready()
+
+    assert processing.await_args.kwargs["recovery_cutoff"] == NOW
+    assert pending.await_args.kwargs["recovery_cutoff"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_failure_never_starts_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    bot.recover_expired_processing = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("safe pending failure")
+    )
+    start = MagicMock()
+    monkeypatch.setattr(bot.polling_loop, "start", start)
+
+    await bot.on_ready()
+
+    start.assert_not_called()
+    assert not bot._recovery_complete.is_set()
 
 
 @pytest.mark.asyncio
@@ -168,11 +209,13 @@ async def test_recovery_failure_never_starts_polling(
     bot.recover_expired_processing = AsyncMock(  # type: ignore[method-assign]
         side_effect=RuntimeError(DATABASE_URL)
     )
+    bot.recover_overdue_pending = AsyncMock()  # type: ignore[method-assign]
     start = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "start", start)
     with caplog.at_level(logging.ERROR):
         await bot.on_ready()
     start.assert_not_called()
+    bot.recover_overdue_pending.assert_not_awaited()  # type: ignore[attr-defined]
     assert not bot._recovery_complete.is_set()
     assert DATABASE_URL not in caplog.text
     assert "test-password" not in caplog.text
@@ -354,6 +397,31 @@ async def test_recovery_limit_exception_carries_only_safe_count(
         await bot.recover_expired_processing()
     assert captured.value.recovered_count == 50
     assert DATABASE_URL not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_full_twenty_fifth_pending_batch_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    sessions: list[Session] = []
+    bot.session_factory = lambda: sessions.append(Session()) or sessions[-1]  # type: ignore[assignment]
+
+    class PendingRecovery:
+        def __init__(self, unused_session):
+            pass
+
+        async def recover_pending(self, **kwargs):
+            return PendingRecoverySummary(selected=bot.settings.scheduler_batch_size)
+
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.PendingStartupRecoveryService", PendingRecovery
+    )
+    with pytest.raises(StartupRecoveryIncompleteError) as captured:
+        await bot.recover_overdue_pending(recovery_cutoff=NOW)
+    assert captured.value.recovered_count == 50
+    assert len(sessions) == MAX_STARTUP_RECOVERY_BATCHES
+    assert all(session.exits == [None] for session in sessions)
 
 
 @pytest.mark.asyncio

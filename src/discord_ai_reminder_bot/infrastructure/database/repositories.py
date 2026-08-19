@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, or_, select, update
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,6 +107,64 @@ def build_expired_processing_statement(
             ScheduleRun.lease_expires_at.is_not(None),
         )
         .order_by(ScheduleRun.lease_expires_at.asc(), ScheduleRun.id.asc())
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def build_startup_pending_statement(
+    *, recovered_at: datetime, batch_size: int
+) -> Select[tuple[ScheduleRun]]:
+    """Lock overdue initial or unsafe pending runs, excluding healthy retries."""
+    recovered_at = require_utc(recovered_at)
+    if isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CLAIM_BATCH_SIZE:
+        raise ValueError(f"batch_size must be between 1 and {MAX_CLAIM_BATCH_SIZE}")
+    attempt_count = (
+        select(func.count(DeliveryAttempt.id))
+        .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+        .correlate(ScheduleRun)
+        .scalar_subquery()
+    )
+    failed_attempt_count = (
+        select(func.count(DeliveryAttempt.id))
+        .where(
+            DeliveryAttempt.schedule_run_id == ScheduleRun.id,
+            DeliveryAttempt.status == DeliveryAttemptStatus.FAILED.value,
+        )
+        .correlate(ScheduleRun)
+        .scalar_subquery()
+    )
+    max_attempt_number = (
+        select(func.max(DeliveryAttempt.attempt_number))
+        .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+        .correlate(ScheduleRun)
+        .scalar_subquery()
+    )
+    healthy_retry = and_(
+        ScheduleRun.attempt_count.between(1, 3),
+        attempt_count == ScheduleRun.attempt_count,
+        failed_attempt_count == ScheduleRun.attempt_count,
+        max_attempt_number == ScheduleRun.attempt_count,
+    )
+    healthy_delayed_once = and_(
+        ScheduleRun.attempt_count == 0,
+        attempt_count == 0,
+        ScheduleRun.scheduled_for >= recovered_at - timedelta(minutes=15),
+        Schedule.schedule_type == ScheduleType.ONCE.value,
+        Schedule.status == ScheduleStatus.ACTIVE.value,
+        Schedule.content.is_not(None),
+        Schedule.next_run_at == ScheduleRun.scheduled_for,
+    )
+    return (
+        select(ScheduleRun)
+        .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
+        .where(
+            ScheduleRun.status == RunStatus.PENDING.value,
+            ScheduleRun.scheduled_for <= recovered_at,
+            ~healthy_retry,
+            ~healthy_delayed_once,
+        )
+        .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
     )
@@ -579,6 +637,87 @@ class ScheduleRunRepository:
         statement = build_expired_processing_statement(
             recovered_at=recovered_at, batch_size=batch_size
         )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def lock_startup_pending(
+        self, *, recovered_at: datetime, batch_size: int
+    ) -> list[ScheduleRun]:
+        statement = build_startup_pending_statement(
+            recovered_at=recovered_at, batch_size=batch_size
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def count_startup_preserved(self, *, recovered_at: datetime) -> tuple[int, int]:
+        """Count normal overdue initial and retry pending rows excluded from recovery."""
+        recovered_at = require_utc(recovered_at)
+        attempt_count = (
+            select(func.count(DeliveryAttempt.id))
+            .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+            .correlate(ScheduleRun)
+            .scalar_subquery()
+        )
+        failed_count = (
+            select(func.count(DeliveryAttempt.id))
+            .where(
+                DeliveryAttempt.schedule_run_id == ScheduleRun.id,
+                DeliveryAttempt.status == DeliveryAttemptStatus.FAILED.value,
+            )
+            .correlate(ScheduleRun)
+            .scalar_subquery()
+        )
+        max_number = (
+            select(func.max(DeliveryAttempt.attempt_number))
+            .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+            .correlate(ScheduleRun)
+            .scalar_subquery()
+        )
+        base = (
+            ScheduleRun.status == RunStatus.PENDING.value,
+            ScheduleRun.scheduled_for <= recovered_at,
+        )
+        initial = await self._session.scalar(
+            select(func.count(ScheduleRun.id))
+            .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
+            .where(
+                *base,
+                ScheduleRun.attempt_count == 0,
+                attempt_count == 0,
+                ScheduleRun.scheduled_for >= recovered_at - timedelta(minutes=15),
+                Schedule.schedule_type == ScheduleType.ONCE.value,
+                Schedule.status == ScheduleStatus.ACTIVE.value,
+                Schedule.content.is_not(None),
+                Schedule.next_run_at == ScheduleRun.scheduled_for,
+            )
+        )
+        retry = await self._session.scalar(
+            select(func.count(ScheduleRun.id)).where(
+                *base,
+                ScheduleRun.attempt_count.between(1, 3),
+                attempt_count == ScheduleRun.attempt_count,
+                failed_count == ScheduleRun.attempt_count,
+                max_number == ScheduleRun.attempt_count,
+            )
+        )
+        return int(initial or 0), int(retry or 0)
+
+    async def list_attempts(self, *, run_id: int) -> list[DeliveryAttempt]:
+        statement = (
+            select(DeliveryAttempt)
+            .where(DeliveryAttempt.schedule_run_id == run_id)
+            .order_by(DeliveryAttempt.attempt_number.asc(), DeliveryAttempt.id.asc())
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def list_all_by_schedule(
+        self, *, schedule_id: int, lock: bool = False
+    ) -> list[ScheduleRun]:
+        statement = (
+            select(ScheduleRun)
+            .where(ScheduleRun.schedule_id == schedule_id)
+            .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
+        )
+        if lock:
+            statement = statement.with_for_update()
         return list((await self._session.execute(statement)).scalars())
 
     async def mark_sending_started(
