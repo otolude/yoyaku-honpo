@@ -8,6 +8,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.application.schedule_execution import recurring_next_run
 from discord_ai_reminder_bot.application.schedule_queries import parse_public_id
 from discord_ai_reminder_bot.domain.enums import (
@@ -77,10 +78,12 @@ class _TargetSnapshot:
 class SchedulePauseService:
     """Change recurring state without owning commit or rollback."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+        self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._operations = OperationLogRepository(session)
+        self._configured_guild_id = configured_guild_id
 
     async def pause(
         self,
@@ -141,6 +144,7 @@ class SchedulePauseService:
         actor_user_id: int,
         administrator: bool,
         resumed_at: datetime,
+        configured_guild_id: int | None = None,
     ) -> ResumedSchedule:
         resumed_at = require_utc(resumed_at)
         snapshot = _snapshot(await self._find(guild_id=guild_id, public_id=public_id))
@@ -183,7 +187,7 @@ class SchedulePauseService:
         else:
             target = ScheduleStatus.ACTIVE if schedule.content is not None else ScheduleStatus.DRAFT
             try:
-                await self._runs.add(
+                created_run = await self._runs.add(
                     ScheduleRun(
                         schedule_id=schedule.id,
                         scheduled_for=next_at,
@@ -220,6 +224,15 @@ class SchedulePauseService:
                 "next_run_recalculated": next_at is not None,
             },
         )
+        configured_guild_id = configured_guild_id or self._configured_guild_id
+        if (
+            next_at is not None
+            and target is ScheduleStatus.DRAFT
+            and configured_guild_id == schedule.guild_id
+        ):
+            await NotificationPlanningService(
+                self._session, configured_guild_id=schedule.guild_id
+            ).plan_for_run(schedule=schedule, run=created_run, event_at=resumed_at)
         return ResumedSchedule(
             public_id=schedule.public_id,
             channel_id=schedule.channel_id,

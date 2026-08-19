@@ -91,6 +91,7 @@ class PollingWorker:
         max_concurrency: int,
         lease_timeout: timedelta,
         logger: logging.Logger,
+        configured_guild_id: int | None = None,
     ) -> None:
         if not isinstance(worker_id, uuid.UUID):
             raise TypeError("worker_id must be a UUID")
@@ -108,6 +109,7 @@ class PollingWorker:
         self._lease_timeout = lease_timeout
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._logger = logger
+        self._configured_guild_id = configured_guild_id
 
     async def poll_once(self) -> PollResult:
         """Claim and completely process at most one configured batch, without waiting."""
@@ -300,9 +302,9 @@ class PollingWorker:
 
     async def _finalize(self, run_id: int) -> None:
         async with self._sessions() as session, session.begin():
-            await ScheduleExecutionService(session).finalize_run(
-                run_id=run_id, finalized_at=require_utc(self._clock.now())
-            )
+            await ScheduleExecutionService(
+                session, configured_guild_id=self._configured_guild_id
+            ).finalize_run(run_id=run_id, finalized_at=require_utc(self._clock.now()))
 
 
 async def _lock_one(session: AsyncSession, model, row_id: int):

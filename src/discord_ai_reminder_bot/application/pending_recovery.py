@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
     DeliveryAttemptStatus,
@@ -61,14 +62,21 @@ class PendingStartupRecoveryService:
     """Normalize one locked batch in the caller-owned transaction."""
 
     def __init__(self, session: AsyncSession) -> None:
+        self._session = session
         self._runs = ScheduleRunRepository(session)
         self._schedules = ScheduleRepository(session)
         self._operations = OperationLogRepository(session)
+        self._configured_guild_id: int | None = None
 
     async def recover_pending(
-        self, *, recovery_cutoff: datetime, batch_size: int
+        self,
+        *,
+        recovery_cutoff: datetime,
+        batch_size: int,
+        configured_guild_id: int | None = None,
     ) -> PendingRecoverySummary:
         recovery_cutoff = require_utc(recovery_cutoff)
+        self._configured_guild_id = configured_guild_id
         selected = await self._runs.lock_startup_pending(
             recovered_at=recovery_cutoff, batch_size=batch_size
         )
@@ -262,7 +270,7 @@ class PendingStartupRecoveryService:
                 )
                 result.schedules_ended += 1
             return
-        await self._runs.add(
+        future_run = await self._runs.add(
             ScheduleRun(
                 schedule_id=schedule.id,
                 scheduled_for=candidate,
@@ -276,6 +284,13 @@ class PendingStartupRecoveryService:
         schedule.updated_at = now
         schedule.version += 1
         await self._schedules.flush_execution_update(schedule)
+        if (
+            schedule.status == ScheduleStatus.DRAFT.value
+            and self._configured_guild_id == schedule.guild_id
+        ):
+            await NotificationPlanningService(
+                self._session, configured_guild_id=self._configured_guild_id
+            ).plan_for_run(schedule=schedule, run=future_run, event_at=now)
         result.future_runs_created += 1
 
     @staticmethod

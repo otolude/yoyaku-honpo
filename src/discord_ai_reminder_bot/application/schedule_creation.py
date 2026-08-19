@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.domain.enums import RunStatus, ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.recurrence import first_daily_run, first_weekly_run, require_utc
@@ -52,9 +53,11 @@ class DuplicateScheduleWarning(Exception):
 class OnceScheduleCreationService:
     """Build a Schedule and its first pending run without committing or rolling back."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+        self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
+        self._configured_guild_id = configured_guild_id
 
     async def create(
         self,
@@ -66,6 +69,7 @@ class OnceScheduleCreationService:
         content: str | None,
         allow_duplicate: bool,
         now: datetime,
+        configured_guild_id: int | None = None,
     ) -> CreatedOnceSchedule:
         scheduled_for = validate_once_scheduled_for(require_utc(scheduled_for), now=now)
         content = validate_create_content(content)
@@ -90,15 +94,18 @@ class OnceScheduleCreationService:
                 version=1,
             )
         )
-        await self._runs.add(
-            ScheduleRun(
-                schedule_id=schedule.id,
-                scheduled_for=scheduled_for,
-                status=RunStatus.PENDING.value,
-                attempt_count=0,
-                next_attempt_at=scheduled_for,
-            )
+        run = ScheduleRun(
+            schedule_id=schedule.id,
+            scheduled_for=scheduled_for,
+            status=RunStatus.PENDING.value,
+            attempt_count=0,
+            next_attempt_at=scheduled_for,
         )
+        await self._runs.add(run)
+        configured_guild_id = configured_guild_id or self._configured_guild_id
+        if configured_guild_id is not None and guild_id == configured_guild_id:
+            planner = NotificationPlanningService(self._session, configured_guild_id=guild_id)
+            await planner.plan_for_run(schedule=schedule, run=run, event_at=now)
         return CreatedOnceSchedule(
             public_id=schedule.public_id,
             channel_id=channel_id,
@@ -111,9 +118,11 @@ class OnceScheduleCreationService:
 class RecurringScheduleCreationService:
     """Build a daily or weekly schedule and first run in a caller-owned transaction."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
+        self._session = session
+        self._configured_guild_id = configured_guild_id
 
     async def create(
         self,
@@ -128,6 +137,7 @@ class RecurringScheduleCreationService:
         content: str | None,
         allow_duplicate: bool,
         now: datetime,
+        configured_guild_id: int | None = None,
     ) -> CreatedRecurringSchedule:
         now = require_utc(now)
         content = validate_create_content(content)
@@ -167,15 +177,19 @@ class RecurringScheduleCreationService:
                 version=1,
             )
         )
-        await self._runs.add(
-            ScheduleRun(
-                schedule_id=schedule.id,
-                scheduled_for=next_run_at,
-                status=RunStatus.PENDING.value,
-                attempt_count=0,
-                next_attempt_at=next_run_at,
-            )
+        run = ScheduleRun(
+            schedule_id=schedule.id,
+            scheduled_for=next_run_at,
+            status=RunStatus.PENDING.value,
+            attempt_count=0,
+            next_attempt_at=next_run_at,
         )
+        await self._runs.add(run)
+        configured_guild_id = configured_guild_id or self._configured_guild_id
+        if configured_guild_id is not None and guild_id == configured_guild_id:
+            await NotificationPlanningService(
+                self._session, configured_guild_id=guild_id
+            ).plan_for_run(schedule=schedule, run=run, event_at=now)
         return CreatedRecurringSchedule(
             public_id=schedule.public_id,
             channel_id=channel_id,

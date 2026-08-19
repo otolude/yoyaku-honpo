@@ -8,6 +8,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.application.schedule_queries import parse_public_id
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
@@ -112,11 +113,13 @@ class _Snapshot:
 class ScheduleEditingService:
     """Edit a schedule without owning commit or rollback."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+        self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._operations = OperationLogRepository(session)
         self._attempts = DeliveryAttemptRepository(session)
+        self._configured_guild_id = configured_guild_id
 
     async def edit(
         self,
@@ -127,6 +130,7 @@ class ScheduleEditingService:
         administrator: bool,
         values: EditValues,
         edited_at: datetime,
+        configured_guild_id: int | None = None,
     ) -> EditedSchedule:
         edited_at = require_utc(edited_at)
         if not values.has_request():
@@ -230,12 +234,13 @@ class ScheduleEditingService:
                     replace_run = True
 
         pending_count = 0
+        created_run: ScheduleRun | None = None
         if replace_run:
             pending_count = sum(run.status == RunStatus.PENDING.value for run in runs)
             await self._runs.skip_pending_for_edited_schedule(runs=runs, edited_at=edited_at)
             if next_run is not None:
                 try:
-                    await self._runs.add(
+                    created_run = await self._runs.add(
                         ScheduleRun(
                             schedule_id=schedule.id,
                             scheduled_for=next_run,
@@ -294,6 +299,21 @@ class ScheduleEditingService:
                 created_at=edited_at,
             )
         )
+        configured_guild_id = configured_guild_id or self._configured_guild_id
+        if target is ScheduleStatus.DRAFT and configured_guild_id == schedule.guild_id:
+            planned_run = created_run or next(
+                (
+                    item
+                    for item in runs
+                    if item.scheduled_for == schedule.next_run_at
+                    and item.status == RunStatus.PENDING.value
+                ),
+                None,
+            )
+            if planned_run is not None:
+                await NotificationPlanningService(
+                    self._session, configured_guild_id=schedule.guild_id
+                ).plan_for_run(schedule=schedule, run=planned_run, event_at=edited_at)
         retry_preserved = not replace_run and any(
             run.status == RunStatus.PENDING.value and run.attempt_count > 0 for run in runs
         )

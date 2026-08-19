@@ -730,7 +730,11 @@ NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サ�
 
 通知Gatewayはconfigured guildのキャッシュ済みTextChannelと権限を検証し、DMは`get_user`、cache miss時だけ`fetch_user`を使用する。Bot自身、固定operator ID不一致、別guild、TextChannel以外を拒否し、`fetch_channel`、独自sleep、独自retryを使用しない。fallbackは`creator_dm → operator_channel → operator_dm → log`で別NotificationLogとして作り、元の論理イベントkeyを維持して経路だけを変える。
 
-起動時は予約processing、期限超過pending、notification leaseの順に同じcutoffで各最大25 batchを復旧し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。通知イベント生成者との接続はこの段階では未実装とする。
+下書き事前通知はScheduleRun生成・置換と同じcaller-owned transactionで`creator_dm` outboxをINSERTする。`remaining > 24h`と`=24h`は`draft_24h`と`draft_1h`、`1h < remaining < 24h`と`=1h`は`draft_1h`、`0 < remaining < 1h`は`draft_immediate`、`remaining <= 0`は生成なしとする。keyはSchedule UUIDv7、Run時刻、type、routeから作り、旧Run行を業務Serviceからlock/cancelしない。
+
+起動時は予約processing、期限超過pending、notification lease、draft notification bootstrapの順に同じcutoffで各最大25 batchを処理し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。bootstrapはfuture draftのRunを`scheduled_for, id`順に`FOR UPDATE SKIP LOCKED`で取得してからScheduleをlockし、cutoffより前の未claim pending通知のみcancelする。過ぎた24h/1hは再生成せず、残り1時間未満ならRun単位でimmediateを最大1件作る。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。
+
+この段階では下書き事前通知の生成だけを接続する。投稿failed・unknown、draft時刻到来、Processing/Pending Recoveryの運営者通知、およびProcessing Recovery後のSchedule finalize修正は未接続とする。
 
 ## 16. 30日後の自動削除
 

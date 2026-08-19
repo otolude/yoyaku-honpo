@@ -12,6 +12,9 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
+from discord_ai_reminder_bot.application.draft_notification_bootstrap import (
+    DraftNotificationBootstrapSummary,
+)
 from discord_ai_reminder_bot.application.gateway import MessageGateway
 from discord_ai_reminder_bot.application.notification_recovery import NotificationRecoverySummary
 from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
@@ -157,6 +160,12 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
         return_value=PendingRecoverySummary()
     )
+    bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=NotificationRecoverySummary()
+    )
+    bot.bootstrap_draft_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=DraftNotificationBootstrapSummary()
+    )
     start = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "start", start)
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
@@ -183,6 +192,10 @@ async def test_startup_recoveries_share_one_fixed_cutoff(
     pending = AsyncMock(return_value=PendingRecoverySummary())
     bot.recover_expired_processing = processing  # type: ignore[method-assign]
     bot.recover_overdue_pending = pending  # type: ignore[method-assign]
+    notification = AsyncMock(return_value=NotificationRecoverySummary())
+    bootstrap = AsyncMock(return_value=DraftNotificationBootstrapSummary())
+    bot.recover_expired_notifications = notification  # type: ignore[method-assign]
+    bot.bootstrap_draft_notifications = bootstrap  # type: ignore[method-assign]
     monkeypatch.setattr(bot.polling_loop, "start", MagicMock())
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
     monkeypatch.setattr(bot.notification_polling_loop, "start", MagicMock())
@@ -192,6 +205,8 @@ async def test_startup_recoveries_share_one_fixed_cutoff(
 
     assert processing.await_args.kwargs["recovery_cutoff"] == NOW
     assert pending.await_args.kwargs["recovery_cutoff"] == NOW
+    assert notification.await_args.kwargs["recovery_cutoff"] == NOW
+    assert bootstrap.await_args.kwargs["recovery_cutoff"] == NOW
 
 
 @pytest.mark.asyncio
@@ -213,9 +228,14 @@ async def test_startup_recovery_order_and_both_loops_start(
         order.append("notification")
         return NotificationRecoverySummary()
 
+    async def bootstrap(**kwargs):
+        order.append("bootstrap")
+        return DraftNotificationBootstrapSummary()
+
     bot.recover_expired_processing = processing  # type: ignore[method-assign]
     bot.recover_overdue_pending = pending  # type: ignore[method-assign]
     bot.recover_expired_notifications = notification  # type: ignore[method-assign]
+    bot.bootstrap_draft_notifications = bootstrap  # type: ignore[method-assign]
     poll_start = MagicMock(side_effect=lambda: order.append("schedule_loop"))
     notification_start = MagicMock(side_effect=lambda: order.append("notification_loop"))
     monkeypatch.setattr(bot.polling_loop, "start", poll_start)
@@ -229,6 +249,7 @@ async def test_startup_recovery_order_and_both_loops_start(
         "processing",
         "pending",
         "notification",
+        "bootstrap",
         "schedule_loop",
         "notification_loop",
     ]
@@ -521,6 +542,31 @@ async def test_full_twenty_fifth_notification_batch_is_incomplete(
     )
     with pytest.raises(StartupRecoveryIncompleteError) as captured:
         await ReminderBot.recover_expired_notifications(bot, recovery_cutoff=NOW)
+    assert captured.value.recovered_count == 500
+    assert len(sessions) == MAX_STARTUP_RECOVERY_BATCHES
+    assert all(session.exits == [None] for session in sessions)
+
+
+@pytest.mark.asyncio
+async def test_full_twenty_fifth_draft_bootstrap_batch_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    sessions: list[Session] = []
+    bot.session_factory = lambda: sessions.append(Session()) or sessions[-1]  # type: ignore[assignment]
+
+    class Bootstrap:
+        def __init__(self, unused_session, **kwargs):
+            pass
+
+        async def bootstrap(self, **kwargs):
+            return DraftNotificationBootstrapSummary(selected=bot.settings.notification_batch_size)
+
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.DraftNotificationBootstrapService", Bootstrap
+    )
+    with pytest.raises(StartupRecoveryIncompleteError) as captured:
+        await bot.bootstrap_draft_notifications(recovery_cutoff=NOW)
     assert captured.value.recovered_count == 500
     assert len(sessions) == MAX_STARTUP_RECOVERY_BATCHES
     assert all(session.exits == [None] for session in sessions)

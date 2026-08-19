@@ -259,7 +259,11 @@ Recovery未完了、DB障害、通知Worker自身の障害はDiscord通知の対
 
 通知outboxは予約投稿Workerとは独立した通知Workerが処理する。1サイクルでclaimをcommitし、短い送信前再検証トランザクションを閉じてからDiscordへ1回だけ送信し、結果を別トランザクションで保存する。最大並行数、batch、poll間隔、processing leaseは通知専用設定を使用する。expired leaseのclaimedは1分・5分の規則で再試行し、sendingは結果不明として再送しない。不整合もunknownへ安全に終端化する。
 
-permanentまたは3回上限だけ、`creator_dm → operator_channel → operator_dm → log`の順で別outbox行を冪等作成する。unknown、retry中、cancelledではfallbackを作らない。`log`経路はDiscord APIを呼ばず安全なERRORイベントだけを記録する。通知本文は固定plain text、2,000文字以内、投稿本文なし、メンション無効とする。通知イベントを業務処理から生成する接続は後続工程とする。
+permanentまたは3回上限だけ、`creator_dm → operator_channel → operator_dm → log`の順で別outbox行を冪等作成する。unknown、retry中、cancelledではfallbackを作らない。`log`経路はDiscord APIを呼ばず安全なERRORイベントだけを記録する。通知本文は固定plain text、2,000文字以内、投稿本文なし、メンション無効とする。
+
+下書き事前通知はJIT生成せず、現在のScheduleRunを作成・置換する業務トランザクション内で未来outboxを事前作成する。残り24時間以上は24時間前と1時間前、残り1時間以上24時間未満は1時間前、残り1時間未満かつ未来は即時通知を作り、24時間・1時間ちょうどを各通知に含める。起動時bootstrapは固定`recovery_cutoff`より前の未claim pending事前通知だけを`cancelled`にし、後追い送信せず、現在のfuture draft Runに不足する計画を冪等作成する。旧Runやactive化・pause・delete後の通知は送信前再検証でcancelする。
+
+bootstrapは通知batch sizeで最大25バッチとし、4種類のRecovery/Bootstrapがすべて完了した後だけ予約投稿と通知の両loopを開始する。投稿failed・unknown、draft時刻到来、Processing/Pending Recoveryの運営者通知、およびProcessing Recovery後のSchedule finalize修正は後続工程とする。
 
 ## 9. 失敗時の再試行
 

@@ -28,6 +28,7 @@ from discord_ai_reminder_bot.infrastructure.database.exceptions import (
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NotificationLog,
     OperationLog,
     Schedule,
     ScheduleRun,
@@ -644,6 +645,51 @@ class ScheduleRunRepository:
     ) -> list[ScheduleRun]:
         statement = build_startup_pending_statement(
             recovered_at=recovered_at, batch_size=batch_size
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def lock_draft_notification_bootstrap(
+        self, *, recovery_cutoff: datetime, configured_guild_id: int, batch_size: int
+    ) -> list[ScheduleRun]:
+        recovery_cutoff = require_utc(recovery_cutoff)
+        if isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CLAIM_BATCH_SIZE:
+            raise ValueError("batch_size must be between 1 and 20")
+        draft_types = ("draft_24h", "draft_1h", "draft_immediate")
+        existing_future = (
+            select(NotificationLog.id)
+            .where(
+                NotificationLog.schedule_run_id == ScheduleRun.id,
+                NotificationLog.notification_type.in_(draft_types),
+                NotificationLog.scheduled_at >= recovery_cutoff,
+            )
+            .exists()
+        )
+        stale_pending = (
+            select(NotificationLog.id)
+            .where(
+                NotificationLog.schedule_run_id == ScheduleRun.id,
+                NotificationLog.notification_type.in_(draft_types),
+                NotificationLog.status == "pending",
+                NotificationLog.scheduled_at < recovery_cutoff,
+            )
+            .exists()
+        )
+        statement = (
+            select(ScheduleRun)
+            .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
+            .where(
+                Schedule.guild_id == configured_guild_id,
+                Schedule.status == ScheduleStatus.DRAFT.value,
+                Schedule.content.is_(None),
+                Schedule.next_run_at == ScheduleRun.scheduled_for,
+                ScheduleRun.status == RunStatus.PENDING.value,
+                ScheduleRun.attempt_count == 0,
+                ScheduleRun.scheduled_for > recovery_cutoff,
+                or_(stale_pending, ~existing_future),
+            )
+            .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
+            .limit(batch_size)
+            .with_for_update(of=ScheduleRun, skip_locked=True)
         )
         return list((await self._session.execute(statement)).scalars())
 

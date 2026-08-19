@@ -13,6 +13,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from discord_ai_reminder_bot.application.draft_notification_bootstrap import (
+    DraftNotificationBootstrapService,
+    DraftNotificationBootstrapSummary,
+)
 from discord_ai_reminder_bot.application.gateway import MessageGateway
 from discord_ai_reminder_bot.application.notification_gateway import NotificationGateway
 from discord_ai_reminder_bot.application.notification_recovery import (
@@ -107,6 +111,7 @@ class ReminderBot(commands.Bot):
             max_concurrency=settings.scheduler_max_concurrency,
             lease_timeout=timedelta(seconds=settings.scheduler_processing_timeout_seconds),
             logger=logger,
+            configured_guild_id=settings.discord_guild_id,
         )
         self.notification_worker = NotificationWorker(
             session_factory=session_factory,
@@ -206,6 +211,7 @@ class ReminderBot(commands.Bot):
         recovered = await self.recover_expired_processing(recovery_cutoff=recovery_cutoff)
         pending = await self.recover_overdue_pending(recovery_cutoff=recovery_cutoff)
         notification = await self.recover_expired_notifications(recovery_cutoff=recovery_cutoff)
+        draft_bootstrap = await self.bootstrap_draft_notifications(recovery_cutoff=recovery_cutoff)
         if self._closing:
             return
         self._recovery_complete.set()
@@ -222,6 +228,8 @@ class ReminderBot(commands.Bot):
                 "schedules_ended": pending.schedules_ended,
                 "inconsistencies_detected": pending.inconsistencies_detected,
                 "notifications_recovered": notification.selected,
+                "draft_notifications_cancelled": draft_bootstrap.notifications_cancelled,
+                "draft_notifications_planned": draft_bootstrap.notifications_planned,
             },
         )
         if not self.polling_loop.is_running():
@@ -252,6 +260,7 @@ class ReminderBot(commands.Bot):
                 recovered = await PendingStartupRecoveryService(session).recover_pending(
                     recovery_cutoff=recovery_cutoff,
                     batch_size=self.settings.scheduler_batch_size,
+                    configured_guild_id=self.settings.discord_guild_id,
                 )
             batches += 1
             total.add(recovered)
@@ -276,6 +285,39 @@ class ReminderBot(commands.Bot):
             extra={"worker_id": str(self.worker_id), "batches_completed": batches},
         )
         raise StartupRecoveryIncompleteError(total.selected)
+
+    async def bootstrap_draft_notifications(
+        self, *, recovery_cutoff: datetime
+    ) -> DraftNotificationBootstrapSummary:
+        recovery_cutoff = require_utc(recovery_cutoff)
+        selected = cancelled = planned = 0
+        for batch_index in range(MAX_STARTUP_RECOVERY_BATCHES):
+            async with self.session_factory() as session, session.begin():
+                result = await DraftNotificationBootstrapService(
+                    session, configured_guild_id=self.settings.discord_guild_id
+                ).bootstrap(
+                    recovery_cutoff=recovery_cutoff,
+                    batch_size=self.settings.notification_batch_size,
+                )
+            selected += result.selected
+            cancelled += result.notifications_cancelled
+            planned += result.notifications_planned
+            if result.selected < self.settings.notification_batch_size:
+                summary = DraftNotificationBootstrapSummary(selected, cancelled, planned)
+                self.logger.info(
+                    "startup_draft_notification_bootstrap_complete",
+                    extra={
+                        "batches_completed": batch_index + 1,
+                        "notifications_cancelled": cancelled,
+                        "notifications_planned": planned,
+                    },
+                )
+                return summary
+        self.logger.error(
+            "startup_draft_notification_bootstrap_incomplete",
+            extra={"batches_completed": MAX_STARTUP_RECOVERY_BATCHES},
+        )
+        raise StartupRecoveryIncompleteError(selected)
 
     async def recover_expired_notifications(
         self, *, recovery_cutoff: datetime

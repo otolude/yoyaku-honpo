@@ -289,9 +289,12 @@ class NotificationWorker:
             if (
                 schedule.status != ScheduleStatus.DRAFT.value
                 or schedule.content is not None
+                or schedule.next_run_at != run.scheduled_for
                 or run.status != RunStatus.PENDING.value
+                or run.attempt_count != 0
                 or run.scheduled_for <= now
                 or _instant_token(run.scheduled_for) not in log.deduplication_key
+                or not _draft_timing_is_valid(kind, log.scheduled_at, run.scheduled_for)
             ):
                 return None
             if (
@@ -419,6 +422,16 @@ class NotificationWorker:
                 error_summary="Notification delivery result is unknown",
             )
         return NotificationItemResult.UNKNOWN
+
+
+def _draft_timing_is_valid(kind: NotificationType, scheduled_at, run_at) -> bool:
+    scheduled_at = require_utc(scheduled_at)
+    run_at = require_utc(run_at)
+    if kind is NotificationType.DRAFT_24H:
+        return scheduled_at == run_at - timedelta(hours=24)
+    if kind is NotificationType.DRAFT_1H:
+        return scheduled_at == run_at - timedelta(hours=1)
+    return scheduled_at < run_at and run_at - scheduled_at < timedelta(hours=1)
 
 
 async def _lock_one(session: AsyncSession, model, row_id: int):

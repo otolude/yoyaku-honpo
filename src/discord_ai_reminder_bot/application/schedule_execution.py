@@ -6,6 +6,7 @@ from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
     OperationAction,
@@ -99,10 +100,12 @@ def recurring_next_run(
 class ScheduleExecutionService:
     """Finalize one locked run in a caller-owned transaction."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+        self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._operations = OperationLogRepository(session)
+        self._configured_guild_id = configured_guild_id
 
     async def finalize_run(self, *, run_id: int, finalized_at: datetime) -> FinalizedScheduleRun:
         finalized_at = require_utc(finalized_at)
@@ -277,6 +280,10 @@ class ScheduleExecutionService:
         schedule.updated_at = finalized_at
         schedule.version += 1
         await self._schedules.flush_execution_update(schedule)
+        if current is ScheduleStatus.DRAFT and self._configured_guild_id == schedule.guild_id:
+            await NotificationPlanningService(
+                self._session, configured_guild_id=self._configured_guild_id
+            ).plan_for_run(schedule=schedule, run=next_run, event_at=finalized_at)
         return FinalizedScheduleRun(schedule, run, next_run, None, FinalizationResult.APPLIED)
 
     async def _add_system_operation(

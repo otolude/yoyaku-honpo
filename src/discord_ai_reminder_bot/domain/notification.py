@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from discord_ai_reminder_bot.domain.enums import NotificationRecipientType, NotificationType
+from discord_ai_reminder_bot.domain.enums import (
+    NotificationRecipientType,
+    NotificationType,
+    RunStatus,
+    ScheduleStatus,
+    ScheduleType,
+)
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 
 MAX_NOTIFICATION_ATTEMPTS = 3
@@ -33,6 +39,54 @@ class NotificationDecisionAction(StrEnum):
 class NotificationDecision:
     action: NotificationDecisionAction
     next_attempt_at: datetime | None
+
+
+@dataclass(frozen=True)
+class DraftNotificationPlan:
+    notification_type: NotificationType
+    scheduled_at: datetime
+
+
+def plan_draft_notifications(
+    *,
+    event_at: datetime,
+    scheduled_for: datetime,
+    schedule_status: ScheduleStatus,
+    content: str | None,
+    schedule_type: ScheduleType,
+    run_status: RunStatus,
+    attempt_count: int,
+    next_run_at: datetime | None,
+) -> tuple[DraftNotificationPlan, ...]:
+    """Plan future draft reminders without replaying elapsed thresholds."""
+    event_at = require_utc(event_at)
+    scheduled_for = require_utc(scheduled_for)
+    if next_run_at is not None:
+        next_run_at = require_utc(next_run_at)
+    ScheduleType(schedule_type)
+    if isinstance(attempt_count, bool) or attempt_count < 0:
+        raise ValueError("attempt_count must be a non-negative integer")
+    if (
+        ScheduleStatus(schedule_status) is not ScheduleStatus.DRAFT
+        or content is not None
+        or RunStatus(run_status) is not RunStatus.PENDING
+        or attempt_count != 0
+        or next_run_at != scheduled_for
+    ):
+        return ()
+    remaining = scheduled_for - event_at
+    if remaining <= timedelta(0):
+        return ()
+    if remaining >= timedelta(hours=24):
+        return (
+            DraftNotificationPlan(NotificationType.DRAFT_24H, scheduled_for - timedelta(hours=24)),
+            DraftNotificationPlan(NotificationType.DRAFT_1H, scheduled_for - timedelta(hours=1)),
+        )
+    if remaining >= timedelta(hours=1):
+        return (
+            DraftNotificationPlan(NotificationType.DRAFT_1H, scheduled_for - timedelta(hours=1)),
+        )
+    return (DraftNotificationPlan(NotificationType.DRAFT_IMMEDIATE, event_at),)
 
 
 def notification_deduplication_key(

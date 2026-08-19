@@ -256,6 +256,7 @@ class PostCommands(app_commands.Group):
                     content=content,
                     allow_duplicate=allow_duplicate,
                     now=now,
+                    configured_guild_id=self._configured_guild_id,
                 )
         except DuplicateScheduleWarning:
             await respond_ephemeral(interaction, DUPLICATE_WARNING_MESSAGE, logger=self._logger)
@@ -497,6 +498,7 @@ class PostCommands(app_commands.Group):
                         clear_end_date=clear_end_date,
                     ),
                     edited_at=now,
+                    configured_guild_id=self._configured_guild_id,
                 )
         except ScheduleEditNoChanges:
             await respond_ephemeral(interaction, EDIT_NO_CHANGES_MESSAGE, logger=self._logger)
@@ -555,6 +557,7 @@ class PostCommands(app_commands.Group):
                     changed = await service.resume(
                         **arguments,
                         resumed_at=self._clock.now(),
+                        configured_guild_id=self._configured_guild_id,
                     )
                 else:
                     changed = await service.pause(
@@ -807,6 +810,7 @@ class PostCommands(app_commands.Group):
                     content=content,
                     allow_duplicate=allow_duplicate,
                     now=now,
+                    configured_guild_id=self._configured_guild_id,
                 )
         except DuplicateScheduleWarning:
             await respond_ephemeral(interaction, DUPLICATE_WARNING_MESSAGE, logger=self._logger)

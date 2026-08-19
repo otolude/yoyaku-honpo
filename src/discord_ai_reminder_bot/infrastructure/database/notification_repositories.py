@@ -14,6 +14,7 @@ from discord_ai_reminder_bot.domain.enums import (
     NotificationAttemptStatus,
     NotificationErrorKind,
     NotificationStatus,
+    NotificationType,
 )
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.domain.safe_text import validate_safe_error_text
@@ -28,6 +29,14 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
 )
 
 MAX_NOTIFICATION_CLAIM_BATCH_SIZE = 20
+_DRAFT_NOTIFICATION_VALUES = tuple(
+    item.value
+    for item in (
+        NotificationType.DRAFT_24H,
+        NotificationType.DRAFT_1H,
+        NotificationType.DRAFT_IMMEDIATE,
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,41 @@ class NotificationLogRepository:
     async def lock_expired(self, *, now: datetime, batch_size: int) -> list[NotificationLog]:
         statement = build_expired_notification_statement(now=now, batch_size=batch_size)
         return list((await self._session.execute(statement)).scalars())
+
+    async def list_draft_for_run(self, *, run_id: int) -> list[NotificationLog]:
+        return list(
+            (
+                await self._session.execute(
+                    select(NotificationLog)
+                    .where(
+                        NotificationLog.schedule_run_id == run_id,
+                        NotificationLog.notification_type.in_(_DRAFT_NOTIFICATION_VALUES),
+                    )
+                    .order_by(NotificationLog.scheduled_at.asc(), NotificationLog.id.asc())
+                )
+            ).scalars()
+        )
+
+    async def cancel_unclaimed_overdue_draft(self, *, run_id: int, cutoff: datetime) -> int:
+        cutoff = require_utc(cutoff)
+        result = await self._session.execute(
+            update(NotificationLog)
+            .where(
+                NotificationLog.schedule_run_id == run_id,
+                NotificationLog.notification_type.in_(_DRAFT_NOTIFICATION_VALUES),
+                NotificationLog.status == NotificationStatus.PENDING.value,
+                NotificationLog.scheduled_at < cutoff,
+            )
+            .values(
+                status=NotificationStatus.CANCELLED.value,
+                next_attempt_at=None,
+                finished_at=cutoff,
+                error_code="draft_notification_elapsed",
+                error_summary="Draft notification threshold elapsed while delivery was unavailable",
+            )
+        )
+        await self._session.flush()
+        return int(result.rowcount or 0)
 
     async def mark_sending_started(
         self, *, notification_id: int, worker_id: uuid.UUID, now: datetime
