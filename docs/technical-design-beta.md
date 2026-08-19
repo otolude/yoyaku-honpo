@@ -406,6 +406,8 @@ Schedule、pending run、OperationLogは同一トランザクションで更新�
 
 ### 6.6 `notification_logs`：通知履歴
 
+`notification_logs`は1つの論理通知における1つの送信経路を表すoutboxとする。フォールバックではrecipientを書き換えず別行を作り、各物理試行は`notification_attempts`へ保存する。draft通知はScheduleとScheduleRunの両方へ関連付け、投稿本文・通知本文は保存しない。
+
 | カラム | 型 | NULL | 説明 |
 | --- | --- | --- | --- |
 | `id` | BIGINT IDENTITY | 不可 | 内部主キー |
@@ -430,6 +432,8 @@ Schedule、pending run、OperationLogは同一トランザクションで更新�
 - `(schedule_id, created_at DESC)`：予約別通知履歴
 
 本文や内部例外全文は通知履歴へ保存しない。
+
+outboxには`scheduled_at`、`next_attempt_at`、`attempt_count`、claim・lease、開始・終了日時を持たせる。状態は`pending`、`processing`、`succeeded`、`failed`、`unknown`、`cancelled`とする。pending取得とprocessing lease復旧には部分インデックスを使用する。`notification_attempts`は通知経路ごとに最大3回の`claimed`、`sending`、`succeeded`、`failed`、`unknown`を記録し、送信成功時だけDiscord message IDを保存する。
 
 ## 7. 状態遷移
 
@@ -706,6 +710,8 @@ pendingとDeliveryAttemptの状態が一致せず二重送信を否定できな�
 
 下書きDMに失敗した場合は運営者通知へ切り替える。
 
+24時間・1時間境界は包含する。停止中に過ぎた事前通知は後追いせず、復旧時点で予定前かつ残り1時間未満のdraftだけ`draft_immediate`を発生回ごとに1回生成する。activeからdraftへの編集も残り時間に応じて24時間・1時間・即時を同じ規則で選ぶ。pause、delete、active化、日時編集で不要になった未送信通知は送信前再検証で`cancelled`とする。
+
 ### 15.2 運営者通知
 
 共通の通知サービスが次の順で処理する。
@@ -716,7 +722,11 @@ pendingとDeliveryAttemptの状態が一致せず二重送信を否定できな�
 
 通知には予約ID、実行履歴ID、発生時刻、投稿先、短い原因、必要な対応を含める。Botトークン、DB接続情報、投稿本文、内部例外全文は含めない。各経路の成功・失敗を `notification_logs` に残す。
 
+通知はplain text 2,000文字以内とし、投稿本文と本文プレビューを含めず、AllowedMentionsをすべて無効にする。transientだけを1分後・5分後に再試行し、初回を含め最大3回とする。Rate Limitは未来のRetry-Afterを優先し、permanentまたは上限到達ではフォールバックを許可する。unknownは再送もフォールバックもしない。通知Workerは起動Recovery完全成功後だけ開始し、Recovery未完了、DB障害、通知Worker自身の障害は安全なERRORログと外部監視へ委ねる。バックグラウンド通知はephemeralではなく、追加IntentやAdministrator権限を要求しない。
+
 ## 16. 30日後の自動削除
+
+Schedule関連通知は親Scheduleの物理削除前に`notification_attempts`、`notification_logs`の順で明示削除する。全体通知は`created_at`から30日後に削除する。failed Schedule関連通知は運営者確認と論理削除が完了するまで保持する。物理削除Worker自体は後続工程で実装する。
 
 Bot内の保守ループを1日1回、日本時間04:00に実行する。APSchedulerは使用せず、`discord.ext.tasks.loop(time=...)` を利用する。
 

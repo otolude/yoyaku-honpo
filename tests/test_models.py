@@ -14,6 +14,7 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
     RUN_STATUSES,
     SCHEDULE_STATUSES,
     DeliveryAttempt,
+    NotificationAttempt,
     NotificationLog,
     OperationLog,
     Schedule,
@@ -26,6 +27,7 @@ EXPECTED_TABLES = {
     "delivery_attempts",
     "operation_logs",
     "notification_logs",
+    "notification_attempts",
 }
 
 
@@ -72,6 +74,7 @@ def test_foreign_keys_use_internal_bigint_and_restrict_deletion() -> None:
         ("operation_logs", "schedule_id", "schedules.id"),
         ("notification_logs", "schedule_id", "schedules.id"),
         ("notification_logs", "schedule_run_id", "schedule_runs.id"),
+        ("notification_attempts", "notification_log_id", "notification_logs.id"),
     }
 
     actual: set[tuple[str, str, str]] = set()
@@ -99,7 +102,23 @@ def test_timestamps_use_timezone_aware_columns() -> None:
         ),
         "delivery_attempts": ("claimed_at", "send_started_at", "finished_at"),
         "operation_logs": ("created_at",),
-        "notification_logs": ("created_at", "sent_at"),
+        "notification_logs": (
+            "created_at",
+            "sent_at",
+            "scheduled_at",
+            "next_attempt_at",
+            "claimed_at",
+            "lease_expires_at",
+            "started_at",
+            "finished_at",
+        ),
+        "notification_attempts": (
+            "claimed_at",
+            "send_started_at",
+            "finished_at",
+            "created_at",
+            "updated_at",
+        ),
     }
 
     for table_name, columns in timestamp_columns.items():
@@ -140,7 +159,14 @@ def test_state_constants_match_technical_design() -> None:
         "failed",
         "unknown",
     )
-    assert NOTIFICATION_STATUSES == ("pending", "succeeded", "failed")
+    assert NOTIFICATION_STATUSES == (
+        "pending",
+        "processing",
+        "succeeded",
+        "failed",
+        "unknown",
+        "cancelled",
+    )
     assert OPERATION_ACTIONS == (
         "created",
         "edited",
@@ -218,9 +244,12 @@ def test_required_indexes_exist() -> None:
         "ix_operation_logs_actor_created_desc",
     }
     assert index_names("notification_logs") == {
+        "ix_notification_logs_pending_due",
+        "ix_notification_logs_processing_lease",
         "ix_notification_logs_status_created_at",
         "ix_notification_logs_schedule_created_desc",
     }
+    assert index_names("notification_attempts") == {"ix_notification_attempts_log_number"}
 
 
 def test_models_can_be_constructed_without_database_io() -> None:
@@ -248,6 +277,16 @@ def test_models_can_be_constructed_without_database_io() -> None:
         recipient_id=3,
         status="pending",
         deduplication_key="test-key",
+        scheduled_at=datetime.now(UTC),
+        next_attempt_at=datetime.now(UTC),
+        attempt_count=0,
+    )
+    notification_attempt = NotificationAttempt(
+        notification_log_id=1,
+        attempt_number=1,
+        status="claimed",
+        claimed_by=uuid.uuid7(),
+        claimed_at=datetime.now(UTC),
     )
 
     assert schedule.schedule_type == "once"
@@ -255,6 +294,7 @@ def test_models_can_be_constructed_without_database_io() -> None:
     assert attempt.attempt_number == 1
     assert operation.action == "created"
     assert notification.status == "pending"
+    assert notification_attempt.attempt_number == 1
 
 
 def test_partial_indexes_have_postgresql_predicates() -> None:

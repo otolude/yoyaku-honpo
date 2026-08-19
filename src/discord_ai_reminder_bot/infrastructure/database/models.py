@@ -29,6 +29,8 @@ from discord_ai_reminder_bot.domain.enums import (
     DeleteKind,
     DeliveryAttemptStatus,
     DeliveryErrorKind,
+    NotificationAttemptStatus,
+    NotificationErrorKind,
     NotificationRecipientType,
     NotificationStatus,
     NotificationType,
@@ -51,6 +53,8 @@ DELETE_KINDS = enum_values(DeleteKind)
 NOTIFICATION_TYPES = enum_values(NotificationType)
 NOTIFICATION_RECIPIENT_TYPES = enum_values(NotificationRecipientType)
 NOTIFICATION_STATUSES = enum_values(NotificationStatus)
+NOTIFICATION_ATTEMPT_STATUSES = enum_values(NotificationAttemptStatus)
+NOTIFICATION_ERROR_KINDS = enum_values(NotificationErrorKind)
 
 
 def sql_values(values: tuple[str, ...]) -> str:
@@ -348,12 +352,56 @@ class NotificationLog(Base):
         ),
         CheckConstraint("recipient_id IS NULL OR recipient_id > 0", name="recipient_id_positive"),
         CheckConstraint(
-            "(status = 'succeeded' AND sent_at IS NOT NULL) "
-            "OR (status <> 'succeeded' AND sent_at IS NULL)",
+            "(status = 'pending' AND next_attempt_at IS NOT NULL "
+            "AND claimed_by IS NULL AND claimed_at IS NULL AND lease_expires_at IS NULL "
+            "AND finished_at IS NULL) OR "
+            "(status = 'processing' AND next_attempt_at IS NULL "
+            "AND claimed_by IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL AND finished_at IS NULL) OR "
+            "(status IN ('succeeded', 'failed', 'unknown', 'cancelled') "
+            "AND next_attempt_at IS NULL AND claimed_by IS NULL AND claimed_at IS NULL "
+            "AND lease_expires_at IS NULL AND finished_at IS NOT NULL)",
+            name="lifecycle_matches_status",
+        ),
+        CheckConstraint(
+            "(status = 'succeeded' AND sent_at IS NOT NULL) OR "
+            "(status <> 'succeeded' AND sent_at IS NULL)",
             name="sent_at_matches_status",
+        ),
+        CheckConstraint("attempt_count BETWEEN 0 AND 3", name="attempt_count_valid"),
+        CheckConstraint(
+            "claimed_at IS NULL OR lease_expires_at IS NULL OR claimed_at <= lease_expires_at",
+            name="claim_time_order_valid",
+        ),
+        CheckConstraint(
+            "started_at IS NULL OR started_at >= scheduled_at", name="started_after_scheduled"
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR finished_at >= scheduled_at", name="finished_after_scheduled"
+        ),
+        CheckConstraint(
+            "started_at IS NULL OR finished_at IS NULL OR started_at <= finished_at",
+            name="start_finish_order_valid",
+        ),
+        CheckConstraint(
+            "sent_at IS NULL OR (started_at IS NOT NULL AND sent_at >= started_at)",
+            name="sent_after_started",
         ),
         Index("ix_notification_logs_status_created_at", "status", "created_at"),
         Index("ix_notification_logs_schedule_created_desc", "schedule_id", text("created_at DESC")),
+        Index(
+            "ix_notification_logs_pending_due",
+            "next_attempt_at",
+            "scheduled_at",
+            "id",
+            postgresql_where=text("status = 'pending'"),
+        ),
+        Index(
+            "ix_notification_logs_processing_lease",
+            "lease_expires_at",
+            "id",
+            postgresql_where=text("status = 'processing'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -370,7 +418,93 @@ class NotificationLog(Base):
     deduplication_key: Mapped[str] = mapped_column(String(160), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    claimed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NotificationAttempt(Base):
+    """One physical attempt to deliver a notification route."""
+
+    __tablename__ = "notification_attempts"
+    __table_args__ = (
+        UniqueConstraint("notification_log_id", "attempt_number"),
+        CheckConstraint(
+            f"status IN ({sql_values(NOTIFICATION_ATTEMPT_STATUSES)})", name="status_valid"
+        ),
+        CheckConstraint("attempt_number BETWEEN 1 AND 3", name="attempt_number_valid"),
+        CheckConstraint(
+            f"error_kind IS NULL OR error_kind IN ({sql_values(NOTIFICATION_ERROR_KINDS)})",
+            name="error_kind_valid",
+        ),
+        CheckConstraint(
+            "(status = 'claimed' AND send_started_at IS NULL AND finished_at IS NULL "
+            "AND discord_message_id IS NULL AND error_kind IS NULL AND error_code IS NULL "
+            "AND error_summary IS NULL) OR "
+            "(status = 'sending' AND send_started_at IS NOT NULL AND finished_at IS NULL "
+            "AND discord_message_id IS NULL AND error_kind IS NULL AND error_code IS NULL "
+            "AND error_summary IS NULL) OR "
+            "(status = 'succeeded' AND send_started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND discord_message_id IS NOT NULL AND error_kind IS NULL AND error_code IS NULL "
+            "AND error_summary IS NULL) OR "
+            "(status = 'failed' AND finished_at IS NOT NULL AND discord_message_id IS NULL "
+            "AND error_kind IS NOT NULL AND error_code IS NOT NULL AND error_summary IS NOT NULL) OR "
+            "(status = 'unknown' AND send_started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND discord_message_id IS NULL AND error_kind = 'unknown' "
+            "AND error_code IS NOT NULL AND error_summary IS NOT NULL)",
+            name="fields_match_status",
+        ),
+        CheckConstraint(
+            "discord_message_id IS NULL OR discord_message_id > 0", name="message_id_positive"
+        ),
+        CheckConstraint("claimed_at <= updated_at", name="claimed_before_updated"),
+        CheckConstraint(
+            "send_started_at IS NULL OR send_started_at >= claimed_at", name="send_after_claimed"
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR finished_at >= claimed_at", name="finished_after_claimed"
+        ),
+        CheckConstraint(
+            "send_started_at IS NULL OR finished_at IS NULL OR send_started_at <= finished_at",
+            name="send_finish_order_valid",
+        ),
+        Index(
+            "ix_notification_attempts_log_number",
+            "notification_log_id",
+            "attempt_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    notification_log_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("notification_logs.id", ondelete="RESTRICT"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    claimed_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    send_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discord_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )

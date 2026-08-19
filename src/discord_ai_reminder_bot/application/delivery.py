@@ -10,6 +10,7 @@ from discord_ai_reminder_bot.config import MAX_POSTGRES_BIGINT
 from discord_ai_reminder_bot.domain.enums import DeliveryErrorKind
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.domain.retry_policy import RetryAction, decide_retry
+from discord_ai_reminder_bot.domain.safe_text import validate_safe_error_text
 from discord_ai_reminder_bot.infrastructure.database.models import DeliveryAttempt, ScheduleRun
 from discord_ai_reminder_bot.infrastructure.database.repositories import (
     DeliveryAttemptRepository,
@@ -20,13 +21,6 @@ RESULT_SUCCEEDED = "delivery_succeeded"
 RESULT_RETRY_PENDING = "retry_pending"
 RESULT_FAILED = "delivery_failed"
 RESULT_UNKNOWN = "delivery_result_unknown"
-_SENSITIVE_MARKERS = (
-    "postgresql://",
-    "postgresql+psycopg://",
-    "discord.com/api",
-    "token",
-    "traceback (",
-)
 
 
 @dataclass(frozen=True)
@@ -39,18 +33,6 @@ def validate_message_id(message_id: int) -> int:
     if isinstance(message_id, bool) or not 1 <= message_id <= MAX_POSTGRES_BIGINT:
         raise ValueError("message_id must be a positive PostgreSQL BIGINT")
     return message_id
-
-
-def validate_safe_error_text(value: str, *, field: str, maximum: int) -> str:
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{field} must not be empty")
-    if len(normalized) > maximum:
-        raise ValueError(f"{field} must be at most {maximum} characters")
-    lowered = normalized.casefold()
-    if any(marker in lowered for marker in _SENSITIVE_MARKERS):
-        raise ValueError(f"{field} contains sensitive or unsafe text")
-    return normalized
 
 
 class DeliveryService:

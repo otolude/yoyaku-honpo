@@ -82,8 +82,26 @@ class NotificationRecipientType(StrEnum):
 
 class NotificationStatus(StrEnum):
     PENDING = "pending"
+    PROCESSING = "processing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    UNKNOWN = "unknown"
+    CANCELLED = "cancelled"
+
+
+class NotificationAttemptStatus(StrEnum):
+    CLAIMED = "claimed"
+    SENDING = "sending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class NotificationErrorKind(StrEnum):
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+    RATE_LIMITED = "rate_limited"
+    UNKNOWN = "unknown"
 
 
 def enum_values(enum_type: type[StrEnum]) -> tuple[str, ...]:
