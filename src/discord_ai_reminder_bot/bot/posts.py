@@ -22,10 +22,15 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
 )
+from discord_ai_reminder_bot.application.schedule_pause import (
+    SchedulePauseService,
+    ScheduleStateChangeUnavailable,
+)
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
     ScheduleQueryService,
+    parse_public_id,
 )
 from discord_ai_reminder_bot.bot.interactions import (
     INTERNAL_ERROR_MESSAGE,
@@ -39,6 +44,8 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_recurring_schedule_embed,
     created_schedule_embed,
     deleted_schedule_embed,
+    paused_schedule_embed,
+    resumed_schedule_embed,
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
@@ -71,6 +78,7 @@ DELETE_CANCELLED_MESSAGE = "予約の削除をキャンセルしました。"
 DELETE_EXPIRED_MESSAGE = (
     "確認の有効期限が切れました。必要な場合はもう一度 /post delete を実行してください。"
 )
+STATE_CHANGE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、この操作を実行できません。"
 
 
 @dataclass(frozen=True)
@@ -369,6 +377,66 @@ class PostCommands(app_commands.Group):
             await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             return
         await self._respond_embed(interaction, lambda: schedule_detail_embed(schedule))
+
+    @app_commands.command(name="pause", description="定期投稿を一時停止します")
+    @app_commands.describe(public_id="予約IDを指定します")
+    async def pause_command(self, interaction: discord.Interaction, public_id: str) -> None:
+        await self._change_schedule_state(interaction, public_id=public_id, resume=False)
+
+    @app_commands.command(name="resume", description="一時停止中の定期投稿を再開します")
+    @app_commands.describe(public_id="予約IDを指定します")
+    async def resume_command(self, interaction: discord.Interaction, public_id: str) -> None:
+        await self._change_schedule_state(interaction, public_id=public_id, resume=True)
+
+    async def _change_schedule_state(
+        self, interaction: discord.Interaction, *, public_id: str, resume: bool
+    ) -> None:
+        actor = await self._actor_or_respond(interaction)
+        if actor is None:
+            return
+        try:
+            # Validate before acknowledging the interaction; the service repeats it safely.
+            parse_public_id(public_id)
+        except InvalidScheduleQueryError:
+            await respond_ephemeral(
+                interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+            )
+            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:  # noqa: BLE001 - Discord response details must remain private
+            self._logger.error("schedule_state_change_defer_failed")
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                service = SchedulePauseService(session)
+                arguments = {
+                    "guild_id": interaction.guild_id,
+                    "public_id": public_id,
+                    "actor_user_id": actor.user_id,
+                    "administrator": actor.administrator,
+                }
+                if resume:
+                    changed = await service.resume(
+                        **arguments,
+                        resumed_at=self._clock.now(),
+                    )
+                else:
+                    changed = await service.pause(
+                        **arguments,
+                        paused_at=self._clock.now(),
+                    )
+        except ScheduleStateChangeUnavailable:
+            await respond_ephemeral(
+                interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+            )
+            return
+        except Exception:  # noqa: BLE001 - database details must remain private
+            self._logger.error("schedule_state_change_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        presenter = resumed_schedule_embed if resume else paused_schedule_embed
+        await self._respond_embed(interaction, lambda: presenter(changed))
 
     @app_commands.command(name="delete", description="予約を確認して論理削除します")
     @app_commands.describe(

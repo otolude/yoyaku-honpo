@@ -138,6 +138,18 @@ def build_deletion_runs_statement(
     return statement.with_for_update() if lock else statement
 
 
+def build_schedule_state_change_runs_statement(
+    *, schedule_id: int, lock: bool
+) -> Select[tuple[ScheduleRun]]:
+    """Select every run in stable order before locking its parent schedule."""
+    statement = (
+        select(ScheduleRun)
+        .where(ScheduleRun.schedule_id == schedule_id)
+        .order_by(ScheduleRun.id.asc())
+    )
+    return statement.with_for_update() if lock else statement
+
+
 class ScheduleRepository:
     """Read and write schedules while leaving commit and rollback to the caller."""
 
@@ -396,6 +408,35 @@ class ScheduleRunRepository:
             lock=lock,
         )
         return list((await self._session.execute(statement)).scalars())
+
+    async def list_for_schedule_state_change(
+        self, *, schedule_id: int, lock: bool
+    ) -> list[ScheduleRun]:
+        statement = build_schedule_state_change_runs_statement(
+            schedule_id=schedule_id,
+            lock=lock,
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def skip_pending_for_paused_schedule(
+        self, *, runs: list[ScheduleRun], paused_at: datetime
+    ) -> list[ScheduleRun]:
+        paused_at = require_utc(paused_at)
+        for run in runs:
+            if run.status != RunStatus.PENDING.value:
+                continue
+            run.status = RunStatus.SKIPPED.value
+            run.next_attempt_at = None
+            run.claimed_by = None
+            run.claimed_at = None
+            run.lease_expires_at = None
+            run.discord_message_id = None
+            run.result_code = "schedule_paused"
+            run.error_summary = "Schedule was paused before Discord delivery"
+            run.finished_at = paused_at
+            run.updated_at = paused_at
+        await self._session.flush()
+        return runs
 
     async def skip_pending_for_deleted_schedule(
         self, *, runs: list[ScheduleRun], deleted_at: datetime

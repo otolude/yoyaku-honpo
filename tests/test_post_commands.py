@@ -19,6 +19,11 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     ScheduleDeletionUnavailable,
     ScheduleDeletionView,
 )
+from discord_ai_reminder_bot.application.schedule_pause import (
+    PausedSchedule,
+    ResumedSchedule,
+    ScheduleStateChangeUnavailable,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
     DELETE_CANCELLED_MESSAGE,
@@ -27,6 +32,7 @@ from discord_ai_reminder_bot.bot.posts import (
     DELETE_UNAVAILABLE_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
+    STATE_CHANGE_UNAVAILABLE_MESSAGE,
     PostCommands,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
@@ -403,6 +409,85 @@ def test_delete_command_has_no_confirm_option_and_optional_reason() -> None:
         "reason",
     ]
     assert group.delete_command.parameters[1].required is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_pause_resume_defer_commit_and_use_interaction_identity(
+    monkeypatch: pytest.MonkeyPatch, resume: bool
+) -> None:
+    public_id = uuid.uuid7()
+    service = AsyncMock()
+    service.pause.return_value = PausedSchedule(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.DAILY,
+        previous_status=ScheduleStatus.ACTIVE,
+        pending_runs_skipped=1,
+    )
+    service.resume.return_value = ResumedSchedule(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE,
+        next_run_at=NOW,
+        local_time=time(12),
+        weekday=None,
+        end_date=None,
+        content="body",
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    value = interaction(administrator=True)
+    value.response.is_done.return_value = True
+    callback = group.resume_command if resume else group.pause_command
+    await callback.callback(group, value, str(public_id))
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    operation = service.resume if resume else service.pause
+    operation.assert_awaited_once()
+    arguments = operation.await_args.kwargs
+    assert arguments["guild_id"] == GUILD_ID
+    assert arguments["actor_user_id"] == USER_ID
+    assert arguments["administrator"] is True
+    kwargs = value.followup.send.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert kwargs["embed"].title == ("予約を再開しました" if resume else "予約を一時停止しました")
+
+
+def test_pause_resume_commands_only_accept_required_public_id() -> None:
+    group = commands(AsyncMock())
+    for command in (group.pause_command, group.resume_command):
+        assert [parameter.name for parameter in command.parameters] == ["public_id"]
+        assert command.parameters[0].required is True
+
+
+@pytest.mark.asyncio
+async def test_pause_invalid_uuid_is_rejected_before_defer() -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    await group.pause_command.callback(group, value, "invalid")
+    value.response.defer.assert_not_awaited()
+    assert value.response.send_message.await_args.args == (STATE_CHANGE_UNAVAILABLE_MESSAGE,)
+
+
+@pytest.mark.asyncio
+async def test_resume_unavailable_uses_common_response_after_defer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock()
+    service.resume.side_effect = ScheduleStateChangeUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    value = interaction()
+    value.response.is_done.return_value = True
+    await group.resume_command.callback(group, value, str(uuid.uuid7()))
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    assert value.followup.send.await_args.args == (STATE_CHANGE_UNAVAILABLE_MESSAGE,)
 
 
 @pytest.mark.asyncio

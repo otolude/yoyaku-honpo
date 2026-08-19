@@ -514,6 +514,16 @@ Schedule、pending run、OperationLogは同一トランザクションで更新�
 - 次回が存在せず本文がない `paused` は `ended` へ遷移せず、本文を設定して終了処理するか削除する。本文なしの `draft` も自動的に `ended` へ変更せず、利用者または管理者が確認して削除する。
 - 本文なしの定期 `draft` で現在回を `skipped` にした場合も、次回が存在すれば `draft` を維持して未来の次回実行を1件だけ生成する。次回が存在しなければ、DB制約上必要な既存の `next_run_at`、状態、versionを変更せず、確認・削除対象として残す。
 
+一時停止と再開はそれぞれ `/post pause public_id:<canonical UUIDv7>`、`/post resume public_id:<canonical UUIDv7>` とし、理由、confirm、確認Viewなしで即時実行する。ローカル入力検証後にephemeralでdeferし、Botコマンドが所有するトランザクションをcommitした後に成功Embedをfollowupする。
+
+一時停止対象は処理・確定待ちでない`active`の毎日・毎週予約だけとする。対象の通常pendingと再試行待ちpendingをすべてID昇順でロックし、同一トランザクションで`skipped`、`next_attempt_at = NULL`、`finished_at = updated_at = paused_at`、`result_code = 'schedule_paused'`とする。claim、lease、Discord message IDはNULLとし、DeliveryAttemptを新規作成せず既存履歴と終端runを変更しない。Scheduleは`paused`、`next_run_at = NULL`、`updated_at = paused_at`、`version + 1`とし、本文と繰り返し設定を保持する。一時停止で見送った実行回は、再開時にも再利用、再有効化、削除、同じ`scheduled_for`での再作成を行わない。
+
+再開対象は処理・確定待ちでない`paused`の毎日・毎週予約だけとする。再開完了時刻と対象Scheduleに属する最新の`scheduled_for`のうち遅い方を基準に、`next_daily_run`または`next_weekly_run`で厳密に未来の次回を計算する。新規作成時の5分境界は適用しない。次回があれば、本文ありは`active`、本文なしは`draft`とし、Scheduleの`next_run_at`と新しいpending runの`scheduled_for`、`next_attempt_at`を同じUTC日時にする。次回がなければ、本文ありは`ended`として`terminal_at = resumed_at`、本文なしは無変更で拒否する。
+
+pause/resumeトランザクションは、ロックなしでguild付きpublic_idから内部参照、version、next_run_atを取得し、関係runをID昇順で`FOR UPDATE`してからScheduleを`FOR UPDATE`する。Scheduleロック後にrunをロックしてはならない。所有者、guild、version、状態、run状態を再検証し、processing、claimed、sending、Discord送信成功後のSchedule確定待ちは全体を無変更で拒否する。Schedule、run、OperationLogは同一トランザクションで更新し、RepositoryとApplication Serviceはcommitまたはrollbackせず、Discord API通信を行わない。
+
+操作履歴は、pauseを`action = 'paused'`、resumeを`action = 'resumed'`、いずれも`actor_type = 'user'`、実行者ID、操作完了時刻で保存する。pauseの`changes`は状態の前後と見送ったpending件数、resumeは状態の前後と次回再計算の有無だけとし、本文、公開ID、内部ID、version、Discord message IDを保存しない。二重操作、認可失敗、競合失敗では履歴を追加しない。
+
 ## 9. 日時の扱い
 
 - DBへ保存する日時はすべてUTCの `TIMESTAMP WITH TIME ZONE` とする。

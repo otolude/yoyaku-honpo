@@ -16,6 +16,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
     ScheduleDeletionView,
 )
+from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.schedule_deletion import MISSING_DELETE_REASON
@@ -129,6 +130,60 @@ def deleted_schedule_embed(schedule: DeletedSchedule) -> discord.Embed:
         "削除済みとして記録しました。\nすでにDiscordへ投稿されたメッセージは削除されません。",
         inline=False,
     )
+    return _validated(embed)
+
+
+def paused_schedule_embed(schedule: PausedSchedule) -> discord.Embed:
+    embed = _embed(title="予約を一時停止しました", status=ScheduleStatus.PAUSED)
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "停止前の状態", status_text(schedule.previous_status), inline=True)
+    _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    _field(
+        embed,
+        "一時停止について",
+        "一時停止中は投稿されません。\n"
+        "本文と繰り返し設定は保持されています。\n"
+        "停止時に見送った投稿回は、再開しても送信されません。",
+        inline=False,
+    )
+    return _validated(embed)
+
+
+def resumed_schedule_embed(schedule: ResumedSchedule) -> discord.Embed:
+    if schedule.status is ScheduleStatus.ENDED:
+        embed = _embed(title="予約の終了を確定しました", status=schedule.status)
+    else:
+        embed = _embed(title="予約を再開しました", status=schedule.status)
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "再開後の状態", status_text(schedule.status), inline=True)
+    _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
+    if schedule.next_run_at is not None:
+        _field(embed, "🗓️ 次回投稿", datetime_text(schedule.next_run_at), inline=False)
+    if schedule.schedule_type is ScheduleType.WEEKLY:
+        _field(embed, "曜日", weekday_text(schedule.weekday), inline=True)
+    _field(embed, "投稿時刻", local_time_text(schedule.local_time), inline=True)
+    _field(
+        embed,
+        "終了日",
+        schedule.end_date.isoformat() if schedule.end_date else "なし",
+        inline=True,
+    )
+    if schedule.status is ScheduleStatus.DRAFT:
+        _field(
+            embed,
+            "下書きについて",
+            "本文がないため下書きとして再開しました。本文を設定するまで投稿されません。",
+            inline=False,
+        )
+    elif schedule.status is ScheduleStatus.ENDED:
+        _field(
+            embed,
+            "終了結果",
+            "終了日内に次の投稿予定がないため、予約は終了済みになりました。",
+            inline=False,
+        )
     return _validated(embed)
 
 

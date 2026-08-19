@@ -11,6 +11,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
     ScheduleDeletionView,
 )
+from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_LIMIT,
@@ -22,6 +23,8 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_recurring_schedule_embed,
     created_schedule_embed,
     deleted_schedule_embed,
+    paused_schedule_embed,
+    resumed_schedule_embed,
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
@@ -57,6 +60,50 @@ def all_text(embed) -> str:
         [embed.title or "", embed.description or ""]
         + [f"{field.name}\n{field.value}" for field in embed.fields]
     )
+
+
+def test_pause_embed_explains_preservation_and_skipped_occurrence() -> None:
+    embed = paused_schedule_embed(
+        PausedSchedule(
+            public_id=uuid.uuid7(),
+            channel_id=400,
+            schedule_type=ScheduleType.DAILY,
+            previous_status=ScheduleStatus.ACTIVE,
+            pending_runs_skipped=1,
+        )
+    )
+    text = all_text(embed)
+    assert embed.title == "予約を一時停止しました"
+    assert "一時停止中は投稿されません" in text
+    assert "本文と繰り返し設定は保持" in text
+    assert "再開しても送信されません" in text
+
+
+@pytest.mark.parametrize(
+    ("status", "title", "message"),
+    [
+        (ScheduleStatus.DRAFT, "予約を再開しました", "本文を設定するまで投稿されません"),
+        (ScheduleStatus.ENDED, "予約の終了を確定しました", "終了日内に次の投稿予定がない"),
+    ],
+)
+def test_resume_embed_draft_and_ended_messages(
+    status: ScheduleStatus, title: str, message: str
+) -> None:
+    embed = resumed_schedule_embed(
+        ResumedSchedule(
+            public_id=uuid.uuid7(),
+            channel_id=400,
+            schedule_type=ScheduleType.WEEKLY,
+            status=status,
+            next_run_at=NOW if status is ScheduleStatus.DRAFT else None,
+            local_time=time(9),
+            weekday=2,
+            end_date=date(2026, 8, 31),
+            content=None if status is ScheduleStatus.DRAFT else "body",
+        )
+    )
+    assert embed.title == title
+    assert message in all_text(embed)
 
 
 @pytest.mark.parametrize("status", list(ScheduleStatus))
