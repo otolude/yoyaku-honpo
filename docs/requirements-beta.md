@@ -255,19 +255,19 @@ activeからdraftへ編集した場合、次回まで24時間以上なら通常�
 
 通知の一時失敗は初回を含め最大3回とし、1回目の失敗から1分後、2回目の失敗から5分後に再試行する。DiscordのRate Limitで未来のRetry-Afterが指定された場合はそれを優先する。恒久失敗または3回目の失敗ではフォールバックを許可する。送信結果不明では再送もフォールバックもしない。
 
-通知は投稿本文や本文プレビューを含まないplain textとし、2,000文字以内、すべてのメンションを無効にする。バックグラウンド通知はephemeralではない。通知のためにPrivileged Intent、Message Content Intent、Members Intent、Administrator権限を追加しない。
+通知は固定タイトル・説明を持つDiscord Embedとする。日本語状態名、投稿先の`<#channel_id>`形式、JST日時、完全な予約UUIDv7、必要な対応を表示し、投稿本文と本文プレビューは含めない。title、description、Field名、Field値、Field数、合計文字数のDiscord Embed上限を送信前に検証し、`AllowedMentions.none()`相当ですべてのメンション通知を無効にする。バックグラウンド通知はephemeralではない。通知のためにPrivileged Intent、Message Content Intent、Members Intent、Administrator権限を追加しない。
 
 Recovery未完了、DB障害、通知Worker自身の障害はDiscord通知の対象にせず、安全なERRORログと外部監視の境界とする。通知Workerは起動Recoveryが完全に成功した後だけ開始する。
 
 通知outboxは予約投稿Workerとは独立した通知Workerが処理する。1サイクルでclaimをcommitし、短い送信前再検証トランザクションを閉じてからDiscordへ1回だけ送信し、結果を別トランザクションで保存する。最大並行数、batch、poll間隔、processing leaseは通知専用設定を使用する。expired leaseのclaimedは1分・5分の規則で再試行し、sendingは結果不明として再送しない。不整合もunknownへ安全に終端化する。
 
-permanentまたは3回上限だけ、`creator_dm → operator_channel → operator_dm → log`の順で別outbox行を冪等作成する。unknown、retry中、cancelledではfallbackを作らない。`log`経路はDiscord APIを呼ばず安全なERRORイベントだけを記録する。通知本文は固定plain text、2,000文字以内、投稿本文なし、メンション無効とする。
+permanentまたは3回上限だけ、`creator_dm → operator_channel → operator_dm → log`の順で別outbox行を冪等作成する。unknown、retry中、cancelledではfallbackを作らない。Discord経路は共通の安全なEmbedを使用する。`log`経路はDiscord Embedを送信せず、Discord APIも呼ばず、安全な固定ERRORイベントだけを記録する。
 
 下書き事前通知はJIT生成せず、現在のScheduleRunを作成・置換する業務トランザクション内で未来outboxを事前作成する。残り24時間以上は24時間前と1時間前、残り1時間以上24時間未満は1時間前、残り1時間未満かつ未来は即時通知を作り、24時間・1時間ちょうどを各通知に含める。起動時bootstrapは固定`recovery_cutoff`より前の未claim pending事前通知だけを`cancelled`にし、後追い送信せず、現在のfuture draft Runに不足する計画を冪等作成する。旧Runやactive化・pause・delete後の通知は送信前再検証でcancelする。
 
-bootstrapは通知batch sizeで最大25バッチとし、4種類のRecovery/Bootstrapがすべて完了した後だけ予約投稿と通知の両loopを開始する。Processing Recoveryで`failed`へ終端化したrunは、同じ固定`recovery_cutoff`を`finalized_at`として、同じトランザクション内で既存のSchedule確定規則へ接続する。retry予定の`pending`へ戻したrunは確定しない。単発activeはScheduleを`failed`にしてsystem OperationLogを1件だけ残し、定期activeはScheduleを維持してcutoffより厳密に未来の次回runを1件だけ生成し、次回がなければ`ended`としてsystem OperationLogを残す。run復旧とSchedule確定は原子的であり、確定失敗時は当該バッチをrollbackして後続Recoveryと両loopを開始しない。
+bootstrapは通知batch sizeで最大25バッチとし、4種類のRecovery/Bootstrapがすべて完了した後だけ予約投稿、通知、maintenanceの3 loopを開始する。Processing Recoveryで`failed`へ終端化したrunは、同じ固定`recovery_cutoff`を`finalized_at`として、同じトランザクション内で既存のSchedule確定規則へ接続する。retry予定の`pending`へ戻したrunは確定しない。単発activeはScheduleを`failed`にしてsystem OperationLogを1件だけ残し、定期activeはScheduleを維持してcutoffより厳密に未来の次回runを1件だけ生成し、次回がなければ`ended`としてsystem OperationLogを残す。run復旧とSchedule確定は原子的であり、確定失敗時は当該バッチをrollbackして後続Recoveryと3 loopを開始しない。
 
-draft予定時刻到来の`run_skipped`、投稿の最終failed・結果unknownの`run_failed`、起動後15分以内の`run_delayed`、Recovery不整合の`recovery`は、各状態確定と同じトランザクションで最初の`operator_channel` outboxだけを冪等生成する。業務理由は`ScheduleRun.result_code`と`notification_type`から送信直前に固定文へ再構築し、`NotificationLog.error_code`は通知配送エラー専用とする。投稿結果unknownの通知とNotificationLog配送結果unknownは別の状態であり、後者は再送・fallbackしない。定期投稿の起動中欠落回はrunごとに通知せず、Schedule UUIDv7と固定`recovery_cutoff`を用いて1 Schedule・1起動・1経路へ集約する。イベント生成者はoperator DMやlogを作らず、fallbackはNotificationWorkerだけが作る。Recovery未完了そのものはDiscord通知せず、30日後の物理削除は後続工程とする。
+draft予定時刻到来の`run_skipped`、投稿の最終failed・結果unknownの`run_failed`、起動後15分以内の`run_delayed`、Recovery不整合の`recovery`は、各状態確定と同じトランザクションで最初の`operator_channel` outboxだけを冪等生成する。業務理由は`ScheduleRun.result_code`と`notification_type`から送信直前に固定文へ再構築し、`NotificationLog.error_code`は通知配送エラー専用とする。投稿結果unknownの通知とNotificationLog配送結果unknownは別の状態であり、後者は再送・fallbackしない。定期投稿の起動中欠落回はrunごとに通知せず、Schedule UUIDv7と固定`recovery_cutoff`を用いて1 Schedule・1起動・1経路へ集約する。イベント生成者はoperator DMやlogを作らず、fallbackはNotificationWorkerだけが作る。Recovery未完了そのものはDiscord通知しない。30日後の物理削除は独立したmaintenance loopが行う。
 
 ## 9. 失敗時の再試行
 
@@ -332,7 +332,7 @@ Bot復旧時に単発予約の予定時刻を過ぎていた場合は、次の�
 - 毎日・毎週の過去回は15分以内でも投稿せず、欠落回を含めて`skipped`として保存し、基準時刻より厳密に未来の未使用回を1件だけ作る。
 - startup Recoveryでは`paused`を自動的に`ended`へ変更しない。
 - Recovery中はDiscord APIを呼ばない。処理中実行とpending実行の両Recoveryが完全に成功した後だけ通常ポーリングを開始する。
-- 運営者通知とNotificationLog作成は後続の通知機能工程で実装する。
+- 運営者通知用NotificationLogは、Recoveryで状態を確定する同じトランザクション内で冪等生成する。
 
 ## 11. データ保存
 

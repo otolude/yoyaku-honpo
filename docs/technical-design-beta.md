@@ -117,7 +117,7 @@ Bot層はSQLAlchemyモデルを直接操作せず、次回日時や状態遷移�
 - 期限切れデータの削除
 - 操作履歴と通知履歴の保存
 
-DBトランザクションの境界はアプリケーション層で決める。
+Sessionとtransactionはorchestration boundaryが所有する。Botコマンドとruntimeに加え、`PollingWorker`、`NotificationWorker`、`CleanupService`など処理を編成するApplication層のオーケストレーターも、必要な短いtransactionを構成できる。Repositoryと業務Domain/Application Serviceはcommitまたはrollbackしない。
 
 ### 4.3 ドメイン層
 
@@ -272,7 +272,7 @@ discord-ai-reminder-bot/
 
 定期作成は既存の `/post create` を変更せず、毎日を `/post create-daily channel:<TextChannel> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週を `/post create-weekly channel:<TextChannel> weekday:<月曜日0～日曜日6> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。開始日は保存しない。重複候補は同一サーバー、投稿先、種別、`local_time`、`weekday`、`end_date`、本文（各NULL同士を含む）、かつ状態が `draft`、`active`、`paused` の予約とする。作成者、`next_run_at`、内部IDは比較しない。単発と同様に警告のみとし、`allow_duplicate=true`で作成を許可するため、同時実行による完全な重複防止は保証しない。
 
-定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側が所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。RepositoryとApplication Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。NotificationLogは作成しない。
+定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側のorchestration boundaryが所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。draftでは必要な事前通知NotificationLogも同じトランザクションで計画する。Repositoryと業務Application Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。
 
 編集は単一の `/post edit` とし、`public_id`を必須、`channel`、`scheduled_at`、
 `local_time`、`weekday`、`end_date`、`content`、`clear_content`、`clear_end_date`を任意とする。
@@ -654,13 +654,13 @@ Discordから待機時間を指定された場合は、その時刻を `next_att
 
 Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord接続完了後、通常ポーラー開始前に次を行う。
 
-起動処理の開始時にClockからUTC awareな`recovery_cutoff`を一度だけ取得し、全バッチで固定する。期限切れprocessing Recoveryとpending Recoveryはこの同じ値を使用し、それぞれ独立して最大25バッチ（1バッチ1～20件）まで実行する。25バッチ目が満杯なら成功済みバッチはcommit済みのまま未完了として起動を停止し、通常ポーラーを開始しない。各RepositoryとApplication Serviceはcommitまたはrollbackせず、Bot runtimeがバッチ単位のトランザクションを所有する。
+起動処理の開始時にClockからUTC awareな`recovery_cutoff`を一度だけ取得し、全バッチで固定する。期限切れprocessing Recoveryとpending Recoveryはこの同じ値を使用し、それぞれ独立して最大25バッチ（1バッチ1～20件）まで実行する。25バッチ目が満杯なら成功済みバッチはcommit済みのまま未完了として起動を停止し、通常ポーラーを開始しない。この処理ではBot runtimeがorchestration boundaryとしてバッチ単位のトランザクションを所有し、各Repositoryと業務Application Serviceはcommitまたはrollbackしない。
 
 pending Recoveryは`FOR UPDATE SKIP LOCKED`で`scheduled_for, id`の安定順序によりrunを取得し、関係runを安定順序でロックしてからScheduleをロックする。Recovery中はDiscord APIを呼ばず、DB整理がすべて完了した後に通常ポーラーへ送信可能なpendingを渡す。processing Recoveryが失敗した場合はpending Recoveryを開始せず、pending Recoveryが失敗または未完了の場合もRecovery完了Eventを設定しない。Discord再接続では同一プロセスのRecoveryを再実行しない。
 
 processing Recoveryは期限切れrunを`FOR UPDATE SKIP LOCKED`、対応する最新DeliveryAttempt、Scheduleの順でlockする。claimed attempt 1～3をretry予定の`pending`へ戻した場合はScheduleを確定しない。claimed attempt 4、sending/unknown、Attempt欠落または番号・worker・日時・状態不整合を安全側の`failed`へ終端化した場合だけ、同じSessionで既存`ScheduleExecutionService.finalize_run()`を呼ぶ。同一Sessionで既にlock済みのrunとScheduleを再lockしてもlock順はrunからScheduleのまま変わらない。単発activeは`failed`、`next_run_at = NULL`、version増加とsystem failed OperationLogを冪等に適用する。定期activeはrecurrence関数だけで固定cutoffより厳密に未来の未使用runを1件生成または正常な既存runを再利用し、次回がなければ`ended`とsystem OperationLogを適用する。paused/deleted/endedは復帰させず、不整合Scheduleは既存確定規則どおり拒否する。
 
-run、Attempt、Schedule、新run、OperationLog、およびNotificationLogは呼び出し元所有の同じトランザクションに含める。Application ServiceとRepositoryはcommit/rollbackしない。Schedule確定またはoutbox生成が失敗すれば当該バッチ全体をrollbackし、Recovery完了扱いにせず、後続Recoveryと両polling loopを開始しない。先にcommit済みのバッチは維持し、ログは固定イベント名と安全な件数だけに制限する。
+run、Attempt、Schedule、新run、OperationLog、およびNotificationLogはorchestration boundary所有の同じトランザクションに含める。業務Application ServiceとRepositoryはcommit/rollbackしない。Schedule確定またはoutbox生成が失敗すれば当該バッチ全体をrollbackし、Recovery完了扱いにせず、後続Recoveryと投稿・通知・maintenanceの3 loopを開始しない。先にcommit済みのバッチは維持し、ログは固定イベント名と安全な件数だけに制限する。
 
 業務イベント生成Serviceは`run_skipped`、`run_failed`、`run_delayed`、`recovery`を既存Notification typeへ変換し、最初の`operator_channel`経路だけをINSERTする。通常DeliveryはRun→Attempt→Schedule→NotificationLog、processing RecoveryはRun→Attempt→Schedule→NotificationLog、pending RecoveryはRun群→Schedule→NotificationLogの順を維持する。業務側は既存NotificationLogをlock/cancelせず、stale判定とfallback作成はLog→Attempt→Schedule→RunでlockするNotificationWorkerだけが行う。
 
@@ -701,7 +701,7 @@ run単位keyはSchedule canonical UUIDv7、Run予定UTC時刻、notification typ
 
 各定期予約で1回の起動時に補完する過去発生回は最大500回とし、超えた場合はRecovery未完了として通常ポーラーを開始しない。既存の終端runを再利用せず、未来日時も履歴で使用済みなら次の未使用発生日時へ進む。`paused`および既に終端状態のScheduleにpendingが残る場合はrunだけを安全に終端化し、Schedule状態を自動修復しない。startupでは終了日を過ぎた`paused`を`ended`へ変更しない。
 
-pendingとDeliveryAttemptの状態が一致せず二重送信を否定できない場合、runを`startup_inconsistent_pending`で`failed`にして既存Attempt履歴は変更しない。単発activeだけはScheduleも`failed`にし、定期および既に終端状態のScheduleは現在状態を維持する。この業務処理からNotificationLogを生成する接続は後続の通知イベント生成工程で実装する。
+pendingとDeliveryAttemptの状態が一致せず二重送信を否定できない場合、runを`startup_inconsistent_pending`で`failed`にして既存Attempt履歴は変更しない。単発activeだけはScheduleも`failed`にし、定期および既に終端状態のScheduleは現在状態を維持する。この業務処理は同じtransactionでRecovery用NotificationLogを冪等生成する。
 
 ## 15. 下書き通知と運営者通知
 
@@ -730,7 +730,7 @@ pendingとDeliveryAttemptの状態が一致せず二重送信を否定できな�
 
 通知には予約ID、実行履歴ID、発生時刻、投稿先、短い原因、必要な対応を含める。Botトークン、DB接続情報、投稿本文、内部例外全文は含めない。各経路の成功・失敗を `notification_logs` に残す。
 
-通知はDM、operator channel、operator DMで共通のEmbedを1個使用し、状態は日本語名、投稿先はBotがDBから取得・検証したchannel IDによる`<#channel_id>`形式で表示する。投稿本文と本文プレビューは含めず、`AllowedMentions.none()`相当ですべての通知を無効にする。Embedはtitle 256文字、description 4,096文字、Field名256文字、Field値1,024文字、Field数25、合計6,000文字をApplication層で上限検証する。`recipient_type=log`はDiscordへ送信しない。transientだけを1分後・5分後に再試行し、初回を含め最大3回とする。Rate Limitは未来のRetry-Afterを優先し、permanentまたは上限到達ではフォールバックを許可する。unknownは再送もフォールバックもしない。通知Workerは起動Recovery完全成功後だけ開始し、Recovery未完了、DB障害、通知Worker自身の障害は安全なERRORログと外部監視へ委ねる。バックグラウンド通知はephemeralではなく、追加IntentやAdministrator権限を要求しない。
+通知はDM、operator channel、operator DMで共通のEmbedを1個使用する。固定タイトル・説明、日本語状態、BotがDBから取得・検証したchannel IDによる`<#channel_id>`形式、JST日時、完全な予約UUIDv7、必要な対応を表示する。投稿本文と本文プレビューは含めず、`AllowedMentions.none()`相当ですべての通知を無効にする。Embedはtitle 256文字、description 4,096文字、Field名256文字、Field値1,024文字、Field数25、合計6,000文字をApplication層で送信前に上限検証する。`recipient_type=log`はDiscordへEmbedを送信せず、安全な固定ERRORイベントだけを記録する。transientだけを1分後・5分後に再試行し、初回を含め最大3回とする。Rate Limitは未来のRetry-Afterを優先し、permanentまたは上限到達ではフォールバックを許可する。unknownは再送もフォールバックもしない。通知Workerは起動Recovery完全成功後だけ開始し、Recovery未完了、DB障害、通知Worker自身の障害は安全なERRORログと外部監視へ委ねる。バックグラウンド通知はephemeralではなく、追加IntentやAdministrator権限を要求しない。
 
 NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サイクルを実行する。Transaction Aでdue行を`FOR UPDATE SKIP LOCKED`によりclaimしてcommitし、Transaction BでLog、Attempt、関連Schedule/Runを再検証してsendingまたはcancelledへ更新してcommitする。DB Sessionを閉じた後にGatewayを1回だけ呼び、Transaction Cでsuccess、retry、failed、unknownと必要なfallbackを保存する。Gateway成功後にTransaction Cが失敗した場合はsendingを維持し、再送せずlease Recoveryでunknownへ移す。
 
@@ -740,9 +740,9 @@ NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サ�
 
 下書き事前通知はScheduleRun生成・置換と同じcaller-owned transactionで`creator_dm` outboxをINSERTする。`remaining > 24h`と`=24h`は`draft_24h`と`draft_1h`、`1h < remaining < 24h`と`=1h`は`draft_1h`、`0 < remaining < 1h`は`draft_immediate`、`remaining <= 0`は生成なしとする。keyはSchedule UUIDv7、Run時刻、type、routeから作り、旧Run行を業務Serviceからlock/cancelしない。
 
-起動時は予約processing、期限超過pending、notification lease、draft notification bootstrapの順に同じcutoffで各最大25 batchを処理し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。bootstrapはfuture draftのRunを`scheduled_for, id`順に`FOR UPDATE SKIP LOCKED`で取得してからScheduleをlockし、cutoffより前の未claim pending通知のみcancelする。過ぎた24h/1hは再生成せず、残り1時間未満ならRun単位でimmediateを最大1件作る。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。
+起動時は予約processing、期限超過pending、notification lease、draft notification bootstrapの順に同じcutoffで各最大25 batchを処理し、すべて完了した後だけRecovery Eventを設定して投稿・通知・maintenanceの3 loopを開始する。bootstrapはfuture draftのRunを`scheduled_for, id`順に`FOR UPDATE SKIP LOCKED`で取得してからScheduleをlockし、cutoffより前の未claim pending通知のみcancelする。過ぎた24h/1hは再生成せず、残り1時間未満ならRun単位でimmediateを最大1件作る。停止時は3 loopをstop/cancelしてTaskを回収してからstartup Task、確認View、Discord Client、Engineを閉じる。
 
-この段階では下書き事前通知、Processing Recovery後のSchedule確定、および既存業務イベントからのNotificationLog生成までを接続する。Discord送信は既存NotificationWorkerだけが行う。30日物理削除と実Discord手動確認は後続工程とする。
+下書き事前通知、Processing Recovery後のSchedule確定、業務イベントからのNotificationLog生成、NotificationWorkerによるDiscord送信とfallbackはruntimeへ接続する。30日物理削除は独立したmaintenance loopが行う。実Discordでの確認状況は[手動受入チェックリスト](manual-acceptance-phase1.md)で管理する。
 
 ## 16. 30日後の自動削除
 
