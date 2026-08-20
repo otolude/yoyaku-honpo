@@ -15,6 +15,7 @@ from discord_ai_reminder_bot.application.gateway import (
     TransientGatewayError,
     UnknownGatewayError,
 )
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.worker import PollingWorker
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.infrastructure.database.models import (
@@ -128,6 +129,8 @@ def worker(
         max_concurrency=concurrency,
         lease_timeout=timedelta(seconds=120),
         logger=logging.getLogger("test.worker"),
+        configured_guild_id=100,
+        operator_channel_id=400,
     )
 
 
@@ -245,8 +248,18 @@ async def test_gateway_outcomes(test_engine: AsyncEngine, outcome: Exception, fi
         assert run is not None
         if field == "retry_scheduled":
             assert run.status == "pending" and run.next_attempt_at > NOW
+            assert await session.scalar(select(func.count()).select_from(NotificationLog)) == 0
         else:
             assert run.status == "failed"
+            notification = (
+                await session.execute(
+                    select(NotificationLog).where(NotificationLog.notification_type == "run_failed")
+                )
+            ).scalar_one()
+            assert notification.schedule_run_id == run.id
+            assert notification.recipient_type == "operator_channel"
+            assert notification.recipient_id == 400
+            assert notification.error_code is None and notification.error_summary is None
 
 
 @pytest.mark.parametrize("status", ["draft", "paused", "deleted", "ended"])
@@ -266,6 +279,41 @@ async def test_non_sendable_schedule_is_skipped(test_engine: AsyncEngine, status
         assert attempt.error_code == "skipped_before_send"
         if status == "draft":
             assert await session.scalar(select(func.count()).select_from(ScheduleRun)) == 2
+            notification = (
+                await session.execute(
+                    select(NotificationLog).where(
+                        NotificationLog.notification_type == "run_skipped"
+                    )
+                )
+            ).scalar_one()
+            assert notification.schedule_id == schedule.id
+            assert notification.schedule_run_id == run.id
+            assert notification.error_code is None
+        else:
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NotificationLog)
+                    .where(NotificationLog.notification_type == "run_skipped")
+                )
+                == 0
+            )
+
+
+@pytest.mark.asyncio
+async def test_fourth_transient_failure_creates_run_failed(test_engine: AsyncEngine) -> None:
+    _, run_id = (await seed(test_engine, attempt_count=3))[0]
+    result = await worker(test_engine, FakeGateway(TransientGatewayError())).poll_once()
+    assert result.failed == 1
+    async with factory(test_engine)() as session:
+        run = await session.get(ScheduleRun, run_id)
+        notification = (
+            await session.execute(
+                select(NotificationLog).where(NotificationLog.schedule_run_id == run_id)
+            )
+        ).scalar_one()
+        assert run is not None and run.status == "failed" and run.attempt_count == 4
+        assert notification.notification_type == "run_failed"
 
 
 @pytest.mark.asyncio
@@ -334,6 +382,26 @@ async def test_success_persist_failure_leaves_sending_without_resend(
         assert attempt.status == "sending"
     assert "safe body" not in caplog.text
     assert "postgresql+psycopg" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_notification_event_failure_rolls_back_terminal_delivery(
+    test_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, run_id = (await seed(test_engine))[0]
+
+    async def fail_event(*args, **kwargs):
+        raise RuntimeError("safe outbox failure")
+
+    monkeypatch.setattr(NotificationEventService, "add_run_event", fail_event)
+    result = await worker(test_engine, FakeGateway(PermanentGatewayError())).poll_once()
+    assert result.internal_errors == 1
+    async with factory(test_engine)() as session:
+        run = await session.get(ScheduleRun, run_id)
+        attempt = (await session.execute(select(DeliveryAttempt))).scalar_one()
+        assert run is not None and run.status == "processing"
+        assert attempt.status == "sending"
+        assert await session.scalar(select(func.count(NotificationLog.id))) == 0
 
 
 @pytest.mark.asyncio

@@ -11,18 +11,27 @@ from discord_ai_reminder_bot.application.delivery import (
     RESULT_RETRY_PENDING,
     RESULT_UNKNOWN,
 )
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.schedule_execution import (
     FinalizedScheduleRun,
     ScheduleExecutionService,
 )
-from discord_ai_reminder_bot.domain.enums import DeliveryAttemptStatus, DeliveryErrorKind
+from discord_ai_reminder_bot.domain.enums import (
+    DeliveryAttemptStatus,
+    DeliveryErrorKind,
+    NotificationType,
+)
 from discord_ai_reminder_bot.domain.recovery import (
     InterruptedAttemptAction,
     classify_interrupted_attempt,
 )
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.domain.retry_policy import RetryAction, decide_retry
-from discord_ai_reminder_bot.infrastructure.database.models import DeliveryAttempt, ScheduleRun
+from discord_ai_reminder_bot.infrastructure.database.models import (
+    DeliveryAttempt,
+    Schedule,
+    ScheduleRun,
+)
 from discord_ai_reminder_bot.infrastructure.database.repositories import (
     DeliveryAttemptRepository,
     ScheduleRepository,
@@ -53,11 +62,20 @@ class RecoveredRun:
 class ProcessingRecoveryService:
     """Recover locked expired runs in the caller-owned transaction."""
 
-    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        configured_guild_id: int | None = None,
+        operator_channel_id: int | None = None,
+    ) -> None:
+        self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._attempts = DeliveryAttemptRepository(session)
         self._execution = ScheduleExecutionService(session, configured_guild_id=configured_guild_id)
+        self._configured_guild_id = configured_guild_id
+        self._operator_channel_id = operator_channel_id
 
     async def recover_expired(
         self, *, recovered_at: datetime, batch_size: int
@@ -84,14 +102,19 @@ class ProcessingRecoveryService:
         worker_id = run.claimed_by
         assert worker_id is not None
         if not _is_consistent(run, attempt, recovered_at):
-            await self._schedules.lock_by_id(run.schedule_id)
+            schedule = await self._schedules.lock_by_id(run.schedule_id)
             failed = await self._fail_unknown(
                 run=run,
                 recovered_at=recovered_at,
                 error_summary=INCONSISTENT_SUMMARY,
             )
             return await self._finalized(
-                failed, attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at
+                schedule,
+                failed,
+                attempt,
+                RecoveryResult.FAILED_UNKNOWN,
+                NotificationType.RECOVERY,
+                recovered_at,
             )
 
         assert attempt is not None
@@ -102,8 +125,9 @@ class ProcessingRecoveryService:
                 error_kind=DeliveryErrorKind.TRANSIENT,
                 failed_at=recovered_at,
             )
+            schedule = None
             if decision.action is not RetryAction.RETRY:
-                await self._schedules.lock_by_id(run.schedule_id)
+                schedule = await self._schedules.lock_by_id(run.schedule_id)
             failed_attempt = await self._attempts.mark_failed(
                 attempt_id=attempt.id,
                 worker_id=worker_id,
@@ -129,10 +153,18 @@ class ProcessingRecoveryService:
             )
             if result is RecoveryResult.RETRY_PENDING:
                 return RecoveredRun(failed_run, failed_attempt, result, None)
-            return await self._finalized(failed_run, failed_attempt, result, recovered_at)
+            assert schedule is not None
+            return await self._finalized(
+                schedule,
+                failed_run,
+                failed_attempt,
+                result,
+                NotificationType.RUN_FAILED,
+                recovered_at,
+            )
 
         if action is InterruptedAttemptAction.FAIL_WITH_UNKNOWN_RESULT:
-            await self._schedules.lock_by_id(run.schedule_id)
+            schedule = await self._schedules.lock_by_id(run.schedule_id)
             unknown_attempt = await self._attempts.mark_unknown_after_expiry(
                 attempt_id=attempt.id,
                 worker_id=worker_id,
@@ -146,26 +178,57 @@ class ProcessingRecoveryService:
                 error_summary=UNKNOWN_SUMMARY,
             )
             return await self._finalized(
-                failed_run, unknown_attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at
+                schedule,
+                failed_run,
+                unknown_attempt,
+                RecoveryResult.FAILED_UNKNOWN,
+                NotificationType.RUN_FAILED,
+                recovered_at,
             )
 
-        await self._schedules.lock_by_id(run.schedule_id)
+        schedule = await self._schedules.lock_by_id(run.schedule_id)
         failed = await self._fail_unknown(
             run=run,
             recovered_at=recovered_at,
             error_summary=INCONSISTENT_SUMMARY,
         )
-        return await self._finalized(failed, attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at)
+        return await self._finalized(
+            schedule,
+            failed,
+            attempt,
+            RecoveryResult.FAILED_UNKNOWN,
+            NotificationType.RECOVERY,
+            recovered_at,
+        )
 
     async def _finalized(
         self,
+        schedule: Schedule,
         run: ScheduleRun,
         attempt: DeliveryAttempt | None,
         result: RecoveryResult,
+        notification_type: NotificationType,
         recovered_at: datetime,
     ) -> RecoveredRun:
         finalization = await self._execution.finalize_run(run_id=run.id, finalized_at=recovered_at)
+        events = self._notification_events()
+        if events is not None:
+            await events.add_run_event(
+                schedule=schedule,
+                run=run,
+                notification_type=notification_type,
+                event_at=recovered_at,
+            )
         return RecoveredRun(run, attempt, result, finalization)
+
+    def _notification_events(self) -> NotificationEventService | None:
+        if self._configured_guild_id is None or self._operator_channel_id is None:
+            return None
+        return NotificationEventService(
+            self._session,
+            configured_guild_id=self._configured_guild_id,
+            operator_channel_id=self._operator_channel_id,
+        )
 
     async def _fail_unknown(
         self,

@@ -21,12 +21,14 @@ from discord_ai_reminder_bot.application.gateway import (
     TransientGatewayError,
     UnknownGatewayError,
 )
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.schedule_execution import ScheduleExecutionService
 from discord_ai_reminder_bot.config import MAX_POSTGRES_BIGINT
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import (
     DeliveryAttemptStatus,
     DeliveryErrorKind,
+    NotificationType,
     RunStatus,
     ScheduleStatus,
 )
@@ -92,6 +94,7 @@ class PollingWorker:
         lease_timeout: timedelta,
         logger: logging.Logger,
         configured_guild_id: int | None = None,
+        operator_channel_id: int | None = None,
     ) -> None:
         if not isinstance(worker_id, uuid.UUID):
             raise TypeError("worker_id must be a UUID")
@@ -110,6 +113,7 @@ class PollingWorker:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._logger = logger
         self._configured_guild_id = configured_guild_id
+        self._operator_channel_id = operator_channel_id
 
     async def poll_once(self) -> PollResult:
         """Claim and completely process at most one configured batch, without waiting."""
@@ -153,10 +157,7 @@ class PollingWorker:
             try:
                 return await self._process(claim)
             except Exception:  # noqa: BLE001 - one item must not cancel sibling tasks
-                self._logger.error(
-                    "poll_item_internal_error",
-                    extra={"worker_id": str(self._worker_id), "run_id": claim.run_id},
-                )
+                self._logger.error("poll_item_internal_error")
                 return ItemResult.INTERNAL_ERROR
 
     async def _process(self, claim: _Claim) -> ItemResult:
@@ -227,13 +228,22 @@ class PollingWorker:
             schedule = await _lock_one(session, Schedule, run.schedule_id)
             status = ScheduleStatus(schedule.status)
             if status in _SKIP_CODES:
-                await DeliveryService(session).skip_before_send(
+                update = await DeliveryService(session).skip_before_send(
                     attempt_id=attempt.id,
                     worker_id=self._worker_id,
                     now=now,
                     result_code=_SKIP_CODES[status],
                     error_summary="Schedule was not sendable before Discord delivery",
                 )
+                if status is ScheduleStatus.DRAFT:
+                    events = self._notification_events(session)
+                    if events is not None:
+                        await events.add_run_event(
+                            schedule=schedule,
+                            run=update.run,
+                            notification_type=NotificationType.RUN_SKIPPED,
+                            event_at=now,
+                        )
                 skipped_id = run.id
             elif status is not ScheduleStatus.ACTIVE:
                 raise RuntimeError("schedule is not eligible for delivery")
@@ -270,10 +280,12 @@ class PollingWorker:
         retry_at,
     ) -> ItemResult:
         async with self._sessions() as session, session.begin():
+            now = require_utc(self._clock.now())
+            _run, _attempt, schedule = await _lock_delivery_context(session, claim)
             update = await DeliveryService(session).complete_failure(
                 attempt_id=claim.attempt_id,
                 worker_id=self._worker_id,
-                now=require_utc(self._clock.now()),
+                now=now,
                 error_kind=kind,
                 error_code=code,
                 error_summary=(
@@ -284,6 +296,15 @@ class PollingWorker:
                 retry_at=retry_at,
             )
             run_id, pending = update.run.id, update.run.status == RunStatus.PENDING.value
+            if not pending:
+                events = self._notification_events(session)
+                if events is not None:
+                    await events.add_run_event(
+                        schedule=schedule,
+                        run=update.run,
+                        notification_type=NotificationType.RUN_FAILED,
+                        event_at=now,
+                    )
         if pending:
             return ItemResult.RETRY_SCHEDULED
         await self._finalize(run_id)
@@ -291,11 +312,21 @@ class PollingWorker:
 
     async def _save_unknown(self, claim: _Claim) -> ItemResult:
         async with self._sessions() as session, session.begin():
+            now = require_utc(self._clock.now())
+            _run, _attempt, schedule = await _lock_delivery_context(session, claim)
             update = await DeliveryService(session).complete_unknown(
                 attempt_id=claim.attempt_id,
                 worker_id=self._worker_id,
-                now=require_utc(self._clock.now()),
+                now=now,
             )
+            events = self._notification_events(session)
+            if events is not None:
+                await events.add_run_event(
+                    schedule=schedule,
+                    run=update.run,
+                    notification_type=NotificationType.RUN_FAILED,
+                    event_at=now,
+                )
             run_id = update.run.id
         await self._finalize(run_id)
         return ItemResult.UNKNOWN
@@ -306,6 +337,15 @@ class PollingWorker:
                 session, configured_guild_id=self._configured_guild_id
             ).finalize_run(run_id=run_id, finalized_at=require_utc(self._clock.now()))
 
+    def _notification_events(self, session: AsyncSession) -> NotificationEventService | None:
+        if self._configured_guild_id is None or self._operator_channel_id is None:
+            return None
+        return NotificationEventService(
+            session,
+            configured_guild_id=self._configured_guild_id,
+            operator_channel_id=self._operator_channel_id,
+        )
+
 
 async def _lock_one(session: AsyncSession, model, row_id: int):
     row = (
@@ -314,3 +354,14 @@ async def _lock_one(session: AsyncSession, model, row_id: int):
     if row is None:
         raise RuntimeError("worker row was not found")
     return row
+
+
+async def _lock_delivery_context(
+    session: AsyncSession, claim: _Claim
+) -> tuple[ScheduleRun, DeliveryAttempt, Schedule]:
+    run = await _lock_one(session, ScheduleRun, claim.run_id)
+    attempt = await _lock_one(session, DeliveryAttempt, claim.attempt_id)
+    if attempt.schedule_run_id != run.id:
+        raise RuntimeError("claimed run and attempt are inconsistent")
+    schedule = await _lock_one(session, Schedule, run.schedule_id)
+    return run, attempt, schedule

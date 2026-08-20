@@ -39,6 +39,8 @@ from discord_ai_reminder_bot.domain.notification import (
     NotificationOutcome,
     decide_notification_result,
     fallback_notification_deduplication_key,
+    notification_deduplication_key,
+    schedule_notification_deduplication_key,
 )
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.models import (
@@ -95,6 +97,12 @@ _FALLBACK_ROUTES = {
     NotificationRecipientType.CREATOR_DM: NotificationRecipientType.OPERATOR_CHANNEL,
     NotificationRecipientType.OPERATOR_CHANNEL: NotificationRecipientType.OPERATOR_DM,
     NotificationRecipientType.OPERATOR_DM: NotificationRecipientType.LOG,
+}
+_RUN_EVENT_KINDS = {
+    NotificationType.RUN_FAILED: "run_failed",
+    NotificationType.RUN_DELAYED: "run_delayed",
+    NotificationType.RUN_SKIPPED: "run_skipped",
+    NotificationType.RECOVERY: "recovery",
 }
 
 
@@ -321,20 +329,68 @@ class NotificationWorker:
                 and log.recipient_id != self._operator_user_id
             ):
                 return None
-            if kind is not NotificationType.RECOVERY and (schedule is None or run is None):
+            recurring_missed = kind is NotificationType.RUN_SKIPPED and run is None
+            if recurring_missed:
+                if schedule is None or log.schedule_run_id is not None:
+                    return None
+                expected = schedule_notification_deduplication_key(
+                    event_kind="startup_recurring_missed",
+                    schedule_public_id=schedule.public_id,
+                    occurred_at=log.scheduled_at,
+                    notification_type=kind,
+                    recipient_type=route,
+                )
+                if log.deduplication_key != expected:
+                    return None
+            elif run is not None and schedule is not None:
+                event_kind = _RUN_EVENT_KINDS.get(kind)
+                if event_kind is None:
+                    return None
+                expected = notification_deduplication_key(
+                    event_kind=event_kind,
+                    schedule_public_id=schedule.public_id,
+                    scheduled_for=run.scheduled_for,
+                    notification_type=kind,
+                    recipient_type=route,
+                )
+                if log.deduplication_key != expected:
+                    return None
+                if kind is NotificationType.RUN_SKIPPED and not (
+                    run.status == RunStatus.SKIPPED.value
+                    and run.result_code == "draft_without_content"
+                ):
+                    return None
+                if kind is NotificationType.RUN_FAILED and not (
+                    (
+                        run.status == RunStatus.FAILED.value
+                        and run.result_code in {"delivery_failed", "delivery_result_unknown"}
+                    )
+                    or (
+                        run.status == RunStatus.SKIPPED.value
+                        and run.result_code == "startup_overdue"
+                    )
+                ):
+                    return None
+                if kind is NotificationType.RUN_DELAYED and (
+                    run.status
+                    not in {
+                        RunStatus.PENDING.value,
+                        RunStatus.PROCESSING.value,
+                        RunStatus.SUCCEEDED.value,
+                    }
+                    or await _has_preferred_failed_notification(session, run.id)
+                ):
+                    return None
+                if kind is NotificationType.RECOVERY and not (
+                    run.status == RunStatus.FAILED.value
+                    and run.result_code
+                    in {"startup_inconsistent_pending", "delivery_result_unknown"}
+                ):
+                    return None
+            elif kind is not NotificationType.RECOVERY:
                 return None
-            if (
-                run is not None
-                and kind is NotificationType.RUN_FAILED
-                and run.status != RunStatus.FAILED.value
-            ):
-                return None
-            if (
-                run is not None
-                and kind is NotificationType.RUN_SKIPPED
-                and run.status != RunStatus.SKIPPED.value
-            ):
-                return None
+            else:
+                recurring_missed = False
         return NotificationPresentation(
             notification_type=kind,
             recipient_type=route,
@@ -342,8 +398,22 @@ class NotificationWorker:
             schedule_public_id=schedule.public_id if schedule else None,
             scheduled_for=run.scheduled_for if run else None,
             channel_id=schedule.channel_id if schedule else None,
-            current_status=(run.status if run else "recovery_required"),
-            is_fallback=route is not NotificationRecipientType.CREATOR_DM,
+            current_status=(
+                run.status
+                if run is not None
+                else schedule.status
+                if schedule is not None
+                else "recovery_required"
+            ),
+            result_code=run.result_code if run else None,
+            recurring_missed=(
+                kind is NotificationType.RUN_SKIPPED and schedule is not None and run is None
+            ),
+            is_fallback=(
+                route is not NotificationRecipientType.CREATOR_DM
+                if kind in _DRAFT_TYPES
+                else route is not NotificationRecipientType.OPERATOR_CHANNEL
+            ),
         )
 
     async def _save_failure(
@@ -458,6 +528,21 @@ def _owned_claim(log, attempt, worker_id, now) -> bool:
 
 def _instant_token(value) -> str:
     return require_utc(value).strftime("%Y%m%dT%H%M%S.%fZ")
+
+
+async def _has_preferred_failed_notification(session: AsyncSession, run_id: int) -> bool:
+    return (
+        await session.scalar(
+            select(NotificationLog.id)
+            .where(
+                NotificationLog.schedule_run_id == run_id,
+                NotificationLog.notification_type == NotificationType.RUN_FAILED.value,
+                NotificationLog.status != NotificationStatus.CANCELLED.value,
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 async def add_fallback_notification(

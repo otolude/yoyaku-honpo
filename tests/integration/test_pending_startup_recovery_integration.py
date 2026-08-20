@@ -9,6 +9,7 @@ from discord_ai_reminder_bot.application.pending_recovery import (
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NotificationLog,
     OperationLog,
     Schedule,
     ScheduleRun,
@@ -16,6 +17,7 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
 from discord_ai_reminder_bot.infrastructure.database.repositories import ScheduleRunRepository
 
 CUTOFF = datetime(2026, 8, 19, 3, 0, tzinfo=UTC)
+EVENT_ARGS = {"configured_guild_id": 100, "operator_channel_id": 400}
 
 
 async def add_schedule_run(
@@ -76,7 +78,7 @@ async def test_once_active_inclusive_boundary(
 ) -> None:
     schedule, run = await add_schedule_run(db_session, scheduled_for=CUTOFF - delay)
     result = await PendingStartupRecoveryService(db_session).recover_pending(
-        recovery_cutoff=CUTOFF, batch_size=20
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
     )
     await db_session.flush()
     assert run.status == expected_status
@@ -100,6 +102,16 @@ async def test_once_active_inclusive_boundary(
             "skipped_count": 1,
             "startup_recovery": True,
         }
+    notification = (
+        await db_session.execute(
+            select(NotificationLog).where(NotificationLog.schedule_run_id == run.id)
+        )
+    ).scalar_one()
+    assert notification.notification_type == (
+        "run_delayed" if expected_status == "pending" else "run_failed"
+    )
+    assert notification.scheduled_at == CUTOFF
+    assert notification.error_code is None
 
 
 @pytest.mark.asyncio
@@ -109,13 +121,19 @@ async def test_once_draft_skips_without_changing_schedule(db_session: AsyncSessi
         db_session, status="draft", content=None, scheduled_for=scheduled_for
     )
     await PendingStartupRecoveryService(db_session).recover_pending(
-        recovery_cutoff=CUTOFF, batch_size=20
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
     )
     await db_session.flush()
     assert run.status == "skipped" and run.result_code == "draft_without_content"
     assert schedule.status == "draft"
     assert schedule.next_run_at == scheduled_for and schedule.version == 1
     assert await db_session.scalar(select(func.count(OperationLog.id))) == 0
+    notification = (
+        await db_session.execute(
+            select(NotificationLog).where(NotificationLog.schedule_run_id == run.id)
+        )
+    ).scalar_one()
+    assert notification.notification_type == "run_skipped"
 
 
 @pytest.mark.asyncio
@@ -132,7 +150,7 @@ async def test_recurring_skips_missed_and_creates_one_future(
         weekday=weekday,
     )
     await PendingStartupRecoveryService(db_session).recover_pending(
-        recovery_cutoff=CUTOFF, batch_size=20
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
     )
     await db_session.flush()
     rows = list(
@@ -149,6 +167,44 @@ async def test_recurring_skips_missed_and_creates_one_future(
     future = next(item for item in rows if item.status == "pending")
     assert future.scheduled_for > CUTOFF
     assert schedule.next_run_at == future.scheduled_for
+    notifications = list(
+        (
+            await db_session.execute(
+                select(NotificationLog).where(NotificationLog.schedule_id == schedule.id)
+            )
+        ).scalars()
+    )
+    assert len(notifications) == 1
+    assert notifications[0].notification_type == "run_skipped"
+    assert notifications[0].schedule_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_five_hundred_recurring_misses_create_one_aggregate_notification(
+    db_session: AsyncSession,
+) -> None:
+    first = CUTOFF - timedelta(days=499)
+    schedule, _run = await add_schedule_run(
+        db_session,
+        schedule_type="daily",
+        scheduled_for=first,
+        local_time=time(12, 0),
+    )
+    await PendingStartupRecoveryService(db_session).recover_pending(
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+    )
+    skipped = await db_session.scalar(
+        select(func.count())
+        .select_from(ScheduleRun)
+        .where(ScheduleRun.schedule_id == schedule.id, ScheduleRun.status == "skipped")
+    )
+    notifications = await db_session.scalar(
+        select(func.count())
+        .select_from(NotificationLog)
+        .where(NotificationLog.schedule_id == schedule.id)
+    )
+    assert skipped == 500
+    assert notifications == 1
 
 
 @pytest.mark.asyncio
@@ -170,7 +226,7 @@ async def test_recurring_end_and_draft_no_next(db_session: AsyncSession) -> None
         end_date=date(2026, 8, 19),
     )
     await PendingStartupRecoveryService(db_session).recover_pending(
-        recovery_cutoff=CUTOFF, batch_size=20
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
     )
     await db_session.flush()
     assert active_run.status == "skipped" and active.status == "ended"
@@ -204,12 +260,16 @@ async def test_retry_is_preserved_and_inconsistent_attempt_is_failed(
     )
     await db_session.flush()
     await PendingStartupRecoveryService(db_session).recover_pending(
-        recovery_cutoff=CUTOFF, batch_size=20
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
     )
     await db_session.flush()
     assert healthy.status == "pending"
     assert bad.status == "failed" and bad.result_code == "startup_inconsistent_pending"
     assert bad_schedule.status == "failed"
+    notifications = list((await db_session.execute(select(NotificationLog))).scalars())
+    assert len(notifications) == 1
+    assert notifications[0].notification_type == "recovery"
+    assert notifications[0].schedule_run_id == bad.id
 
 
 @pytest.mark.asyncio

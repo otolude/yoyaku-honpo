@@ -1,11 +1,12 @@
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.notification_gateway import (
     NotificationPermanentError,
     NotificationRateLimitError,
@@ -24,6 +25,8 @@ from discord_ai_reminder_bot.domain.notification import global_notification_dedu
 from discord_ai_reminder_bot.infrastructure.database.models import (
     NotificationAttempt,
     NotificationLog,
+    Schedule,
+    ScheduleRun,
 )
 from discord_ai_reminder_bot.infrastructure.database.notification_repositories import (
     NotificationAttemptRepository,
@@ -229,3 +232,184 @@ async def test_notification_lease_recovery(
             assert attempt is not None and attempt.status == ("unknown" if sending else "failed")
     finally:
         await cleanup(factory, [notification_id])
+
+
+async def _seed_business_event(
+    factory,
+    *,
+    notification_type: NotificationType,
+    run_status: str,
+    result_code: str,
+) -> tuple[int, int, int]:
+    async with factory() as session, session.begin():
+        schedule = Schedule(
+            public_id=uuid.uuid7(),
+            guild_id=100,
+            channel_id=200,
+            creator_user_id=300,
+            schedule_type="once",
+            status="active",
+            content="private body",
+            next_run_at=NOW,
+            version=1,
+        )
+        session.add(schedule)
+        await session.flush()
+        run = ScheduleRun(
+            schedule_id=schedule.id,
+            scheduled_for=NOW,
+            status=run_status,
+            attempt_count=1,
+            next_attempt_at=NOW if run_status == "pending" else None,
+            result_code=result_code,
+            finished_at=NOW if run_status in {"failed", "skipped", "succeeded"} else None,
+        )
+        session.add(run)
+        await session.flush()
+        log = await NotificationEventService(
+            session, configured_guild_id=100, operator_channel_id=400
+        ).add_run_event(
+            schedule=schedule,
+            run=run,
+            notification_type=notification_type,
+            event_at=NOW,
+        )
+        assert log is not None
+        return schedule.id, run.id, log.id
+
+
+async def _cleanup_business(factory, schedule_id: int) -> None:
+    async with factory() as session, session.begin():
+        log_ids = select(NotificationLog.id).where(NotificationLog.schedule_id == schedule_id)
+        await session.execute(
+            delete(NotificationAttempt).where(NotificationAttempt.notification_log_id.in_(log_ids))
+        )
+        await session.execute(
+            delete(NotificationLog).where(NotificationLog.schedule_id == schedule_id)
+        )
+        await session.execute(delete(ScheduleRun).where(ScheduleRun.schedule_id == schedule_id))
+        await session.execute(delete(Schedule).where(Schedule.id == schedule_id))
+
+
+@pytest.mark.parametrize(
+    ("result_code", "expected"),
+    [("draft_without_content", "succeeded"), ("schedule_paused", "cancelled")],
+)
+async def test_run_skipped_revalidation(
+    test_engine: AsyncEngine, result_code: str, expected: str
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    schedule_id, _run_id, log_id = await _seed_business_event(
+        factory,
+        notification_type=NotificationType.RUN_SKIPPED,
+        run_status="skipped",
+        result_code=result_code,
+    )
+    gateway = FakeGateway()
+    try:
+        result = await worker(factory, gateway).poll_once()
+        assert getattr(result, expected) == 1
+        assert gateway.calls == (1 if expected == "succeeded" else 0)
+        async with factory() as session:
+            log = await session.get(NotificationLog, log_id)
+            assert log is not None and log.status == expected
+    finally:
+        await _cleanup_business(factory, schedule_id)
+
+
+async def test_run_delayed_is_cancelled_when_run_failed_exists(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    schedule_id, run_id, delayed_id = await _seed_business_event(
+        factory,
+        notification_type=NotificationType.RUN_DELAYED,
+        run_status="pending",
+        result_code="startup_delayed",
+    )
+    async with factory() as session, session.begin():
+        schedule = await session.get(Schedule, schedule_id)
+        run = await session.get(ScheduleRun, run_id)
+        assert schedule is not None and run is not None
+        run.status = "failed"
+        run.next_attempt_at = None
+        run.result_code = "delivery_failed"
+        run.finished_at = NOW
+        failed = await NotificationEventService(
+            session, configured_guild_id=100, operator_channel_id=400
+        ).add_run_event(
+            schedule=schedule,
+            run=run,
+            notification_type=NotificationType.RUN_FAILED,
+            event_at=NOW,
+        )
+        assert failed is not None
+        failed_id = failed.id
+    gateway = FakeGateway()
+    try:
+        result = await worker(factory, gateway).poll_once()
+        assert result.cancelled == 1 and result.succeeded == 1
+        assert gateway.calls == 1
+        async with factory() as session:
+            delayed = await session.get(NotificationLog, delayed_id)
+            failed = await session.get(NotificationLog, failed_id)
+            assert delayed is not None and delayed.status == "cancelled"
+            assert failed is not None and failed.status == "succeeded"
+    finally:
+        await _cleanup_business(factory, schedule_id)
+
+
+async def test_run_failed_is_cancelled_after_return_to_retry_pending(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    schedule_id, _run_id, log_id = await _seed_business_event(
+        factory,
+        notification_type=NotificationType.RUN_FAILED,
+        run_status="pending",
+        result_code="retry_pending",
+    )
+    gateway = FakeGateway()
+    try:
+        result = await worker(factory, gateway).poll_once()
+        assert result.cancelled == 1 and gateway.calls == 0
+        async with factory() as session:
+            log = await session.get(NotificationLog, log_id)
+            assert log is not None and log.status == "cancelled"
+    finally:
+        await _cleanup_business(factory, schedule_id)
+
+
+async def test_recurring_missed_schedule_event_is_revalidated(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with factory() as session, session.begin():
+        schedule = Schedule(
+            public_id=uuid.uuid7(),
+            guild_id=100,
+            channel_id=200,
+            creator_user_id=300,
+            schedule_type="daily",
+            status="active",
+            content="private body",
+            next_run_at=NOW + timedelta(days=1),
+            local_time=time(12, 0),
+            version=1,
+        )
+        session.add(schedule)
+        await session.flush()
+        log = await NotificationEventService(
+            session, configured_guild_id=100, operator_channel_id=400
+        ).add_recurring_missed(schedule=schedule, recovery_cutoff=NOW)
+        assert log is not None
+        schedule_id, log_id = schedule.id, log.id
+    gateway = FakeGateway()
+    try:
+        result = await worker(factory, gateway).poll_once()
+        assert result.succeeded == 1 and gateway.calls == 1
+        async with factory() as session:
+            persisted = await session.get(NotificationLog, log_id)
+            assert persisted is not None and persisted.status == "succeeded"
+    finally:
+        await _cleanup_business(factory, schedule_id)

@@ -29,6 +29,10 @@ CLAIMED_AT = datetime(2026, 8, 17, 3, 0, tzinfo=UTC)
 RECOVERED_AT = CLAIMED_AT + timedelta(minutes=5)
 
 
+def recovery(session: AsyncSession) -> ProcessingRecoveryService:
+    return ProcessingRecoveryService(session, configured_guild_id=700, operator_channel_id=704)
+
+
 async def add_expired(
     session: AsyncSession,
     *,
@@ -112,9 +116,7 @@ async def test_claimed_expiry_uses_retry_policy(
     run_status: str,
 ) -> None:
     run, attempt, _ = await add_expired(db_session, attempt_number=attempt_number)
-    recovered = await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    recovered = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     assert len(recovered) == 1
     assert attempt is not None
     assert attempt.status == "failed"
@@ -136,11 +138,16 @@ async def test_claimed_expiry_uses_retry_policy(
         assert recovered[0].finalization is None
         assert schedule.status == "active"
         assert schedule.version == 1
+        assert await db_session.scalar(select(func.count(NotificationLog.id))) == 0
     else:
         assert recovered[0].finalization is not None
         assert schedule.status == "failed"
         assert schedule.next_run_at is None
         assert schedule.version == 2
+        notification = (await db_session.execute(select(NotificationLog))).scalar_one()
+        assert notification.notification_type == "run_failed"
+        assert notification.schedule_run_id == run.id
+        assert notification.error_code is None
 
 
 @pytest.mark.parametrize("attempt_status", ["sending", "unknown"])
@@ -148,9 +155,7 @@ async def test_sending_or_unknown_expiry_fails_without_retry(
     db_session: AsyncSession, attempt_status: str
 ) -> None:
     run, attempt, _ = await add_expired(db_session, attempt_status=attempt_status)
-    recovered = await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    recovered = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     assert recovered[0].result is RecoveryResult.FAILED_UNKNOWN
     assert attempt is not None
     assert attempt.status == "unknown"
@@ -164,6 +169,9 @@ async def test_sending_or_unknown_expiry_fails_without_retry(
     schedule = await db_session.get(Schedule, run.schedule_id)
     assert schedule is not None and schedule.status == "failed"
     assert recovered[0].finalization is not None
+    notification = (await db_session.execute(select(NotificationLog))).scalar_one()
+    assert notification.notification_type == "run_failed"
+    assert notification.schedule_run_id == run.id
 
 
 @pytest.mark.parametrize(
@@ -186,9 +194,7 @@ async def test_inconsistent_state_never_returns_to_pending(
         assert attempt is not None
         run.lease_expires_at = CLAIMED_AT - timedelta(seconds=1)
         await db_session.flush()
-    recovered = await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    recovered = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     assert recovered[0].result is RecoveryResult.FAILED_UNKNOWN
     assert run.status == "failed"
     assert run.next_attempt_at is None
@@ -198,15 +204,16 @@ async def test_inconsistent_state_never_returns_to_pending(
     schedule = await db_session.get(Schedule, run.schedule_id)
     assert schedule is not None and schedule.status == "failed"
     assert recovered[0].finalization is not None
+    notification = (await db_session.execute(select(NotificationLog))).scalar_one()
+    assert notification.notification_type == "recovery"
+    assert notification.schedule_run_id == run.id
 
 
 async def test_recurring_terminal_recovery_creates_one_strictly_future_run(
     db_session: AsyncSession,
 ) -> None:
     run, _, _ = await add_expired(db_session, attempt_number=4, schedule_type="daily")
-    recovered = await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    recovered = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     schedule = await db_session.get(Schedule, run.schedule_id)
     runs = list(
         (
@@ -234,9 +241,7 @@ async def test_recurring_terminal_recovery_ends_and_logs(
         schedule_type="daily",
         end_date=date(2026, 8, 17),
     )
-    await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     schedule = await db_session.get(Schedule, run.schedule_id)
     operations = list(
         (
@@ -260,9 +265,7 @@ async def test_recurring_inactive_schedule_is_not_restored(
         schedule_type="daily",
         schedule_status=schedule_status,
     )
-    await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=20
-    )
+    await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
     schedule = await db_session.get(Schedule, run.schedule_id)
     count = await db_session.scalar(
         select(func.count())
@@ -310,9 +313,9 @@ async def test_finalization_failure_rolls_back_run_attempt_and_schedule(
 
     with pytest.raises(RepositoryStateConflictError):
         async with factory.begin() as recovering:
-            await ProcessingRecoveryService(recovering).recover_expired(
-                recovered_at=RECOVERED_AT, batch_size=20
-            )
+            await ProcessingRecoveryService(
+                recovering, configured_guild_id=700, operator_channel_id=704
+            ).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
 
     async with factory() as verifier:
         schedule = await verifier.get(Schedule, schedule_id)
@@ -321,6 +324,7 @@ async def test_finalization_failure_rolls_back_run_attempt_and_schedule(
         assert schedule is not None and schedule.status == "draft" and schedule.version == 1
         assert persisted_run is not None and persisted_run.status == "processing"
         assert persisted_attempt is not None and persisted_attempt.status == "sending"
+        assert await verifier.scalar(select(func.count(NotificationLog.id))) == 0
 
     await _cleanup(test_engine, [schedule_id], [run_id])
 
@@ -337,9 +341,7 @@ async def test_future_lease_is_excluded_and_batch_order_is_stable(
     future, _, _ = await add_expired(
         db_session, lease_expires_at=RECOVERED_AT + timedelta(seconds=1)
     )
-    recovered = await ProcessingRecoveryService(db_session).recover_expired(
-        recovered_at=RECOVERED_AT, batch_size=1
-    )
+    recovered = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=1)
     assert [item.run.id for item in recovered] == [first.id]
     assert second.status == "processing"
     assert future.status == "processing"

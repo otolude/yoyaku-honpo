@@ -133,6 +133,28 @@ def global_notification_deduplication_key(
     return key
 
 
+def schedule_notification_deduplication_key(
+    *,
+    event_kind: str,
+    schedule_public_id: uuid.UUID,
+    occurred_at: datetime,
+    notification_type: NotificationType,
+    recipient_type: NotificationRecipientType,
+) -> str:
+    """Return a key for one Schedule-level event without an individual run."""
+    event_kind = _require_event_kind(event_kind)
+    public_id = _require_uuid7(schedule_public_id, field="schedule_public_id")
+    occurred_at = require_utc(occurred_at)
+    instant = occurred_at.strftime("%Y%m%dT%H%M%S.%fZ")
+    key = (
+        f"v1s|{event_kind}|{public_id}|{instant}|"
+        f"{NotificationType(notification_type).value}|{NotificationRecipientType(recipient_type).value}"
+    )
+    if len(key) > 160:
+        raise ValueError("deduplication key exceeds 160 characters")
+    return key
+
+
 def fallback_notification_deduplication_key(
     original_key: str, recipient_type: NotificationRecipientType
 ) -> str:
@@ -140,7 +162,7 @@ def fallback_notification_deduplication_key(
     if not isinstance(original_key, str) or not 1 <= len(original_key) <= 160:
         raise ValueError("original notification key is invalid")
     parts = original_key.split("|")
-    if len(parts) != 6 or parts[0] not in {"v1", "v1g"}:
+    if len(parts) != 6 or parts[0] not in {"v1", "v1g", "v1s"}:
         raise ValueError("original notification key is not canonical")
     NotificationRecipientType(parts[-1])
     route = NotificationRecipientType(recipient_type).value

@@ -13,6 +13,7 @@ from discord_ai_reminder_bot.domain.notification import (
     fallback_notification_deduplication_key,
     global_notification_deduplication_key,
     notification_deduplication_key,
+    schedule_notification_deduplication_key,
 )
 from discord_ai_reminder_bot.domain.safe_text import validate_safe_error_text
 from discord_ai_reminder_bot.infrastructure.database.notification_repositories import (
@@ -73,6 +74,34 @@ def test_global_key_uses_public_event_uuid() -> None:
     assert len(value) <= 160
 
 
+def test_schedule_event_key_is_canonical_bounded_and_cutoff_specific() -> None:
+    public_id = uuid.uuid7()
+    value = schedule_notification_deduplication_key(
+        event_kind="startup_recurring_missed",
+        schedule_public_id=public_id,
+        occurred_at=NOW,
+        notification_type=NotificationType.RUN_SKIPPED,
+        recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+    )
+    assert value.startswith(f"v1s|startup_recurring_missed|{public_id}|")
+    assert value.endswith("|run_skipped|operator_channel")
+    assert len(value) <= 160
+    assert value == schedule_notification_deduplication_key(
+        event_kind="startup_recurring_missed",
+        schedule_public_id=public_id,
+        occurred_at=NOW,
+        notification_type=NotificationType.RUN_SKIPPED,
+        recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+    )
+    assert value != schedule_notification_deduplication_key(
+        event_kind="startup_recurring_missed",
+        schedule_public_id=public_id,
+        occurred_at=NOW + timedelta(microseconds=1),
+        notification_type=NotificationType.RUN_SKIPPED,
+        recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+    )
+
+
 def test_fallback_key_preserves_event_and_changes_only_route() -> None:
     original = key(recipient=NotificationRecipientType.CREATOR_DM)
     fallback = fallback_notification_deduplication_key(
@@ -81,6 +110,17 @@ def test_fallback_key_preserves_event_and_changes_only_route() -> None:
     assert fallback.rsplit("|", 1)[0] == original.rsplit("|", 1)[0]
     assert fallback.endswith("|operator_channel")
     assert fallback != original
+
+    schedule_key = schedule_notification_deduplication_key(
+        event_kind="startup_recurring_missed",
+        schedule_public_id=uuid.uuid7(),
+        occurred_at=NOW,
+        notification_type=NotificationType.RUN_SKIPPED,
+        recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+    )
+    assert fallback_notification_deduplication_key(
+        schedule_key, NotificationRecipientType.OPERATOR_DM
+    ).endswith("|operator_dm")
 
 
 @pytest.mark.parametrize(

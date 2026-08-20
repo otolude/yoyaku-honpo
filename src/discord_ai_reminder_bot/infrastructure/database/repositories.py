@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from discord_ai_reminder_bot.domain.enums import (
     DeliveryAttemptStatus,
+    NotificationType,
     RunStatus,
     ScheduleStatus,
     ScheduleType,
@@ -164,6 +165,45 @@ def build_startup_pending_statement(
             ScheduleRun.scheduled_for <= recovered_at,
             ~healthy_retry,
             ~healthy_delayed_once,
+        )
+        .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def build_startup_delayed_notification_statement(
+    *, recovered_at: datetime, batch_size: int
+) -> Select[tuple[ScheduleRun]]:
+    """Lock healthy delayed one-time runs that still need their startup event."""
+    recovered_at = require_utc(recovered_at)
+    if isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CLAIM_BATCH_SIZE:
+        raise ValueError(f"batch_size must be between 1 and {MAX_CLAIM_BATCH_SIZE}")
+    has_attempt = (
+        select(DeliveryAttempt.id).where(DeliveryAttempt.schedule_run_id == ScheduleRun.id).exists()
+    )
+    has_delayed_event = (
+        select(NotificationLog.id)
+        .where(
+            NotificationLog.schedule_run_id == ScheduleRun.id,
+            NotificationLog.notification_type == NotificationType.RUN_DELAYED.value,
+        )
+        .exists()
+    )
+    return (
+        select(ScheduleRun)
+        .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
+        .where(
+            ScheduleRun.status == RunStatus.PENDING.value,
+            ScheduleRun.attempt_count == 0,
+            ScheduleRun.scheduled_for <= recovered_at,
+            ScheduleRun.scheduled_for >= recovered_at - timedelta(minutes=15),
+            ~has_attempt,
+            ~has_delayed_event,
+            Schedule.schedule_type == ScheduleType.ONCE.value,
+            Schedule.status == ScheduleStatus.ACTIVE.value,
+            Schedule.content.is_not(None),
+            Schedule.next_run_at == ScheduleRun.scheduled_for,
         )
         .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
         .limit(batch_size)
@@ -644,6 +684,14 @@ class ScheduleRunRepository:
         self, *, recovered_at: datetime, batch_size: int
     ) -> list[ScheduleRun]:
         statement = build_startup_pending_statement(
+            recovered_at=recovered_at, batch_size=batch_size
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def lock_startup_delayed_without_notification(
+        self, *, recovered_at: datetime, batch_size: int
+    ) -> list[ScheduleRun]:
+        statement = build_startup_delayed_notification_statement(
             recovered_at=recovered_at, batch_size=batch_size
         )
         return list((await self._session.execute(statement)).scalars())

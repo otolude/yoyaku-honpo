@@ -89,7 +89,9 @@ class NotificationLogRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def add_idempotent(self, notification: NotificationLog) -> NotificationLog:
+    async def add_idempotent(
+        self, notification: NotificationLog, *, allow_existing_event_time: bool = False
+    ) -> NotificationLog:
         _validate_new_notification(notification)
         values = {
             "schedule_id": notification.schedule_id,
@@ -130,7 +132,11 @@ class NotificationLogRepository:
                 )
             )
         ).scalar_one()
-        if not _same_logical_route(existing, notification):
+        if not _same_logical_route(
+            existing,
+            notification,
+            compare_scheduled_at=not allow_existing_event_time,
+        ):
             raise RepositoryStateConflictError(
                 "deduplication key belongs to a different notification route"
             )
@@ -607,19 +613,23 @@ def _validate_new_notification(notification: NotificationLog) -> None:
         _validate_positive_bigint(notification.recipient_id, field="recipient_id")
 
 
-def _same_logical_route(existing: NotificationLog, candidate: NotificationLog) -> bool:
-    return all(
-        getattr(existing, field) == getattr(candidate, field)
-        for field in (
-            "schedule_id",
-            "schedule_run_id",
-            "notification_type",
-            "recipient_type",
-            "recipient_id",
-            "deduplication_key",
-            "scheduled_at",
-        )
-    )
+def _same_logical_route(
+    existing: NotificationLog,
+    candidate: NotificationLog,
+    *,
+    compare_scheduled_at: bool,
+) -> bool:
+    fields = [
+        "schedule_id",
+        "schedule_run_id",
+        "notification_type",
+        "recipient_type",
+        "recipient_id",
+        "deduplication_key",
+    ]
+    if compare_scheduled_at:
+        fields.append("scheduled_at")
+    return all(getattr(existing, field) == getattr(candidate, field) for field in fields)
 
 
 def _validate_positive_bigint(value: int, *, field: str) -> int:

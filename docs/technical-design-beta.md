@@ -418,7 +418,7 @@ Schedule、pending run、OperationLogは同一トランザクションで更新�
 | `recipient_id` | BIGINT | 可 | DiscordユーザーIDまたはチャンネルID。ログではNULL |
 | `status` | VARCHAR(16) | 不可 | `pending`、`succeeded`、`failed` |
 | `deduplication_key` | VARCHAR(160) | 不可 | 同じ通知の重複送信防止キー |
-| `error_code` | VARCHAR(64) | 可 | 失敗理由コード |
+| `error_code` | VARCHAR(64) | 可 | 通知配送エラー専用コード。業務理由は保存しない |
 | `error_summary` | VARCHAR(500) | 可 | 安全化した概要 |
 | `created_at` | TIMESTAMPTZ | 不可 | 作成日時 |
 | `sent_at` | TIMESTAMPTZ | 可 | 成功日時 |
@@ -660,7 +660,11 @@ pending Recoveryは`FOR UPDATE SKIP LOCKED`で`scheduled_for, id`の安定順序
 
 processing Recoveryは期限切れrunを`FOR UPDATE SKIP LOCKED`、対応する最新DeliveryAttempt、Scheduleの順でlockする。claimed attempt 1～3をretry予定の`pending`へ戻した場合はScheduleを確定しない。claimed attempt 4、sending/unknown、Attempt欠落または番号・worker・日時・状態不整合を安全側の`failed`へ終端化した場合だけ、同じSessionで既存`ScheduleExecutionService.finalize_run()`を呼ぶ。同一Sessionで既にlock済みのrunとScheduleを再lockしてもlock順はrunからScheduleのまま変わらない。単発activeは`failed`、`next_run_at = NULL`、version増加とsystem failed OperationLogを冪等に適用する。定期activeはrecurrence関数だけで固定cutoffより厳密に未来の未使用runを1件生成または正常な既存runを再利用し、次回がなければ`ended`とsystem OperationLogを適用する。paused/deleted/endedは復帰させず、不整合Scheduleは既存確定規則どおり拒否する。
 
-run、Attempt、Schedule、新run、OperationLog、および既存Schedule確定経路が作る下書き事前NotificationLogはBot runtime所有の1バッチ1トランザクションに含める。Application ServiceとRepositoryはcommit/rollbackしない。Schedule確定が失敗すれば当該バッチ全体をrollbackし、Recovery完了扱いにせず、後続Recoveryと両polling loopを開始しない。先にcommit済みのバッチは維持し、ログは固定イベント名と安全な件数だけに制限する。processing Recovery由来の投稿failed・unknown等のNotificationLogイベント生成自体は後続工程であり、この接続では生成しない。
+run、Attempt、Schedule、新run、OperationLog、およびNotificationLogは呼び出し元所有の同じトランザクションに含める。Application ServiceとRepositoryはcommit/rollbackしない。Schedule確定またはoutbox生成が失敗すれば当該バッチ全体をrollbackし、Recovery完了扱いにせず、後続Recoveryと両polling loopを開始しない。先にcommit済みのバッチは維持し、ログは固定イベント名と安全な件数だけに制限する。
+
+業務イベント生成Serviceは`run_skipped`、`run_failed`、`run_delayed`、`recovery`を既存Notification typeへ変換し、最初の`operator_channel`経路だけをINSERTする。通常DeliveryはRun→Attempt→Schedule→NotificationLog、processing RecoveryはRun→Attempt→Schedule→NotificationLog、pending RecoveryはRun群→Schedule→NotificationLogの順を維持する。業務側は既存NotificationLogをlock/cancelせず、stale判定とfallback作成はLog→Attempt→Schedule→RunでlockするNotificationWorkerだけが行う。
+
+run単位keyはSchedule canonical UUIDv7、Run予定UTC時刻、notification type、routeを含み、通常draft skipとstartup draft skipで共通とする。定期欠落回は`v1s|startup_recurring_missed|Schedule UUIDv7|recovery_cutoff UTC|run_skipped|route`の160文字以内のkeyで1 Schedule・1 cutoffへ集約し、`schedule_run_id = NULL`とする。内部ID、skip件数、本文、Discord message IDはkeyにも通知にも含めない。業務理由は`ScheduleRun.result_code`とnotification type、集約通知はtypeとrunなしの組合せからPresenterが固定文へ再構築し、NotificationLogの`error_code`と`error_summary`は生成時NULL、通知配送失敗時だけ使用する。投稿結果unknownを表すpending `run_failed` outboxと、通知配送自体のunknown終端を区別する。イベント生成者はoperator DMやlogを先行作成せず、fallbackはNotificationWorkerだけが作る。Recovery未完了そのものはDiscord通知対象外とする。
 
 1. DB接続とマイグレーション状態を確認する。
 2. 期限切れの処理権を持つ `processing` 実行を確認する。
@@ -738,7 +742,7 @@ NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サ�
 
 起動時は予約processing、期限超過pending、notification lease、draft notification bootstrapの順に同じcutoffで各最大25 batchを処理し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。bootstrapはfuture draftのRunを`scheduled_for, id`順に`FOR UPDATE SKIP LOCKED`で取得してからScheduleをlockし、cutoffより前の未claim pending通知のみcancelする。過ぎた24h/1hは再生成せず、残り1時間未満ならRun単位でimmediateを最大1件作る。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。
 
-この段階では下書き事前通知の生成と、Processing Recoveryで終端化したrunの既存Schedule確定経路への接続までを実装する。投稿failed・unknown、draft時刻到来、Processing/Pending Recoveryの運営者NotificationLogイベント生成は未接続とする。
+この段階では下書き事前通知、Processing Recovery後のSchedule確定、および既存業務イベントからのNotificationLog生成までを接続する。Discord送信は既存NotificationWorkerだけが行う。30日物理削除と実Discord手動確認は後続工程とする。
 
 ## 16. 30日後の自動削除
 

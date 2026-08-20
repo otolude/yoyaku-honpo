@@ -5,10 +5,12 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
     DeliveryAttemptStatus,
+    NotificationType,
     OperationAction,
     RunStatus,
     ScheduleStatus,
@@ -67,6 +69,7 @@ class PendingStartupRecoveryService:
         self._schedules = ScheduleRepository(session)
         self._operations = OperationLogRepository(session)
         self._configured_guild_id: int | None = None
+        self._operator_channel_id: int | None = None
 
     async def recover_pending(
         self,
@@ -74,12 +77,21 @@ class PendingStartupRecoveryService:
         recovery_cutoff: datetime,
         batch_size: int,
         configured_guild_id: int | None = None,
+        operator_channel_id: int | None = None,
     ) -> PendingRecoverySummary:
         recovery_cutoff = require_utc(recovery_cutoff)
         self._configured_guild_id = configured_guild_id
+        self._operator_channel_id = operator_channel_id
         selected = await self._runs.lock_startup_pending(
             recovered_at=recovery_cutoff, batch_size=batch_size
         )
+        remaining = batch_size - len(selected)
+        if remaining:
+            selected.extend(
+                await self._runs.lock_startup_delayed_without_notification(
+                    recovered_at=recovery_cutoff, batch_size=remaining
+                )
+            )
         result = PendingRecoverySummary(selected=len(selected))
         handled: set[int] = set()
         for selected_run in selected:
@@ -125,6 +137,7 @@ class PendingStartupRecoveryService:
             return
         if self._inconsistent(schedule, run, attempts):
             await self._fail_inconsistent(schedule, run, now, result)
+            await self._add_run_event(schedule, run, NotificationType.RECOVERY, now)
             return
         if 1 <= run.attempt_count <= 3:
             result.retry_pending_preserved += 1
@@ -139,12 +152,14 @@ class PendingStartupRecoveryService:
                     now,
                 )
                 result.runs_skipped += 1
+                await self._add_run_event(schedule, run, NotificationType.RUN_SKIPPED, now)
             elif now - run.scheduled_for <= timedelta(minutes=15):
-                result.initial_pending_preserved += 1
+                await self._add_run_event(schedule, run, NotificationType.RUN_DELAYED, now)
             else:
                 self._finish(run, RunStatus.SKIPPED, STARTUP_OVERDUE, STARTUP_OVERDUE_SUMMARY, now)
                 result.runs_skipped += 1
                 await self._fail_once(schedule, now, result, skipped=True)
+                await self._add_run_event(schedule, run, NotificationType.RUN_FAILED, now)
             return
         await self._recover_recurring(schedule, runs, now, result)
 
@@ -214,6 +229,7 @@ class PendingStartupRecoveryService:
         candidate = schedule.next_run_at
         assert candidate is not None
         count = 0
+        missed = False
         while candidate <= now:
             count += 1
             if count > MAX_MISSED_OCCURRENCES_PER_SCHEDULE:
@@ -236,6 +252,7 @@ class PendingStartupRecoveryService:
                 await self._runs.add(existing)
                 by_time[candidate] = existing
                 result.runs_skipped += 1
+                missed = True
             elif existing.status == RunStatus.PENDING.value:
                 self._finish(
                     existing,
@@ -245,6 +262,7 @@ class PendingStartupRecoveryService:
                     now,
                 )
                 result.runs_skipped += 1
+                missed = True
             candidate = self._next(schedule, candidate)
             if candidate is None:
                 break
@@ -269,6 +287,8 @@ class PendingStartupRecoveryService:
                     },
                 )
                 result.schedules_ended += 1
+            if missed:
+                await self._add_recurring_missed(schedule, now)
             return
         future_run = await self._runs.add(
             ScheduleRun(
@@ -292,6 +312,38 @@ class PendingStartupRecoveryService:
                 self._session, configured_guild_id=self._configured_guild_id
             ).plan_for_run(schedule=schedule, run=future_run, event_at=now)
         result.future_runs_created += 1
+        if missed:
+            await self._add_recurring_missed(schedule, now)
+
+    async def _add_run_event(
+        self,
+        schedule: Schedule,
+        run: ScheduleRun,
+        notification_type: NotificationType,
+        now: datetime,
+    ) -> None:
+        events = self._notification_events()
+        if events is not None:
+            await events.add_run_event(
+                schedule=schedule,
+                run=run,
+                notification_type=notification_type,
+                event_at=now,
+            )
+
+    async def _add_recurring_missed(self, schedule: Schedule, now: datetime) -> None:
+        events = self._notification_events()
+        if events is not None:
+            await events.add_recurring_missed(schedule=schedule, recovery_cutoff=now)
+
+    def _notification_events(self) -> NotificationEventService | None:
+        if self._configured_guild_id is None or self._operator_channel_id is None:
+            return None
+        return NotificationEventService(
+            self._session,
+            configured_guild_id=self._configured_guild_id,
+            operator_channel_id=self._operator_channel_id,
+        )
 
     @staticmethod
     def _next(schedule: Schedule, after: datetime) -> datetime | None:

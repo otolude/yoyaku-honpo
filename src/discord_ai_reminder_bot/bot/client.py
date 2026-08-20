@@ -112,6 +112,7 @@ class ReminderBot(commands.Bot):
             lease_timeout=timedelta(seconds=settings.scheduler_processing_timeout_seconds),
             logger=logger,
             configured_guild_id=settings.discord_guild_id,
+            operator_channel_id=settings.discord_operator_channel_id,
         )
         self.notification_worker = NotificationWorker(
             session_factory=session_factory,
@@ -243,7 +244,9 @@ class ReminderBot(commands.Bot):
         for _ in range(MAX_STARTUP_RECOVERY_BATCHES):
             async with self.session_factory() as session, session.begin():
                 recovered = await ProcessingRecoveryService(
-                    session, configured_guild_id=self.settings.discord_guild_id
+                    session,
+                    configured_guild_id=self.settings.discord_guild_id,
+                    operator_channel_id=self.settings.discord_operator_channel_id,
                 ).recover_expired(
                     recovered_at=recovery_cutoff,
                     batch_size=self.settings.scheduler_batch_size,
@@ -263,6 +266,7 @@ class ReminderBot(commands.Bot):
                     recovery_cutoff=recovery_cutoff,
                     batch_size=self.settings.scheduler_batch_size,
                     configured_guild_id=self.settings.discord_guild_id,
+                    operator_channel_id=self.settings.discord_operator_channel_id,
                 )
             batches += 1
             total.add(recovered)

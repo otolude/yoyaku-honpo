@@ -94,6 +94,43 @@ def test_presenter_uses_fixed_content_without_post_body() -> None:
     assert rendered.allowed_mentions == SAFE_ALLOWED_MENTIONS
 
 
+@pytest.mark.parametrize(
+    ("notification_type", "result_code", "recurring_missed", "expected"),
+    [
+        (NotificationType.RUN_SKIPPED, "draft_without_content", False, "下書きのまま"),
+        (NotificationType.RUN_FAILED, "delivery_failed", False, "最終的に失敗"),
+        (NotificationType.RUN_FAILED, "delivery_result_unknown", False, "確認できない"),
+        (NotificationType.RUN_FAILED, "startup_overdue", False, "15分を超過"),
+        (NotificationType.RUN_DELAYED, None, False, "15分以内の遅延投稿"),
+        (NotificationType.RUN_SKIPPED, None, True, "定期投稿を送信せず"),
+        (NotificationType.RECOVERY, "startup_inconsistent_pending", False, "運営者による確認"),
+    ],
+)
+def test_presenter_uses_safe_fixed_business_reason(
+    notification_type: NotificationType,
+    result_code: str | None,
+    recurring_missed: bool,
+    expected: str,
+) -> None:
+    rendered = build_notification_message(
+        NotificationPresentation(
+            notification_type=notification_type,
+            recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+            recipient_id=400,
+            schedule_public_id=uuid.uuid7(),
+            scheduled_for=None if recurring_missed else NOW,
+            channel_id=500,
+            current_status="failed",
+            result_code=result_code,
+            recurring_missed=recurring_missed,
+        )
+    )
+    assert expected in rendered.content
+    assert "private post body" not in rendered.content
+    assert "postgresql" not in rendered.content
+    assert len(rendered.content) <= 2000
+
+
 @pytest.mark.asyncio
 async def test_operator_channel_is_cached_validated_and_sent_once() -> None:
     adapter, client, guild, channel = gateway()
