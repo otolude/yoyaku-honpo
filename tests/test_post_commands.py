@@ -31,10 +31,12 @@ from discord_ai_reminder_bot.bot.posts import (
     CREATE_DATETIME_DESCRIPTION,
     CREATE_EXPIRED_MESSAGE,
     CREATE_UNAVAILABLE_MESSAGE,
+    DATETIME_INPUT_MESSAGE,
     DELETE_CANCELLED_MESSAGE,
     DELETE_EXPIRED_MESSAGE,
     DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
+    FULLWIDTH_DATETIME_INPUT_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
@@ -181,6 +183,95 @@ async def test_create_defers_then_commits_and_uses_interaction_identity(
     assert "line 1 line 2" in embed.fields[3].value
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scheduled_at",
+    ["今日12:05", "明日09:00", "今日 12:05", " 今日12:05 ", "今日   12:05", "今日\u300012:05"],
+)
+async def test_create_short_datetime_shows_confirmation_without_database(
+    scheduled_at: str,
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    channel = text_channel(value)
+
+    await group.create_command.callback(group, value, channel, scheduled_at, "body", False)
+
+    session.__aenter__.assert_not_awaited()
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert kwargs["embed"].title == "単発予約を確認してください"
+    assert [item.label for item in kwargs["view"].children] == ["予約する", "キャンセル"]
+
+
+@pytest.mark.asyncio
+async def test_create_invalid_datetime_uses_specific_safe_response() -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    channel = text_channel(value)
+
+    await group.create_command.callback(group, value, channel, "今夜 22:30", "body", False)
+
+    assert value.response.send_message.await_args.args == (DATETIME_INPUT_MESSAGE,)
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheduled_at", ["今日２１:００", "今日21：00", "８／２５ 19:30"])
+async def test_create_fullwidth_datetime_uses_halfwidth_guidance_without_side_effects(
+    scheduled_at: str,
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    channel = text_channel(value)
+
+    await group.create_command.callback(group, value, channel, scheduled_at, "body", False)
+
+    assert value.response.send_message.await_args.args == (FULLWIDTH_DATETIME_INPUT_MESSAGE,)
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert "view" not in kwargs
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheduled_at", ["今日9:00", "明日の9時", "8/2519:30"])
+async def test_create_other_invalid_datetime_uses_general_guidance_without_side_effects(
+    scheduled_at: str,
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    channel = text_channel(value)
+
+    await group.create_command.callback(group, value, channel, scheduled_at, "body", False)
+
+    assert value.response.send_message.await_args.args == (DATETIME_INPUT_MESSAGE,)
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert "view" not in kwargs
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_five_minute_boundary_is_not_classified_as_fullwidth() -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    channel = text_channel(value)
+
+    await group.create_command.callback(group, value, channel, "今日12:04", "body", False)
+
+    assert value.response.send_message.await_args.args == (DATETIME_INPUT_MESSAGE,)
+    assert value.response.send_message.await_args.args != (FULLWIDTH_DATETIME_INPUT_MESSAGE,)
+
+
 @pytest.mark.parametrize("kind", ["other_guild", "voice", "view", "send"])
 @pytest.mark.asyncio
 async def test_create_rejects_invalid_channel_before_defer(kind: str) -> None:
@@ -195,7 +286,7 @@ async def test_create_rejects_invalid_channel_before_defer(kind: str) -> None:
         setattr(permissions, "view_channel" if kind == "view" else "send_messages", False)
     await group.create_command.callback(group, value, channel, "2026-08-20 19:30", "body", False)
     value.response.defer.assert_not_awaited()
-    value.response.send_message.assert_awaited_once()
+    assert value.response.send_message.await_args.args == ("入力内容を確認してください。",)
 
 
 @pytest.mark.asyncio
@@ -288,8 +379,15 @@ async def test_create_double_confirmation_creates_only_once(
 
 
 def test_create_option_description_and_other_command_ranges_are_stable() -> None:
-    assert CREATE_DATETIME_DESCRIPTION == "投稿日時｜例: 今日 21:00、8/25 19:30、2027-08-25 19:30"
+    assert (
+        CREATE_DATETIME_DESCRIPTION
+        == "数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30"
+    )
     assert len(CREATE_DATETIME_DESCRIPTION) <= 100
+    create_scheduled_at = PostCommands.create_command.parameters[1]
+    assert create_scheduled_at.name == "scheduled_at"
+    assert create_scheduled_at.min_value == 7
+    assert create_scheduled_at.max_value == 16
     assert PostCommands.create_daily_command.parameters[1].name == "local_time"
     assert PostCommands.create_weekly_command.parameters[2].name == "local_time"
     assert PostCommands.edit_command.parameters[2].name == "scheduled_at"

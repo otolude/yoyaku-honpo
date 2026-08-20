@@ -63,6 +63,7 @@ from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.schedule_creation import (
+    FullwidthCreateDateTimeError,
     InvalidScheduleContentError,
     ParsedOnceSchedule,
     parse_end_date,
@@ -79,6 +80,10 @@ from discord_ai_reminder_bot.domain.schedule_deletion import (
 
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
 INVALID_INPUT_MESSAGE = "入力内容を確認してください。"
+DATETIME_INPUT_MESSAGE = "投稿日時を確認してください。例：今日21:00、8/25 19:30、2027-08-25 19:30"
+FULLWIDTH_DATETIME_INPUT_MESSAGE = (
+    "投稿日時の数字と記号は半角で入力してください。例：今日21:00、8/25 19:30"
+)
 DUPLICATE_WARNING_MESSAGE = (
     "同一予約の可能性があります。意図的に作成する場合はallow_duplicate=trueで再実行してください。"
 )
@@ -102,7 +107,7 @@ CREATE_EXPIRED_MESSAGE = (
     "確認の有効期限が切れました。必要な場合はもう一度 /post create を実行してください。"
 )
 CREATE_UNAVAILABLE_MESSAGE = "予約を作成できませんでした。入力内容と権限を確認してください。"
-CREATE_DATETIME_DESCRIPTION = "投稿日時｜例: 今日 21:00、8/25 19:30、2027-08-25 19:30"
+CREATE_DATETIME_DESCRIPTION = "数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30"
 
 
 @dataclass(frozen=True)
@@ -299,7 +304,7 @@ class PostCommands(app_commands.Group):
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
-        scheduled_at: app_commands.Range[str, 8, 16],
+        scheduled_at: app_commands.Range[str, 7, 16],
         content: app_commands.Range[str, 1, 2_000] | None = None,
         allow_duplicate: bool = False,
     ) -> None:
@@ -308,10 +313,23 @@ class PostCommands(app_commands.Group):
             return
         try:
             channel_id = self._validated_channel(interaction, channel)
-            now = self._clock.now()
+        except ValueError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        now = self._clock.now()
+        try:
             parsed = parse_once_create_input(scheduled_at, now=now)
+        except FullwidthCreateDateTimeError:
+            await respond_ephemeral(
+                interaction, FULLWIDTH_DATETIME_INPUT_MESSAGE, logger=self._logger
+            )
+            return
+        except InvalidDateTimeError:
+            await respond_ephemeral(interaction, DATETIME_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
             content = validate_create_content(content)
-        except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
+        except InvalidScheduleContentError:
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
             return
         try:

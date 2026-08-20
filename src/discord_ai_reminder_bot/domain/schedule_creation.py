@@ -19,23 +19,46 @@ _CREATE_PATTERNS = (
     (
         "strict",
         re.compile(
-            r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d{2}):(?P<minute>\d{2})"
+            r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2}) (?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})"
         ),
     ),
     (
         "slash",
         re.compile(
-            r"(?P<year>\d{4})/(?P<month>\d{1,2})/(?P<day>\d{1,2}) (?P<hour>\d{2}):(?P<minute>\d{2})"
+            r"(?P<year>[0-9]{4})/(?P<month>[0-9]{1,2})/(?P<day>[0-9]{1,2}) (?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})"
         ),
     ),
     (
         "month_day",
-        re.compile(r"(?P<month>\d{1,2})/(?P<day>\d{1,2}) (?P<hour>\d{2}):(?P<minute>\d{2})"),
+        re.compile(
+            r"(?P<month>[0-9]{1,2})/(?P<day>[0-9]{1,2}) (?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})"
+        ),
     ),
-    ("today", re.compile(r"今日 (?P<hour>\d{2}):(?P<minute>\d{2})")),
-    ("tomorrow", re.compile(r"明日 (?P<hour>\d{2}):(?P<minute>\d{2})")),
+    ("today", re.compile(r"今日 ?(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})")),
+    ("tomorrow", re.compile(r"明日 ?(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})")),
 )
 YEAR_SEARCH_LIMIT = 400
+_DISCORD_UNICODE_SPACES = frozenset(
+    {
+        "\u00a0",
+        "\u1680",
+        "\u2000",
+        "\u2001",
+        "\u2002",
+        "\u2003",
+        "\u2004",
+        "\u2005",
+        "\u2006",
+        "\u2007",
+        "\u2008",
+        "\u2009",
+        "\u200a",
+        "\u202f",
+        "\u205f",
+        "\u3000",
+    }
+)
+_FULLWIDTH_DATETIME_CHARACTERS = frozenset("０１２３４５６７８９：／－﹣−‐‑‒–—―")
 
 
 class OnceInputFormat(StrEnum):
@@ -56,6 +79,18 @@ class ParsedOnceSchedule:
 
 class InvalidScheduleContentError(ValueError):
     """The supplied post body is not a valid active body or omitted draft body."""
+
+
+class InvalidCreateDateTimeFormatError(InvalidDateTimeError):
+    """The create-only date/time does not match a supported input form."""
+
+
+class FullwidthCreateDateTimeError(InvalidCreateDateTimeFormatError):
+    """The create-only date/time contains a non-ASCII digit or separator."""
+
+
+class CreateDateTimeTooSoonError(InvalidDateTimeError):
+    """The create-only date/time is less than five minutes in the future."""
 
 
 def parse_once_scheduled_at(value: str, *, now: datetime) -> datetime:
@@ -81,8 +116,12 @@ def parse_once_create_input(value: str, *, now: datetime) -> ParsedOnceSchedule:
     """Parse one of the deliberately small create-only Tokyo input forms."""
     now = require_utc(now)
     if not isinstance(value, str):
-        raise InvalidDateTimeError("invalid scheduled datetime")
-    normalized = value.strip()
+        raise InvalidCreateDateTimeFormatError("invalid scheduled datetime")
+    if any(character in _FULLWIDTH_DATETIME_CHARACTERS for character in value):
+        raise FullwidthCreateDateTimeError("non-ASCII datetime character")
+    if "\t" in value:
+        raise InvalidCreateDateTimeFormatError("tab is not supported")
+    normalized = _normalize_create_input(value)
     match = None
     kind = None
     for candidate_kind, pattern in _CREATE_PATTERNS:
@@ -91,7 +130,7 @@ def parse_once_create_input(value: str, *, now: datetime) -> ParsedOnceSchedule:
             kind, match = candidate_kind, candidate
             break
     if match is None or kind is None:
-        raise InvalidDateTimeError("invalid scheduled datetime")
+        raise InvalidCreateDateTimeFormatError("invalid scheduled datetime")
 
     local_now = now.astimezone(TOKYO)
     values = {name: int(item) for name, item in match.groupdict().items() if item is not None}
@@ -106,14 +145,26 @@ def parse_once_create_input(value: str, *, now: datetime) -> ParsedOnceSchedule:
         else:
             local = _next_month_day(values=values, local_now=local_now, now=now)
     except (TypeError, ValueError) as error:
-        raise InvalidDateTimeError("invalid scheduled datetime") from error
-    scheduled = validate_once_scheduled_for(local.astimezone(UTC), now=now)
+        raise InvalidCreateDateTimeFormatError("invalid scheduled datetime") from error
+    try:
+        scheduled = validate_once_scheduled_for(local.astimezone(UTC), now=now)
+    except InvalidDateTimeError as error:
+        raise CreateDateTimeTooSoonError("scheduled datetime is too soon") from error
     return ParsedOnceSchedule(
         scheduled_for=scheduled,
         local_datetime=local,
         input_value=normalized,
         input_format=OnceInputFormat(kind),
     )
+
+
+def _normalize_create_input(value: str) -> str:
+    """Normalize only surrounding and horizontal space used by Discord clients."""
+    stripped = value.strip()
+    spaces_normalized = "".join(
+        " " if character in _DISCORD_UNICODE_SPACES else character for character in stripped
+    )
+    return re.sub(" +", " ", spaces_normalized)
 
 
 def _next_month_day(*, values: dict[str, int], local_now: datetime, now: datetime) -> datetime:
@@ -124,7 +175,7 @@ def _next_month_day(*, values: dict[str, int], local_now: datetime, now: datetim
             continue
         if candidate.astimezone(UTC) >= now + timedelta(minutes=5):
             return candidate
-    raise InvalidDateTimeError("no valid date within search limit")
+    raise InvalidCreateDateTimeFormatError("no valid date within search limit")
 
 
 def _safe_tokyo_datetime(*, year: int, month: int, day: int, hour: int, minute: int) -> datetime:
