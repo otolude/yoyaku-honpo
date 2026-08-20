@@ -52,6 +52,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_schedule_embed,
     deleted_schedule_embed,
     edited_schedule_embed,
+    once_schedule_confirmation_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
     schedule_deletion_preview_embed,
@@ -63,10 +64,13 @@ from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.schedule_creation import (
     InvalidScheduleContentError,
+    ParsedOnceSchedule,
     parse_end_date,
     parse_local_time,
+    parse_once_create_input,
     parse_once_scheduled_at,
     validate_create_content,
+    validate_once_scheduled_for,
 )
 from discord_ai_reminder_bot.domain.schedule_deletion import (
     InvalidDeleteReasonError,
@@ -93,6 +97,12 @@ EDIT_TYPE_OPTIONS_MESSAGE = (
     "予約種別に使用できない編集項目があります。予約種別を変更する場合は、現在の予約を削除し、"
     "希望する種別で新しく作成してください。"
 )
+CREATE_CANCELLED_MESSAGE = "単発予約の作成をキャンセルしました。"
+CREATE_EXPIRED_MESSAGE = (
+    "確認の有効期限が切れました。必要な場合はもう一度 /post create を実行してください。"
+)
+CREATE_UNAVAILABLE_MESSAGE = "予約を作成できませんでした。入力内容と権限を確認してください。"
+CREATE_DATETIME_DESCRIPTION = "投稿日時｜例: 今日 21:00、8/25 19:30、2027-08-25 19:30"
 
 
 @dataclass(frozen=True)
@@ -165,6 +175,68 @@ class ScheduleDeletionConfirmView(discord.ui.View):
         await self.commands._expire_deletion(self)
 
 
+class OnceScheduleConfirmView(discord.ui.View):
+    """Create confirmation carrying only already-validated, in-memory values."""
+
+    def __init__(
+        self,
+        *,
+        commands: PostCommands,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        parsed: ParsedOnceSchedule,
+        content: str | None,
+        allow_duplicate: bool,
+        actor_user_id: int,
+    ) -> None:
+        super().__init__(timeout=120.0)
+        self.commands = commands
+        self.initial_interaction = interaction
+        self.channel = channel
+        self.parsed = parsed
+        self.content = content
+        self.allow_duplicate = allow_duplicate
+        self.actor_user_id = actor_user_id
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self.commands._configured_guild_id,
+            allowed_role_ids=self.commands._allowed_role_ids,
+        )
+        if actor is not None and actor.user_id == self.actor_user_id:
+            return True
+        await respond_ephemeral(
+            interaction, PERMISSION_DENIED_MESSAGE, logger=self.commands._logger
+        )
+        return False
+
+    @discord.ui.button(
+        label="予約する", style=discord.ButtonStyle.success, custom_id="post_create_confirm"
+    )
+    async def confirm_button(
+        self,
+        interaction: discord.Interaction,
+        unused: discord.ui.Button[OnceScheduleConfirmView],
+    ) -> None:
+        await self.commands._confirm_once_creation(self, interaction)
+
+    @discord.ui.button(
+        label="キャンセル", style=discord.ButtonStyle.secondary, custom_id="post_create_cancel"
+    )
+    async def cancel_button(
+        self,
+        interaction: discord.Interaction,
+        unused: discord.ui.Button[OnceScheduleConfirmView],
+    ) -> None:
+        await self.commands._cancel_once_creation(self, interaction)
+
+    async def on_timeout(self) -> None:
+        await self.commands._expire_once_creation(self)
+
+
 def authorized_actor(
     interaction: discord.Interaction,
     *,
@@ -214,11 +286,12 @@ class PostCommands(app_commands.Group):
         self._allowed_role_ids = allowed_role_ids
         self._logger = logger
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
+        self._create_views: set[OnceScheduleConfirmView] = set()
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
         channel="投稿先のテキストチャンネルです",
-        scheduled_at="日本時間をYYYY-MM-DD HH:MMで指定します",
+        scheduled_at=CREATE_DATETIME_DESCRIPTION,
         content="投稿本文です。未指定の場合は下書きになります",
         allow_duplicate="重複候補があっても意図的に作成します",
     )
@@ -226,7 +299,7 @@ class PostCommands(app_commands.Group):
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
-        scheduled_at: app_commands.Range[str, 16, 16],
+        scheduled_at: app_commands.Range[str, 8, 16],
         content: app_commands.Range[str, 1, 2_000] | None = None,
         allow_duplicate: bool = False,
     ) -> None:
@@ -236,36 +309,30 @@ class PostCommands(app_commands.Group):
         try:
             channel_id = self._validated_channel(interaction, channel)
             now = self._clock.now()
-            scheduled_for = parse_once_scheduled_at(scheduled_at, now=now)
+            parsed = parse_once_create_input(scheduled_at, now=now)
             content = validate_create_content(content)
         except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
             return
         try:
-            await interaction.response.defer(ephemeral=True)
-        except Exception:  # noqa: BLE001 - Discord response details must remain private
-            self._logger.error("schedule_create_defer_failed")
-            return
-        try:
-            async with self._session_factory() as session, session.begin():
-                created = await OnceScheduleCreationService(session).create(
-                    guild_id=interaction.guild_id,
-                    channel_id=channel_id,
-                    creator_user_id=actor.user_id,
-                    scheduled_for=scheduled_for,
-                    content=content,
-                    allow_duplicate=allow_duplicate,
-                    now=now,
-                    configured_guild_id=self._configured_guild_id,
-                )
-        except DuplicateScheduleWarning:
-            await respond_ephemeral(interaction, DUPLICATE_WARNING_MESSAGE, logger=self._logger)
-            return
-        except Exception:  # noqa: BLE001 - database details must not reach Discord or logs
-            self._logger.error("schedule_create_failed")
+            embed = once_schedule_confirmation_embed(
+                parsed=parsed, channel_id=channel_id, content=content
+            )
+        except Exception:  # noqa: BLE001 - presentation failures must remain sanitized
+            self._logger.error("schedule_presentation_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        await self._respond_embed(interaction, lambda: created_schedule_embed(created))
+        view = OnceScheduleConfirmView(
+            commands=self,
+            interaction=interaction,
+            channel=channel,
+            parsed=parsed,
+            content=content,
+            allow_duplicate=allow_duplicate,
+            actor_user_id=actor.user_id,
+        )
+        if await respond_ephemeral(interaction, embed=embed, view=view, logger=self._logger):
+            self._create_views.add(view)
 
     @app_commands.command(name="create-daily", description="毎日の予約投稿を作成します")
     @app_commands.describe(
@@ -681,6 +748,121 @@ class PostCommands(app_commands.Group):
                 return
             await self._finish_delete_view(view, interaction, embed=embed)
 
+    async def _confirm_once_creation(
+        self, view: OnceScheduleConfirmView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, CREATE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            try:
+                channel_id = self._validated_channel(
+                    interaction, view.channel, require_current=True
+                )
+                content = validate_create_content(view.content)
+                now = self._clock.now()
+                scheduled_for = validate_once_scheduled_for(view.parsed.scheduled_for, now=now)
+            except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
+                await self._finish_create_view(
+                    view, interaction, content=CREATE_UNAVAILABLE_MESSAGE, response_edit=True
+                )
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:  # noqa: BLE001 - Discord response details must remain private
+                self._logger.error("schedule_create_defer_failed")
+                return
+            try:
+                async with self._session_factory() as session, session.begin():
+                    created = await OnceScheduleCreationService(session).create(
+                        guild_id=self._configured_guild_id,
+                        channel_id=channel_id,
+                        creator_user_id=actor.user_id,
+                        scheduled_for=scheduled_for,
+                        content=content,
+                        allow_duplicate=view.allow_duplicate,
+                        now=now,
+                        configured_guild_id=self._configured_guild_id,
+                    )
+            except DuplicateScheduleWarning:
+                await self._finish_create_view(view, interaction, content=DUPLICATE_WARNING_MESSAGE)
+                return
+            except Exception:  # noqa: BLE001 - database details must remain private
+                self._logger.error("schedule_create_failed")
+                await self._finish_create_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
+                return
+            try:
+                embed = created_schedule_embed(created)
+            except Exception:  # noqa: BLE001 - presentation details must remain private
+                self._logger.error("schedule_presentation_failed")
+                await self._finish_create_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
+                return
+            await self._finish_create_view(view, interaction, embed=embed)
+
+    async def _cancel_once_creation(
+        self, view: OnceScheduleConfirmView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, CREATE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            await self._finish_create_view(
+                view, interaction, content=CREATE_CANCELLED_MESSAGE, response_edit=True
+            )
+
+    async def _expire_once_creation(self, view: OnceScheduleConfirmView) -> None:
+        async with view.action_lock:
+            if view.finished:
+                return
+            view.finished = True
+            view.stop()
+            self._create_views.discard(view)
+            try:
+                await view.initial_interaction.edit_original_response(
+                    content=CREATE_EXPIRED_MESSAGE,
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - Discord failures can include private details
+                self._logger.error("schedule_create_timeout_response_failed")
+
+    async def _finish_create_view(
+        self,
+        view: OnceScheduleConfirmView,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+        response_edit: bool = False,
+    ) -> None:
+        view.finished = True
+        view.stop()
+        self._create_views.discard(view)
+        arguments: dict[str, object] = {
+            "content": content if embed is None else None,
+            "embed": embed,
+            "view": None,
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        try:
+            if response_edit:
+                await interaction.response.edit_message(**arguments)
+            else:
+                await interaction.edit_original_response(**arguments)
+        except Exception:  # noqa: BLE001 - Discord failures can include private details
+            self._logger.error("schedule_create_result_response_failed")
+
     async def _cancel_deletion(
         self, view: ScheduleDeletionConfirmView, interaction: discord.Interaction
     ) -> None:
@@ -758,6 +940,16 @@ class PostCommands(app_commands.Group):
         if views:
             await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
 
+    async def close_confirmation_views(self) -> None:
+        create_views = tuple(self._create_views)
+        self._create_views.clear()
+        for view in create_views:
+            view.finished = True
+            view.stop()
+        await self.close_delete_views()
+        if create_views:
+            await asyncio.gather(*(view.wait() for view in create_views), return_exceptions=True)
+
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(
             interaction,
@@ -825,7 +1017,11 @@ class PostCommands(app_commands.Group):
         await self._respond_embed(interaction, lambda: created_recurring_schedule_embed(created))
 
     def _validated_channel(
-        self, interaction: discord.Interaction, channel: discord.TextChannel
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        *,
+        require_current: bool = False,
     ) -> int:
         guild = interaction.guild
         if (
@@ -835,6 +1031,11 @@ class PostCommands(app_commands.Group):
             or channel.guild.id != guild.id
         ):
             raise ValueError("invalid channel")
+        if require_current:
+            current = guild.get_channel(channel.id)
+            if not isinstance(current, discord.TextChannel):
+                raise ValueError("channel no longer exists")
+            channel = current
         member = guild.me
         if member is None:
             raise ValueError("missing bot member")

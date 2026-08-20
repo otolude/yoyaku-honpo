@@ -11,6 +11,8 @@ from discord_ai_reminder_bot.domain.enums import ScheduleStatus
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.schedule_creation import (
     InvalidScheduleContentError,
+    OnceInputFormat,
+    parse_once_create_input,
     parse_once_scheduled_at,
     validate_create_content,
 )
@@ -27,6 +29,75 @@ NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
 )
 def test_parses_tokyo_minute_to_utc(value: str, expected: datetime) -> None:
     assert parse_once_scheduled_at(value, now=NOW) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "now", "expected", "kind"),
+    [
+        (
+            "2026-08-20 19:30",
+            NOW,
+            datetime(2026, 8, 20, 10, 30, tzinfo=UTC),
+            OnceInputFormat.STRICT,
+        ),
+        ("2026/8/20 19:30", NOW, datetime(2026, 8, 20, 10, 30, tzinfo=UTC), OnceInputFormat.SLASH),
+        ("8/20 19:30", NOW, datetime(2026, 8, 20, 10, 30, tzinfo=UTC), OnceInputFormat.MONTH_DAY),
+        ("8/18 12:05", NOW, NOW + timedelta(minutes=5), OnceInputFormat.MONTH_DAY),
+        ("8/18 12:04", NOW, datetime(2027, 8, 18, 3, 4, tzinfo=UTC), OnceInputFormat.MONTH_DAY),
+        (
+            "1/1 00:00",
+            datetime(2026, 12, 31, 15, 0, tzinfo=UTC),
+            datetime(2027, 12, 31, 15, 0, tzinfo=UTC),
+            OnceInputFormat.MONTH_DAY,
+        ),
+        (
+            "2/29 12:00",
+            datetime(2027, 3, 1, tzinfo=UTC),
+            datetime(2028, 2, 29, 3, 0, tzinfo=UTC),
+            OnceInputFormat.MONTH_DAY,
+        ),
+        ("今日 12:05", NOW, NOW + timedelta(minutes=5), OnceInputFormat.TODAY),
+        ("明日 09:00", NOW, datetime(2026, 8, 19, 0, 0, tzinfo=UTC), OnceInputFormat.TOMORROW),
+    ],
+)
+def test_parse_create_input_forms(value, now, expected, kind) -> None:
+    parsed = parse_once_create_input(value, now=now)
+    assert parsed.scheduled_for == expected
+    assert parsed.scheduled_for.tzinfo is UTC
+    assert parsed.local_datetime.strftime("%Y-%m-%d %H:%M %Z")
+    assert parsed.input_format is kind
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "今日 12:04",
+        "2026/2/30 12:30",
+        "2026/8/20 24:00",
+        "来週",
+        "夜",
+        "8月25日",
+        "2026/8/20",
+        "12:30",
+        "2026/8/20 12:30:00",
+        "8/9/20 12:30",
+    ],
+)
+def test_create_input_rejects_too_soon_invalid_or_ambiguous(value: str) -> None:
+    with pytest.raises(InvalidDateTimeError):
+        parse_once_create_input(value, now=NOW)
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        datetime(2026, 8, 18, 3, 0, tzinfo=UTC).replace(tzinfo=None),
+        datetime(2026, 8, 18, 12, 0, tzinfo=__import__("zoneinfo").ZoneInfo("Asia/Tokyo")),
+    ],
+)
+def test_create_input_rejects_naive_and_non_utc_now(now: datetime) -> None:
+    with pytest.raises(InvalidDateTimeError):
+        parse_once_create_input("明日 09:00", now=now)
 
 
 @pytest.mark.parametrize(

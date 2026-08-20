@@ -268,7 +268,7 @@ discord-ai-reminder-bot/
 
 重複予約は警告に留め、DBの一意制約では禁止しない。利用者が意図的に同じ投稿を複数作る場合があるためである。
 
-単発作成の重複候補は、同一サーバー、投稿先、予定日時、本文（NULL同士を含む）、`once`、かつ状態が `draft`、`active`、`paused` の予約とする。`allow_duplicate=false` では保存せず、trueなら作成する。この確認は誤操作防止であり、同時実行を直列化するロックや一意制約は設けないため、完全な重複防止は保証しない。作成時はDB不要の検証後にephemeralでdeferし、1つのトランザクションでScheduleと最初のpending ScheduleRunを保存してからfollowupする。下書き通知用NotificationLogは作成せず、将来の通知ワーカーがScheduleRunの予定日時を基準に通知時刻を算出する。
+単発作成の重複候補は、同一サーバー、投稿先、予定日時、本文（NULL同士を含む）、`once`、かつ状態が `draft`、`active`、`paused` の予約とする。`allow_duplicate=false` では保存せず、trueなら作成する。この確認は誤操作防止であり、同時実行を直列化するロックや一意制約は設けないため、完全な重複防止は保証しない。作成時はDB不要の検証後に、完全なJST日時を固定したephemeral確認Embedと緑色の予約・灰色のキャンセルボタンを持つ120秒の非永続Viewを表示する。本人だけが操作でき、操作はView単位のlockで直列化する。確認中はDB Session、トランザクション、行ロックを保持しない。予約ボタン時にguildと共通認可、TextChannelとBotのview/send権限、本文、固定済み日時の5分境界を最新状態で再検証し、その後だけ新しい1つのトランザクションでSchedule、最初のpending ScheduleRun、必要なdraft通知計画を保存する。年や日付はボタン時に再推論しない。キャンセル、timeout、再検証失敗、重複警告では保存せずViewを終了する。autocompleteとカレンダーUIは対象外とする。
 
 定期作成は既存の `/post create` を変更せず、毎日を `/post create-daily channel:<TextChannel> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週を `/post create-weekly channel:<TextChannel> weekday:<月曜日0～日曜日6> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。開始日は保存しない。重複候補は同一サーバー、投稿先、種別、`local_time`、`weekday`、`end_date`、本文（各NULL同士を含む）、かつ状態が `draft`、`active`、`paused` の予約とする。作成者、`next_run_at`、内部IDは比較しない。単発と同様に警告のみとし、`allow_duplicate=true`で作成を許可するため、同時実行による完全な重複防止は保証しない。
 
@@ -514,7 +514,7 @@ outboxには`scheduled_at`、`next_attempt_at`、`attempt_count`、claim・lease
 
 ### 8.2 単発
 
-入力された日本時間をUTCへ変換し、`schedules.next_run_at` と最初の `schedule_runs.scheduled_for` に保存する。新規作成時は現在から5分以上先でなければならない。
+単発作成は `YYYY-MM-DD HH:MM`、`YYYY/M/D HH:MM`、`M/D HH:MM`、`今日 HH:MM`、`明日 HH:MM` の5形式だけをDomainパーサーで受理する。年省略は作成時刻から5分以上先となる次の実在日時を探索上限付きで求め、今日指定は境界未満でも翌日へ繰り越さない。入力された日本時間を既存の曖昧・不存在時刻検査を通してUTC awareへ変換し、確定後に`schedules.next_run_at` と最初の `schedule_runs.scheduled_for` に保存する。新規作成時は現在から5分以上先、ちょうど5分後を含む。
 
 ### 8.3 毎日
 

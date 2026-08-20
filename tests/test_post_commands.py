@@ -27,6 +27,10 @@ from discord_ai_reminder_bot.application.schedule_pause import (
 )
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
+    CREATE_CANCELLED_MESSAGE,
+    CREATE_DATETIME_DESCRIPTION,
+    CREATE_EXPIRED_MESSAGE,
+    CREATE_UNAVAILABLE_MESSAGE,
     DELETE_CANCELLED_MESSAGE,
     DELETE_EXPIRED_MESSAGE,
     DELETE_REASON_REQUIRED_MESSAGE,
@@ -115,7 +119,14 @@ def text_channel(value: MagicMock, *, guild_id: int = GUILD_ID) -> MagicMock:
     permissions.send_messages = True
     channel.permissions_for.return_value = permissions
     value.guild.me = MagicMock(spec=discord.Member)
+    value.guild.get_channel.return_value = channel
     return channel
+
+
+async def create_confirmation(group: PostCommands, value: MagicMock, channel: MagicMock):
+    value.response.is_done.return_value = True
+    await group.create_command.callback(group, value, channel, "8/20 19:30", "body", False)
+    return value.followup.send.await_args.kwargs["view"]
 
 
 @pytest.mark.asyncio
@@ -150,6 +161,14 @@ async def test_create_defers_then_commits_and_uses_interaction_identity(
         False,
     )
 
+    service.create.assert_not_awaited()
+    confirmation = value.followup.send.await_args.kwargs
+    assert confirmation["ephemeral"] is True
+    assert confirmation["allowed_mentions"].to_dict() == {"parse": []}
+    assert confirmation["embed"].title == "単発予約を確認してください"
+    assert "2026-08-20 19:30 JST" in str(confirmation["embed"].to_dict())
+    create_view = confirmation["view"]
+    await group._confirm_once_creation(create_view, value)
     value.response.defer.assert_awaited_once_with(ephemeral=True)
     service.create.assert_awaited_once()
     arguments = service.create.await_args.kwargs
@@ -157,10 +176,7 @@ async def test_create_defers_then_commits_and_uses_interaction_identity(
     assert arguments["creator_user_id"] == value.user.id == USER_ID
     assert arguments["channel_id"] == channel.id
     assert arguments["scheduled_for"] == datetime(2026, 8, 20, 10, 30, tzinfo=UTC)
-    value.followup.send.assert_awaited_once()
-    assert value.followup.send.await_args.kwargs["ephemeral"] is True
-    assert value.followup.send.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
-    embed = value.followup.send.await_args.kwargs["embed"]
+    embed = value.edit_original_response.await_args.kwargs["embed"]
     assert embed.title == "単発予約を作成しました"
     assert "line 1 line 2" in embed.fields[3].value
 
@@ -202,9 +218,81 @@ async def test_create_database_failure_rolls_back_and_returns_safe_followup(
         await group.create_command.callback(
             group, value, channel, "2026-08-20 19:30", "body", False
         )
-    assert value.followup.send.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+        create_view = value.followup.send.await_args.kwargs["view"]
+        await group._confirm_once_creation(create_view, value)
+    assert value.edit_original_response.await_args.kwargs["content"] == INTERNAL_ERROR_MESSAGE
     assert secret not in caplog.text
     assert session.begin.return_value.__aexit__.await_args.args[0] is RuntimeError
+
+
+@pytest.mark.asyncio
+async def test_create_cancel_and_timeout_never_open_database() -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    channel = text_channel(value)
+    create_view = await create_confirmation(group, value, channel)
+    await group._cancel_once_creation(create_view, value)
+    session.__aenter__.assert_not_awaited()
+    assert value.response.edit_message.await_args.kwargs["content"] == CREATE_CANCELLED_MESSAGE
+    assert value.response.edit_message.await_args.kwargs["view"] is None
+
+    timeout_value = interaction()
+    timeout_channel = text_channel(timeout_value)
+    timeout_view = await create_confirmation(group, timeout_value, timeout_channel)
+    await group._expire_once_creation(timeout_view)
+    session.__aenter__.assert_not_awaited()
+    assert (
+        timeout_value.edit_original_response.await_args.kwargs["content"] == CREATE_EXPIRED_MESSAGE
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_view_rejects_other_user_and_permission_loss() -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    channel = text_channel(value)
+    create_view = await create_confirmation(group, value, channel)
+    stranger = interaction()
+    stranger.user.id = USER_ID + 1
+    assert await create_view.interaction_check(stranger) is False
+    stranger.response.send_message.assert_awaited_once()
+
+    channel.permissions_for.return_value.send_messages = False
+    await group._confirm_once_creation(create_view, value)
+    assert value.response.edit_message.await_args.kwargs["content"] == CREATE_UNAVAILABLE_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_create_double_confirmation_creates_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group = commands(AsyncMock())
+    value = interaction()
+    channel = text_channel(value)
+    create_view = await create_confirmation(group, value, channel)
+    service = AsyncMock()
+    service.create.return_value = CreatedOnceSchedule(
+        public_id=uuid.uuid7(),
+        channel_id=channel.id,
+        status=ScheduleStatus.ACTIVE,
+        content="body",
+        scheduled_for=datetime(2026, 8, 20, 10, 30, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.OnceScheduleCreationService", lambda unused: service
+    )
+    await group._confirm_once_creation(create_view, value)
+    await group._confirm_once_creation(create_view, value)
+    service.create.assert_awaited_once()
+
+
+def test_create_option_description_and_other_command_ranges_are_stable() -> None:
+    assert CREATE_DATETIME_DESCRIPTION == "投稿日時｜例: 今日 21:00、8/25 19:30、2027-08-25 19:30"
+    assert len(CREATE_DATETIME_DESCRIPTION) <= 100
+    assert PostCommands.create_daily_command.parameters[1].name == "local_time"
+    assert PostCommands.create_weekly_command.parameters[2].name == "local_time"
+    assert PostCommands.edit_command.parameters[2].name == "scheduled_at"
 
 
 @pytest.mark.asyncio

@@ -464,7 +464,7 @@ class ReminderBot(commands.Bot):
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_task
 
-        await self.post_commands.close_delete_views()
+        await self.post_commands.close_confirmation_views()
 
         try:
             await super().close()

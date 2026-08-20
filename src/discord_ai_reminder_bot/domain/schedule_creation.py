@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
@@ -12,6 +15,43 @@ TOKYO = ZoneInfo("Asia/Tokyo")
 DATETIME_FORMAT = "%Y-%m-%d %H:%M"
 TIME_FORMAT = "%H:%M"
 DATE_FORMAT = "%Y-%m-%d"
+_CREATE_PATTERNS = (
+    (
+        "strict",
+        re.compile(
+            r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) (?P<hour>\d{2}):(?P<minute>\d{2})"
+        ),
+    ),
+    (
+        "slash",
+        re.compile(
+            r"(?P<year>\d{4})/(?P<month>\d{1,2})/(?P<day>\d{1,2}) (?P<hour>\d{2}):(?P<minute>\d{2})"
+        ),
+    ),
+    (
+        "month_day",
+        re.compile(r"(?P<month>\d{1,2})/(?P<day>\d{1,2}) (?P<hour>\d{2}):(?P<minute>\d{2})"),
+    ),
+    ("today", re.compile(r"今日 (?P<hour>\d{2}):(?P<minute>\d{2})")),
+    ("tomorrow", re.compile(r"明日 (?P<hour>\d{2}):(?P<minute>\d{2})")),
+)
+YEAR_SEARCH_LIMIT = 400
+
+
+class OnceInputFormat(StrEnum):
+    STRICT = "strict"
+    SLASH = "slash"
+    MONTH_DAY = "month_day"
+    TODAY = "today"
+    TOMORROW = "tomorrow"
+
+
+@dataclass(frozen=True)
+class ParsedOnceSchedule:
+    scheduled_for: datetime
+    local_datetime: datetime
+    input_value: str
+    input_format: OnceInputFormat
 
 
 class InvalidScheduleContentError(ValueError):
@@ -35,6 +75,67 @@ def parse_once_scheduled_at(value: str, *, now: datetime) -> datetime:
     if scheduled.astimezone(TOKYO).replace(tzinfo=None) != naive:
         raise InvalidDateTimeError("nonexistent scheduled datetime")
     return validate_once_scheduled_for(scheduled, now=now)
+
+
+def parse_once_create_input(value: str, *, now: datetime) -> ParsedOnceSchedule:
+    """Parse one of the deliberately small create-only Tokyo input forms."""
+    now = require_utc(now)
+    if not isinstance(value, str):
+        raise InvalidDateTimeError("invalid scheduled datetime")
+    normalized = value.strip()
+    match = None
+    kind = None
+    for candidate_kind, pattern in _CREATE_PATTERNS:
+        candidate = pattern.fullmatch(normalized)
+        if candidate is not None:
+            kind, match = candidate_kind, candidate
+            break
+    if match is None or kind is None:
+        raise InvalidDateTimeError("invalid scheduled datetime")
+
+    local_now = now.astimezone(TOKYO)
+    values = {name: int(item) for name, item in match.groupdict().items() if item is not None}
+    try:
+        if kind in {"strict", "slash"}:
+            local = _safe_tokyo_datetime(**values)
+        elif kind in {"today", "tomorrow"}:
+            target = local_now.date() + timedelta(days=kind == "tomorrow")
+            local = _safe_tokyo_datetime(
+                year=target.year, month=target.month, day=target.day, **values
+            )
+        else:
+            local = _next_month_day(values=values, local_now=local_now, now=now)
+    except (TypeError, ValueError) as error:
+        raise InvalidDateTimeError("invalid scheduled datetime") from error
+    scheduled = validate_once_scheduled_for(local.astimezone(UTC), now=now)
+    return ParsedOnceSchedule(
+        scheduled_for=scheduled,
+        local_datetime=local,
+        input_value=normalized,
+        input_format=OnceInputFormat(kind),
+    )
+
+
+def _next_month_day(*, values: dict[str, int], local_now: datetime, now: datetime) -> datetime:
+    for offset in range(YEAR_SEARCH_LIMIT + 1):
+        try:
+            candidate = _safe_tokyo_datetime(year=local_now.year + offset, **values)
+        except ValueError:
+            continue
+        if candidate.astimezone(UTC) >= now + timedelta(minutes=5):
+            return candidate
+    raise InvalidDateTimeError("no valid date within search limit")
+
+
+def _safe_tokyo_datetime(*, year: int, month: int, day: int, hour: int, minute: int) -> datetime:
+    naive = datetime(year, month, day, hour, minute)  # noqa: DTZ001 - validated before zone attach
+    first = naive.replace(tzinfo=TOKYO, fold=0)
+    second = first.replace(fold=1)
+    if first.utcoffset() != second.utcoffset():
+        raise InvalidDateTimeError("ambiguous scheduled datetime")
+    if first.astimezone(UTC).astimezone(TOKYO).replace(tzinfo=None) != naive:
+        raise InvalidDateTimeError("nonexistent scheduled datetime")
+    return first
 
 
 def validate_once_scheduled_for(scheduled: datetime, *, now: datetime) -> datetime:

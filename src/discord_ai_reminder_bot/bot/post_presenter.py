@@ -20,6 +20,7 @@ from discord_ai_reminder_bot.application.schedule_editing import EditedSchedule
 from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.schedule_creation import ParsedOnceSchedule
 from discord_ai_reminder_bot.domain.schedule_deletion import MISSING_DELETE_REASON
 
 EMBED_TOTAL_LIMIT = 6_000
@@ -72,6 +73,27 @@ def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
     _field(embed, "🗓️ 投稿予定", datetime_text(created.scheduled_for), inline=False)
     _field(embed, "📝 本文", content_preview(created.content), inline=False)
     _field(embed, "🆔 予約ID", public_id_text(created.public_id), inline=False)
+    return _validated(embed)
+
+
+def once_schedule_confirmation_embed(
+    *, parsed: ParsedOnceSchedule, channel_id: int, content: str | None
+) -> discord.Embed:
+    status = ScheduleStatus.DRAFT if content is None else ScheduleStatus.ACTIVE
+    embed = _embed(title="単発予約を確認してください", status=status)
+    _field(embed, "状態予定", status_text(status), inline=True)
+    _field(embed, "種別", TYPE_LABELS[ScheduleType.ONCE], inline=True)
+    _field(embed, "📍 投稿先", channel_text(channel_id), inline=False)
+    _field(embed, "🗓️ 投稿予定", datetime_text(parsed.scheduled_for), inline=False)
+    _field(embed, "📝 本文", content_preview(content), inline=False)
+    _field(embed, "入力された日時", escape_user_text(parsed.input_value), inline=False)
+    _field(embed, "解釈後の完全な日時", datetime_text(parsed.scheduled_for), inline=False)
+    _field(
+        embed,
+        "確認方法",
+        "下の「予約する」を押すまで保存されません。キャンセルも選択できます。",
+        inline=False,
+    )
     return _validated(embed)
 
 

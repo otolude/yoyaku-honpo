@@ -122,7 +122,9 @@ content:<任意> clear_content:<任意、既定false> clear_end_date:<任意、�
 
 削除は `/post delete public_id:<UUIDv7> reason:<任意、最大500文字>` とする。コマンド実行時は最新の対象と権限を読み取り専用で確認し、本人だけが操作できる非永続の確認Viewを120秒間表示する。削除ボタン時に最新状態を再検証して削除し、確認中はDB Sessionやトランザクションを保持しない。理由未指定時は`理由未入力`を保存するが、管理者が他人の予約を削除する場合だけ理由を必須とする。不存在、権限不足、状態不許可、処理中には同じ応答を返す。
 
-単発予約の作成は `/post create channel:<テキストチャンネル> scheduled_at:<YYYY-MM-DD HH:MM> content:<任意> allow_duplicate:<任意、既定false>` とする。`content` 未指定だけを下書きとし、指定された空文字、空白・改行だけ、2,000文字超過、`@everyone` または `@here` を含む本文は拒否する。重複候補がある場合は作成せず、`allow_duplicate=true` での再実行を案内する。
+単発予約の作成は `/post create channel:<テキストチャンネル> scheduled_at:<日時> content:<任意> allow_duplicate:<任意、既定false>` とする。日時は `YYYY-MM-DD HH:MM`、`YYYY/M/D HH:MM`、`M/D HH:MM`、`今日 HH:MM`、`明日 HH:MM` の5形式を受理する。年省略は作成操作時点から5分以上先となる次の実在日時（2月29日を含む）として解釈し、今日指定が境界未満でも翌日へ繰り越さない。ちょうど5分後は許可する。`content` 未指定だけを下書きとし、指定された空文字、空白・改行だけ、2,000文字超過、`@everyone` または `@here` を含む本文は拒否する。重複候補がある場合は作成せず、`allow_duplicate=true` での再実行を案内する。
+
+単発作成はローカル検証後、完全なJST日時、状態、投稿先、本文プレビュー、入力日時を示すephemeral確認Embedと、本人だけが操作できる「予約する」「キャンセル」ボタンを120秒間表示する。確認中はDB Session、トランザクション、行ロックを保持しない。確認時に完全日時を固定し、ボタン時に年や日付を再推論しない。予約ボタン時にguild、共通認可、投稿先とBot権限、本文、最新時刻での5分境界を再検証し、成功時だけ新しいトランザクションで保存する。キャンセル、timeout、再検証失敗では保存しない。autocompleteとカレンダーUIは対象外とする。
 
 毎日予約の作成は `/post create-daily channel:<テキストチャンネル> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週予約は `/post create-weekly channel:<テキストチャンネル> weekday:<月曜日～日曜日> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。曜日は月曜日0から日曜日6として保存する。開始日は設けず、作成時点から5分以上先にある最初の発生日時を初回投稿とし、ちょうど5分後を含む。終了日当日の投稿を含み、初回候補が終了日を超える場合は保存しない。本文と重複許可の規則は単発予約と同じとする。
 
@@ -132,7 +134,7 @@ content:<任意> clear_content:<任意、既定false> clear_end_date:<任意、�
 
 - 対応言語は日本語だけとする。
 - 利用者が入力・確認する日時は、すべて `Asia/Tokyo`（日本時間）とする。
-- 日時の入力形式は `YYYY-MM-DD HH:MM`（例: `2026-08-20 19:00`）とする。
+- 編集の日時入力は従来どおり `YYYY-MM-DD HH:MM` とし、単発作成だけは上記5形式を使用できる。
 - 予約は分単位とし、秒は指定しない。
 - 新しい予約の日時は、作成時点から5分以上先でなければならない。
 - データベースには日時をUTCで保存し、Discord上では日本時間に変換して表示する。
