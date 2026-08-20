@@ -363,7 +363,9 @@ Bot復旧時に単発予約の予定時刻を過ぎていた場合は、次の�
 
 Discordの表示名やチャンネル名は変更される可能性があるため、識別にはDiscordが発行するIDを使用する。
 
-`completed`、`ended`、`deleted` 状態の予約と、それらに関連する履歴は30日間保存し、30日経過後に自動削除する。`failed` 状態の予約は運営者が確認するまで自動削除しない。自動削除を実行する具体的な定期処理方式は技術設計で決める。運用に必要なバックアップと復元手順を用意する。
+`completed`、`ended`、`deleted` 状態の予約と、それらに関連する履歴は`terminal_at`から30日間保存し、30日ちょうどを含めて自動削除する。`failed`状態のままの予約は自動削除しない。failedから作成者の`creator_deleted`、管理者の`admin_deleted`または`operator_resolved_failed`で`deleted`になった予約は、削除前状態やdelete kindで区別せず、deletedへ遷移した`terminal_at`から30日後に削除する。`creator_deleted`は運営者確認を意味しないが、権限を持つ作成者による明示的削除として保持期間を開始する。物理削除後の予約単位の監査履歴は保持せず、すでに投稿済みのDiscordメッセージは削除しない。運用に必要なバックアップと復元手順を用意する。
+
+ScheduleまたはRunに関連する通知を含む関連行にpending、processing、claimed、sendingのin-flight状態が1件でもあれば物理削除しない。ScheduleとRunの両方に関連しないglobal NotificationLogは終端状態の`finished_at`から30日保持する。cleanupは1サイクルで固定したUTC時刻を基準に、Schedule最大100件とglobal通知最大100件を別枠で処理し、個別transactionの失敗や未完了によって予約投稿・通知処理を停止しない。
 
 ## 12. セキュリティ
 

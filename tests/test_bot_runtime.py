@@ -12,6 +12,7 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
+from discord_ai_reminder_bot.application.cleanup import CleanupResult
 from discord_ai_reminder_bot.application.draft_notification_bootstrap import (
     DraftNotificationBootstrapSummary,
 )
@@ -20,6 +21,7 @@ from discord_ai_reminder_bot.application.notification_recovery import Notificati
 from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
 from discord_ai_reminder_bot.application.worker import PollResult
 from discord_ai_reminder_bot.bot.client import (
+    MAINTENANCE_TIME,
     MAX_RATELIMIT_TIMEOUT_SECONDS,
     MAX_STARTUP_RECOVERY_BATCHES,
     ReminderBot,
@@ -172,6 +174,9 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     notification_start = MagicMock()
     monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
     monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
+    maintenance_start = MagicMock()
+    monkeypatch.setattr(bot.maintenance_loop, "start", maintenance_start)
+    monkeypatch.setattr(bot.maintenance_loop, "is_running", lambda: False)
 
     await bot.on_ready()
     await bot.on_ready()
@@ -180,6 +185,7 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
     bot.recover_overdue_pending.assert_awaited_once()  # type: ignore[attr-defined]
     start.assert_called_once()
     notification_start.assert_called_once()
+    maintenance_start.assert_called_once()
     assert bot._recovery_complete.is_set()
 
 
@@ -200,6 +206,8 @@ async def test_startup_recoveries_share_one_fixed_cutoff(
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
     monkeypatch.setattr(bot.notification_polling_loop, "start", MagicMock())
     monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
+    monkeypatch.setattr(bot.maintenance_loop, "start", MagicMock())
+    monkeypatch.setattr(bot.maintenance_loop, "is_running", lambda: False)
 
     await bot.on_ready()
 
@@ -238,10 +246,13 @@ async def test_startup_recovery_order_and_both_loops_start(
     bot.bootstrap_draft_notifications = bootstrap  # type: ignore[method-assign]
     poll_start = MagicMock(side_effect=lambda: order.append("schedule_loop"))
     notification_start = MagicMock(side_effect=lambda: order.append("notification_loop"))
+    maintenance_start = MagicMock(side_effect=lambda: order.append("maintenance_loop"))
     monkeypatch.setattr(bot.polling_loop, "start", poll_start)
     monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
     monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
     monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
+    monkeypatch.setattr(bot.maintenance_loop, "start", maintenance_start)
+    monkeypatch.setattr(bot.maintenance_loop, "is_running", lambda: False)
 
     await bot.on_ready()
 
@@ -252,6 +263,7 @@ async def test_startup_recovery_order_and_both_loops_start(
         "bootstrap",
         "schedule_loop",
         "notification_loop",
+        "maintenance_loop",
     ]
     assert bot._recovery_complete.is_set()
 
@@ -270,13 +282,16 @@ async def test_notification_recovery_failure_starts_neither_loop(
     )
     schedule_start = MagicMock()
     notification_start = MagicMock()
+    maintenance_start = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "start", schedule_start)
     monkeypatch.setattr(bot.notification_polling_loop, "start", notification_start)
+    monkeypatch.setattr(bot.maintenance_loop, "start", maintenance_start)
 
     await bot.on_ready()
 
     schedule_start.assert_not_called()
     notification_start.assert_not_called()
+    maintenance_start.assert_not_called()
     assert not bot._recovery_complete.is_set()
 
 
@@ -346,6 +361,59 @@ async def test_poll_cycle_propagates_cancellation() -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await bot.polling_loop()
+
+
+def test_maintenance_loop_runs_daily_at_timezone_aware_tokyo_0400() -> None:
+    bot = make_bot()
+    assert MAINTENANCE_TIME.hour == 4
+    assert MAINTENANCE_TIME.minute == 0
+    assert str(MAINTENANCE_TIME.tzinfo) == "Asia/Tokyo"
+    assert bot.maintenance_loop.time == [MAINTENANCE_TIME]
+
+
+@pytest.mark.asyncio
+async def test_maintenance_cycle_logs_only_safe_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = make_bot()
+    bot.cleanup_service.run_cycle = AsyncMock(  # type: ignore[method-assign]
+        return_value=CleanupResult(
+            cleanup_cutoff=NOW,
+            schedules_deleted=1,
+            global_notifications_deleted=2,
+            incomplete=True,
+        )
+    )
+    with caplog.at_level(logging.INFO):
+        await bot.maintenance_loop()
+    assert "maintenance_cleanup_cycle_complete" in caplog.text
+    assert "test-password" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_maintenance_failure_does_not_stop_other_loops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = make_bot()
+    bot.cleanup_service.run_cycle = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError(DATABASE_URL)
+    )
+    with caplog.at_level(logging.ERROR):
+        await bot.maintenance_loop()
+    assert "maintenance_cleanup_cycle_failed" in caplog.text
+    assert DATABASE_URL not in caplog.text
+    assert not bot.polling_loop.is_being_cancelled()
+    assert not bot.notification_polling_loop.is_being_cancelled()
+
+
+@pytest.mark.asyncio
+async def test_maintenance_cycle_propagates_cancellation() -> None:
+    bot = make_bot()
+    bot.cleanup_service.run_cycle = AsyncMock(  # type: ignore[method-assign]
+        side_effect=asyncio.CancelledError
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await bot.maintenance_loop()
 
 
 class Transaction(AbstractAsyncContextManager):
@@ -584,6 +652,9 @@ async def test_close_cancels_tasks_closes_client_disposes_engine_and_is_idempote
     cancel = MagicMock()
     monkeypatch.setattr(bot.polling_loop, "cancel", cancel)
     monkeypatch.setattr(bot.polling_loop, "get_task", lambda: None)
+    maintenance_cancel = MagicMock()
+    monkeypatch.setattr(bot.maintenance_loop, "cancel", maintenance_cancel)
+    monkeypatch.setattr(bot.maintenance_loop, "get_task", lambda: None)
     client_close = AsyncMock()
     monkeypatch.setattr(commands.Bot, "close", client_close)
     close_views = AsyncMock()
@@ -593,6 +664,7 @@ async def test_close_cancels_tasks_closes_client_disposes_engine_and_is_idempote
     await bot.close()
 
     cancel.assert_called_once()
+    maintenance_cancel.assert_called_once()
     client_close.assert_awaited_once_with()
     close_views.assert_awaited_once_with()
     bot.engine.dispose.assert_awaited_once()
@@ -605,6 +677,8 @@ async def test_close_collects_waiting_startup_recovery_task(
     bot = make_bot()
     monkeypatch.setattr(bot.polling_loop, "cancel", MagicMock())
     monkeypatch.setattr(bot.polling_loop, "get_task", lambda: None)
+    monkeypatch.setattr(bot.maintenance_loop, "cancel", MagicMock())
+    monkeypatch.setattr(bot.maintenance_loop, "get_task", lambda: None)
     monkeypatch.setattr(commands.Bot, "close", AsyncMock())
     never_set = asyncio.Event()
     startup_task = asyncio.create_task(never_set.wait())

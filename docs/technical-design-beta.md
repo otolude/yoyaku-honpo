@@ -746,26 +746,32 @@ NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サ�
 
 ## 16. 30日後の自動削除
 
-Schedule関連通知は親Scheduleの物理削除前に`notification_attempts`、`notification_logs`の順で明示削除する。全体通知は`created_at`から30日後に削除する。failed Schedule関連通知は運営者確認と論理削除が完了するまで保持する。物理削除Worker自体は後続工程で実装する。
+Schedule関連通知は親Scheduleの物理削除前に明示削除する。global通知は`Schedule ID IS NULL AND ScheduleRun ID IS NULL`と定義し、終端状態の`finished_at`から30日後に削除する。Schedule IDだけNULLでRunに関連する通知はglobal扱いしない。`failed`状態のScheduleと関連通知は自動削除せず、権限を持つ作成者または管理者が論理削除した後はdelete kindや削除前状態で区別せず、`deleted`の`terminal_at`から30日保持する。
 
 Bot内の保守ループを1日1回、日本時間04:00に実行する。APSchedulerは使用せず、`discord.ext.tasks.loop(time=...)` を利用する。
 
-削除対象:
+1サイクル開始時にClockからUTC awareな`cleanup_cutoff`を1回だけ取得し、全transactionで`retention_cutoff = cleanup_cutoff - timedelta(days=30)`を固定する。naiveまたは非UTCを拒否し、30日ちょうどを削除対象に含める。
+
+Schedule削除対象:
 
 - `completed`、`ended`、`deleted` の予約
-- `terminal_at` から30日以上経過
+- `terminal_at IS NOT NULL AND terminal_at <= retention_cutoff`
 - 関連する `schedule_runs`
 - 関連する `delivery_attempts`
 - 関連する `operation_logs`
 - 関連する `notification_logs`
 
-削除順序は子テーブルから親テーブルとし、1予約単位のトランザクションで削除する。1回100件まで処理し、残りは次のバッチで続行する。
+保持期間を満たしても、pending/processing ScheduleRun、claimed/sending DeliveryAttempt、pending/processing NotificationLog、claimed/sending NotificationAttemptが1件でもあれば削除しない。unknownは終端状態としてin-flight除外に含めない。候補を`terminal_at, id`順の`FOR UPDATE SKIP LOCKED`で1件ずつ取得し、短い`SET LOCAL lock_timeout = '1s'`をcleanup transaction内だけに設定して全条件を再検証する。
 
-`failed` 状態の予約は30日自動削除の対象外とし、未確認のまま自動削除してはならない。運営者は予約一覧または詳細で内容を確認し、必要な対応後に `/post delete` を実行する。サーバー管理者によるこの削除を運営者による確認・対処完了とみなし、予約を `deleted` にした時点から30日を数える。
+全FKはRESTRICTであるため、1 Scheduleの同じtransactionで、(1) Scheduleに関連するNotificationLogのNotificationAttempt、(2) Scheduleへ直接または配下Run経由で関連するNotificationLog、(3) DeliveryAttempt、(4) OperationLog、(5) ScheduleRun、(6) Scheduleの順に明示削除する。1 Scheduleにつき1 Session・1 transactionとし、1サイクル最大100件まで処理する。global通知は別枠最大100件とし、1 NotificationLogごとにNotificationAttempt、NotificationLogの順で1 transactionにより削除する。101件目は翌日以降へ残し、成功済みtransactionは後続の失敗で戻さない。
 
-上位要件の権限規則に従い、`failed` 予約を削除できるのは、その予約の作成者とサーバー管理者である。作成者による削除は `creator_deleted` とし、運営者による対処完了とは扱わない。サーバー管理者が `failed` 予約を削除した場合は `operator_resolved_failed`、サーバー管理者がそれ以外の予約を削除した場合は `admin_deleted` として操作履歴へ保存する。操作履歴には実行者、実行日時、対象予約、削除理由を必ず記録する。
+`failed` 状態の予約は30日自動削除の対象外とする。権限を持つ作成者または管理者が`/post delete`を実行して`deleted`になった時点から30日を数える。
 
-削除成功件数と失敗件数をログへ残す。方式を変更する場合は技術設計を更新する。
+上位要件の権限規則に従い、`failed`予約を削除できるのは、その予約の作成者とサーバー管理者である。作成者による削除は`creator_deleted`とし、運営者による対処完了とは扱わないが、作成者による明示的削除として30日保持の開始条件になる。サーバー管理者が`failed`予約を削除した場合は`operator_resolved_failed`、それ以外は`admin_deleted`として操作履歴へ保存する。deleted後の物理削除可否は削除前状態やdelete kindで分けない。
+
+独立した保守loopを`discord.ext.tasks.loop(time=Asia/Tokyo 04:00)`で1日1回実行し、Bot起動直後には実行しない。全startup RecoveryとBootstrap成功後だけ開始し、再接続時の二重startと1サイクルの重複を防ぐ。lock timeout、deadlock、FK競合、内部エラーは当該対象だけrollbackして翌日再試行し、cleanupの失敗または未完了で予約投稿loopや通知loopを停止しない。RepositoryとApplication Serviceは対象行の状態を修復せず、cleanupからDiscord APIやNotificationLog自己通知を呼ばない。
+
+ログには固定イベント名、固定cutoff、各テーブルの安全な削除件数、残件数、内部エラー件数、未完了フラグだけを残す。public ID、内部ID、本文、Discord ID、秘密情報、SQLパラメーター、例外全文、tracebackを含めない。OperationLogを含む個別履歴はScheduleと同時に削除し、物理削除専用OperationLogや別監査テーブルは作らない。すでに投稿済みのDiscordメッセージは削除しない。
 
 ## 17. Discord権限と `allowed_mentions`
 

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import discord
 from discord import app_commands
@@ -35,7 +35,7 @@ from discord_ai_reminder_bot.bot.interactions import Phase1CommandTree
 from discord_ai_reminder_bot.bot.posts import PostCommands
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import Clock
-from discord_ai_reminder_bot.domain.recurrence import require_utc
+from discord_ai_reminder_bot.domain.recurrence import TOKYO, require_utc
 from discord_ai_reminder_bot.infrastructure.database.schema import verify_schema_revision
 from discord_ai_reminder_bot.infrastructure.discord.gateway import DiscordMessageGateway
 from discord_ai_reminder_bot.infrastructure.discord.notification_gateway import (
@@ -45,6 +45,7 @@ from discord_ai_reminder_bot.infrastructure.discord.notification_gateway import 
 MAX_RATELIMIT_TIMEOUT_SECONDS = 30.0
 MAX_STARTUP_RECOVERY_BATCHES = 25
 SLASH_ONLY_PREFIX = "__slash_commands_only__"
+MAINTENANCE_TIME = time(hour=4, tzinfo=TOKYO)
 
 
 class StartupRecoveryIncompleteError(RuntimeError):
@@ -127,6 +128,10 @@ class ReminderBot(commands.Bot):
             lease_timeout=timedelta(seconds=settings.notification_processing_timeout_seconds),
             logger=logger,
         )
+        self.cleanup_service = CleanupService(
+            session_factory=session_factory,
+            clock=clock,
+        )
         self._clock = clock
         self._recovery_complete = asyncio.Event()
         self._startup_lock = asyncio.Lock()
@@ -135,6 +140,7 @@ class ReminderBot(commands.Bot):
         self._closing = False
         self._closed_once = False
         self._command_sync_lock = asyncio.Lock()
+        self._maintenance_lock = asyncio.Lock()
         self._commands_synced = False
         self.post_commands = PostCommands(
             queries=ScheduleQueryService(session_factory),
@@ -237,6 +243,8 @@ class ReminderBot(commands.Bot):
             self.polling_loop.start()
         if not self.notification_polling_loop.is_running():
             self.notification_polling_loop.start()
+        if not self.maintenance_loop.is_running():
+            self.maintenance_loop.start()
 
     async def recover_expired_processing(self, *, recovery_cutoff: datetime | None = None) -> int:
         recovery_cutoff = require_utc(recovery_cutoff or self._clock.now())
@@ -396,6 +404,43 @@ class ReminderBot(commands.Bot):
         if self._closing:
             self.notification_polling_loop.stop()
 
+    @tasks.loop(time=MAINTENANCE_TIME, reconnect=False, name="maintenance-cleanup-loop")
+    async def maintenance_loop(self) -> None:
+        if self._closing:
+            return
+        async with self._maintenance_lock:
+            try:
+                result = await self.cleanup_service.run_cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never expose database or target details
+                self.logger.error("maintenance_cleanup_cycle_failed")
+                return
+        self.logger.info(
+            "maintenance_cleanup_cycle_complete",
+            extra={
+                "cleanup_cutoff": result.cleanup_cutoff.isoformat(),
+                "schedules_deleted": result.schedules_deleted,
+                "global_notifications_deleted": result.global_notifications_deleted,
+                "notification_attempts_deleted": result.notification_attempts_deleted,
+                "notification_logs_deleted": result.notification_logs_deleted,
+                "delivery_attempts_deleted": result.delivery_attempts_deleted,
+                "operation_logs_deleted": result.operation_logs_deleted,
+                "schedule_runs_deleted": result.schedule_runs_deleted,
+                "internal_errors": result.internal_errors,
+                "schedules_remaining_due": result.schedules_remaining_due,
+                "global_notifications_remaining_due": result.global_notifications_remaining_due,
+                "incomplete": result.incomplete,
+            },
+        )
+
+    @maintenance_loop.before_loop
+    async def before_maintenance_loop(self) -> None:
+        await self.wait_until_ready()
+        await self._recovery_complete.wait()
+        if self._closing:
+            self.maintenance_loop.stop()
+
     async def close(self) -> None:
         if self._closed_once:
             return
@@ -404,7 +449,8 @@ class ReminderBot(commands.Bot):
 
         self.polling_loop.stop()
         self.notification_polling_loop.stop()
-        for loop in (self.polling_loop, self.notification_polling_loop):
+        self.maintenance_loop.stop()
+        for loop in (self.polling_loop, self.notification_polling_loop, self.maintenance_loop):
             loop.cancel()
             polling_task = loop.get_task()
             if polling_task is not None and polling_task is not asyncio.current_task():
@@ -430,3 +476,6 @@ class ReminderBot(commands.Bot):
                     "database_engine_dispose_failed",
                     extra={"worker_id": str(self.worker_id)},
                 )
+
+
+from discord_ai_reminder_bot.application.cleanup import CleanupService
