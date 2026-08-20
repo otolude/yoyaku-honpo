@@ -962,6 +962,18 @@ class DeliveryAttemptRepository:
             )
         ).scalar_one_or_none()
 
+    async def lock_latest_by_run(self, *, run_id: int) -> DeliveryAttempt | None:
+        """Lock the latest attempt after its parent run has been locked."""
+        return (
+            await self._session.execute(
+                select(DeliveryAttempt)
+                .where(DeliveryAttempt.schedule_run_id == run_id)
+                .order_by(DeliveryAttempt.attempt_number.desc(), DeliveryAttempt.id.desc())
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+
     async def mark_sending(
         self, *, attempt_id: int, worker_id: uuid.UUID, now: datetime
     ) -> DeliveryAttempt:

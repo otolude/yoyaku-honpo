@@ -11,6 +11,10 @@ from discord_ai_reminder_bot.application.delivery import (
     RESULT_RETRY_PENDING,
     RESULT_UNKNOWN,
 )
+from discord_ai_reminder_bot.application.schedule_execution import (
+    FinalizedScheduleRun,
+    ScheduleExecutionService,
+)
 from discord_ai_reminder_bot.domain.enums import DeliveryAttemptStatus, DeliveryErrorKind
 from discord_ai_reminder_bot.domain.recovery import (
     InterruptedAttemptAction,
@@ -21,6 +25,7 @@ from discord_ai_reminder_bot.domain.retry_policy import RetryAction, decide_retr
 from discord_ai_reminder_bot.infrastructure.database.models import DeliveryAttempt, ScheduleRun
 from discord_ai_reminder_bot.infrastructure.database.repositories import (
     DeliveryAttemptRepository,
+    ScheduleRepository,
     ScheduleRunRepository,
 )
 
@@ -42,14 +47,17 @@ class RecoveredRun:
     run: ScheduleRun
     attempt: DeliveryAttempt | None
     result: RecoveryResult
+    finalization: FinalizedScheduleRun | None
 
 
 class ProcessingRecoveryService:
     """Recover locked expired runs in the caller-owned transaction."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+        self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._attempts = DeliveryAttemptRepository(session)
+        self._execution = ScheduleExecutionService(session, configured_guild_id=configured_guild_id)
 
     async def recover_expired(
         self, *, recovered_at: datetime, batch_size: int
@@ -60,7 +68,7 @@ class ProcessingRecoveryService:
         )
         recovered: list[RecoveredRun] = []
         for run in runs:
-            attempt = await self._attempts.get_latest_by_run(run_id=run.id)
+            attempt = await self._attempts.lock_latest_by_run(run_id=run.id)
             recovered.append(
                 await self._recover_one(run=run, attempt=attempt, recovered_at=recovered_at)
             )
@@ -76,16 +84,26 @@ class ProcessingRecoveryService:
         worker_id = run.claimed_by
         assert worker_id is not None
         if not _is_consistent(run, attempt, recovered_at):
+            await self._schedules.lock_by_id(run.schedule_id)
             failed = await self._fail_unknown(
                 run=run,
                 recovered_at=recovered_at,
                 error_summary=INCONSISTENT_SUMMARY,
             )
-            return RecoveredRun(failed, attempt, RecoveryResult.FAILED_UNKNOWN)
+            return await self._finalized(
+                failed, attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at
+            )
 
         assert attempt is not None
         action = classify_interrupted_attempt(DeliveryAttemptStatus(attempt.status))
         if action is InterruptedAttemptAction.RETURN_TO_PENDING:
+            decision = decide_retry(
+                attempt_number=attempt.attempt_number,
+                error_kind=DeliveryErrorKind.TRANSIENT,
+                failed_at=recovered_at,
+            )
+            if decision.action is not RetryAction.RETRY:
+                await self._schedules.lock_by_id(run.schedule_id)
             failed_attempt = await self._attempts.mark_failed(
                 attempt_id=attempt.id,
                 worker_id=worker_id,
@@ -93,11 +111,6 @@ class ProcessingRecoveryService:
                 error_kind=DeliveryErrorKind.TRANSIENT.value,
                 error_code=BEFORE_SEND_CODE,
                 error_summary=BEFORE_SEND_SUMMARY,
-            )
-            decision = decide_retry(
-                attempt_number=attempt.attempt_number,
-                error_kind=DeliveryErrorKind.TRANSIENT,
-                failed_at=recovered_at,
             )
             failed_run = await self._runs.mark_failed_or_pending(
                 run_id=run.id,
@@ -114,9 +127,12 @@ class ProcessingRecoveryService:
                 if decision.action is RetryAction.RETRY
                 else RecoveryResult.FAILED_BEFORE_SEND
             )
-            return RecoveredRun(failed_run, failed_attempt, result)
+            if result is RecoveryResult.RETRY_PENDING:
+                return RecoveredRun(failed_run, failed_attempt, result, None)
+            return await self._finalized(failed_run, failed_attempt, result, recovered_at)
 
         if action is InterruptedAttemptAction.FAIL_WITH_UNKNOWN_RESULT:
+            await self._schedules.lock_by_id(run.schedule_id)
             unknown_attempt = await self._attempts.mark_unknown_after_expiry(
                 attempt_id=attempt.id,
                 worker_id=worker_id,
@@ -129,14 +145,27 @@ class ProcessingRecoveryService:
                 recovered_at=recovered_at,
                 error_summary=UNKNOWN_SUMMARY,
             )
-            return RecoveredRun(failed_run, unknown_attempt, RecoveryResult.FAILED_UNKNOWN)
+            return await self._finalized(
+                failed_run, unknown_attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at
+            )
 
+        await self._schedules.lock_by_id(run.schedule_id)
         failed = await self._fail_unknown(
             run=run,
             recovered_at=recovered_at,
             error_summary=INCONSISTENT_SUMMARY,
         )
-        return RecoveredRun(failed, attempt, RecoveryResult.FAILED_UNKNOWN)
+        return await self._finalized(failed, attempt, RecoveryResult.FAILED_UNKNOWN, recovered_at)
+
+    async def _finalized(
+        self,
+        run: ScheduleRun,
+        attempt: DeliveryAttempt | None,
+        result: RecoveryResult,
+        recovered_at: datetime,
+    ) -> RecoveredRun:
+        finalization = await self._execution.finalize_run(run_id=run.id, finalized_at=recovered_at)
+        return RecoveredRun(run, attempt, result, finalization)
 
     async def _fail_unknown(
         self,

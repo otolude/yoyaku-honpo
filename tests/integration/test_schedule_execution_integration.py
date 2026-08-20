@@ -18,6 +18,7 @@ from discord_ai_reminder_bot.infrastructure.database.exceptions import (
     RepositoryStateConflictError,
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
+    NotificationLog,
     OperationLog,
     Schedule,
     ScheduleRun,
@@ -238,6 +239,31 @@ async def test_recurring_draft_skip_keeps_one_future_run(
     assert schedule.version == 2
     assert first.next_run is second.next_run
     assert count == 2
+
+
+async def test_recurring_draft_next_run_uses_notification_planning(
+    db_session: AsyncSession,
+) -> None:
+    schedule, run = await add_terminal_run(
+        db_session,
+        schedule_type="daily",
+        schedule_status="draft",
+        run_status="skipped",
+    )
+    result = await ScheduleExecutionService(
+        db_session, configured_guild_id=schedule.guild_id
+    ).finalize_run(run_id=run.id, finalized_at=FINALIZED_AT)
+    notifications = list(
+        (
+            await db_session.execute(
+                select(NotificationLog).where(NotificationLog.schedule_id == schedule.id)
+            )
+        ).scalars()
+    )
+    assert result.next_run is not None
+    assert len(notifications) == 1
+    assert notifications[0].schedule_run_id == result.next_run.id
+    assert notifications[0].notification_type == "draft_1h"
 
 
 async def test_recurring_draft_without_next_run_is_left_unchanged(

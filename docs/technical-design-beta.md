@@ -658,6 +658,10 @@ Bot起動ごとにランダムな `worker_id`（UUID）を生成する。Discord
 
 pending Recoveryは`FOR UPDATE SKIP LOCKED`で`scheduled_for, id`の安定順序によりrunを取得し、関係runを安定順序でロックしてからScheduleをロックする。Recovery中はDiscord APIを呼ばず、DB整理がすべて完了した後に通常ポーラーへ送信可能なpendingを渡す。processing Recoveryが失敗した場合はpending Recoveryを開始せず、pending Recoveryが失敗または未完了の場合もRecovery完了Eventを設定しない。Discord再接続では同一プロセスのRecoveryを再実行しない。
 
+processing Recoveryは期限切れrunを`FOR UPDATE SKIP LOCKED`、対応する最新DeliveryAttempt、Scheduleの順でlockする。claimed attempt 1～3をretry予定の`pending`へ戻した場合はScheduleを確定しない。claimed attempt 4、sending/unknown、Attempt欠落または番号・worker・日時・状態不整合を安全側の`failed`へ終端化した場合だけ、同じSessionで既存`ScheduleExecutionService.finalize_run()`を呼ぶ。同一Sessionで既にlock済みのrunとScheduleを再lockしてもlock順はrunからScheduleのまま変わらない。単発activeは`failed`、`next_run_at = NULL`、version増加とsystem failed OperationLogを冪等に適用する。定期activeはrecurrence関数だけで固定cutoffより厳密に未来の未使用runを1件生成または正常な既存runを再利用し、次回がなければ`ended`とsystem OperationLogを適用する。paused/deleted/endedは復帰させず、不整合Scheduleは既存確定規則どおり拒否する。
+
+run、Attempt、Schedule、新run、OperationLog、および既存Schedule確定経路が作る下書き事前NotificationLogはBot runtime所有の1バッチ1トランザクションに含める。Application ServiceとRepositoryはcommit/rollbackしない。Schedule確定が失敗すれば当該バッチ全体をrollbackし、Recovery完了扱いにせず、後続Recoveryと両polling loopを開始しない。先にcommit済みのバッチは維持し、ログは固定イベント名と安全な件数だけに制限する。processing Recovery由来の投稿failed・unknown等のNotificationLogイベント生成自体は後続工程であり、この接続では生成しない。
+
 1. DB接続とマイグレーション状態を確認する。
 2. 期限切れの処理権を持つ `processing` 実行を確認する。
 3. `claimed` のままなら送信開始前として `pending` へ戻す。
@@ -734,7 +738,7 @@ NotificationWorkerは予約投稿Workerと独立した`tasks.loop`で逐次サ�
 
 起動時は予約processing、期限超過pending、notification lease、draft notification bootstrapの順に同じcutoffで各最大25 batchを処理し、すべて完了した後だけRecovery Eventを設定して両polling loopを開始する。bootstrapはfuture draftのRunを`scheduled_for, id`順に`FOR UPDATE SKIP LOCKED`で取得してからScheduleをlockし、cutoffより前の未claim pending通知のみcancelする。過ぎた24h/1hは再生成せず、残り1時間未満ならRun単位でimmediateを最大1件作る。停止時は両loopをstop/cancelしてTaskを回収してからstartup Task、Discord Client、Engineを閉じる。
 
-この段階では下書き事前通知の生成だけを接続する。投稿failed・unknown、draft時刻到来、Processing/Pending Recoveryの運営者通知、およびProcessing Recovery後のSchedule finalize修正は未接続とする。
+この段階では下書き事前通知の生成と、Processing Recoveryで終端化したrunの既存Schedule確定経路への接続までを実装する。投稿failed・unknown、draft時刻到来、Processing/Pending Recoveryの運営者NotificationLogイベント生成は未接続とする。
 
 ## 16. 30日後の自動削除
 

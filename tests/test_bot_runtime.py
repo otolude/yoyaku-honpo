@@ -381,18 +381,22 @@ async def test_recovery_uses_multiple_short_committed_batches(
     sessions: list[Session] = []
     bot.session_factory = lambda: sessions.append(Session()) or sessions[-1]  # type: ignore[assignment]
     batches = [[object(), object()], [object()]]
+    calls: list[dict[str, object]] = []
 
     class Recovery:
-        def __init__(self, session):
+        def __init__(self, session, **kwargs):
             self.session = session
 
         async def recover_expired(self, **kwargs):
+            calls.append(kwargs)
             return batches.pop(0)
 
     monkeypatch.setattr("discord_ai_reminder_bot.bot.client.ProcessingRecoveryService", Recovery)
     assert await bot.recover_expired_processing() == 3
     assert len(sessions) == 2
     assert all(session.exits == [None] for session in sessions)
+    assert [call["recovered_at"] for call in calls] == [NOW, NOW]
+    assert all(call["batch_size"] == bot.settings.scheduler_batch_size for call in calls)
 
 
 @pytest.mark.parametrize("batches", [[], [[object()]]])
@@ -406,7 +410,7 @@ async def test_recovery_succeeds_for_empty_or_partial_first_batch(
     responses = list(batches) or [[]]
 
     class Recovery:
-        def __init__(self, unused_session):
+        def __init__(self, unused_session, **kwargs):
             pass
 
         async def recover_expired(self, **kwargs):
@@ -427,7 +431,7 @@ async def test_full_twenty_fifth_batch_is_incomplete_and_does_not_start_polling(
     bot.session_factory = lambda: sessions.append(Session()) or sessions[-1]  # type: ignore[assignment]
 
     class Recovery:
-        def __init__(self, unused_session):
+        def __init__(self, unused_session, **kwargs):
             pass
 
         async def recover_expired(self, **kwargs):
@@ -463,7 +467,7 @@ async def test_recovery_failure_rolls_back_current_batch(monkeypatch: pytest.Mon
     bot.session_factory = lambda: session  # type: ignore[assignment]
 
     class Recovery:
-        def __init__(self, unused_session):
+        def __init__(self, unused_session, **kwargs):
             pass
 
         async def recover_expired(self, **kwargs):
@@ -483,7 +487,7 @@ async def test_recovery_limit_exception_carries_only_safe_count(
     bot.session_factory = lambda: Session()  # type: ignore[assignment]
 
     class Recovery:
-        def __init__(self, unused_session):
+        def __init__(self, unused_session, **kwargs):
             pass
 
         async def recover_expired(self, **kwargs):

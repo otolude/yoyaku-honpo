@@ -242,7 +242,9 @@ class ReminderBot(commands.Bot):
         total = 0
         for _ in range(MAX_STARTUP_RECOVERY_BATCHES):
             async with self.session_factory() as session, session.begin():
-                recovered = await ProcessingRecoveryService(session).recover_expired(
+                recovered = await ProcessingRecoveryService(
+                    session, configured_guild_id=self.settings.discord_guild_id
+                ).recover_expired(
                     recovered_at=recovery_cutoff,
                     batch_size=self.settings.scheduler_batch_size,
                 )
