@@ -54,7 +54,20 @@ class DiscordNotificationGateway(NotificationGateway):
             else await self._dm_user(message)
         )
         try:
-            sent = await target.send(message.content, allowed_mentions=allowed_mentions)
+            kwargs: dict[str, object] = {"allowed_mentions": allowed_mentions}
+            if message.embed is not None:
+                embed = discord.Embed(
+                    title=message.embed.title,
+                    description=message.embed.description,
+                    color=message.embed.color,
+                )
+                for field in message.embed.fields:
+                    embed.add_field(name=field.name, value=field.value, inline=field.inline)
+                kwargs["embed"] = embed
+            if message.embed is not None:
+                sent = await target.send(**kwargs)
+            else:
+                sent = await target.send(message.content, **kwargs)
         except (discord.Forbidden, discord.NotFound) as error:
             raise NotificationPermanentError() from error
         except discord.RateLimited as error:
