@@ -50,8 +50,14 @@
 | [x] 全角数字・記号の専用エラー | 原因別案内の確認 | `/post create` | 全角数字・記号を入力 | 半角入力案内がephemeral表示される | 記録なし | ユーザー | 本会話での申告 | なし |
 | [x] 一般形式不正エラー | 形式案内の確認 | `/post create` | 未対応形式を入力 | 日時形式案内がephemeral表示される | 記録なし | ユーザー | 本会話での申告 | なし |
 | [x] 日時オプション説明 | Discord option表示の確認 | guild command同期済み | `/post create`の説明を見る | 短縮された半角入力説明が表示される | 記録なし | ユーザー | 本会話での申告 | なし |
+| [x] 毎日予約の実際の投稿 | daily実配送の確認 | 開発用Discord guild、開発DB、本文ありdaily | 指定時刻まで待つ | 指定時刻に本文が1回だけ投稿された。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] 毎週予約の実際の投稿 | weekly実配送の確認 | 開発用Discord guild、開発DB、本文ありweekly | 指定曜日・指定時刻まで待つ | 指定曜日・指定時刻に本文が1回だけ投稿された。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] 終了日当日の投稿とended | 終了境界の確認 | 開発用Discord guild、開発DB、終了日当日にrunがある定期予約 | 最後のrunを到来させる | 終了日当日の投稿を実行し、投稿後にScheduleがendedとなった。次回投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] Bot停止中の単発15分以内 | 遅延投稿Recoveryの確認 | 開発用Discord guild、開発DB、未来の単発予約 | 予定時刻前にBotを正常停止し、予定時刻から15分以内に再起動 | 起動時Recovery後に本文を1回だけ投稿した。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] Bot停止中の単発15分超過 | 期限超過の確認 | 開発用Discord guild、開発DB、未来の単発予約 | 予定時刻前にBotを正常停止し、予定時刻から15分を超えて再起動 | 予約本文を投稿せず、Scheduleがfailedとなり、運営者チャンネルへ失敗通知Embedを表示した。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] startup delayed通知 | 遅延通知接続の確認 | 開発用Discord guild、開発DB、15分以内の単発予約 | Botを停止・再起動 | 運営者チャンネルへ「遅延した予約投稿を処理します」Embedを表示した。状態は処理中で、投稿先、元の予定日時、完全なUUIDv7、対応案内を表示し、投稿本文は含めない。通知後に実際の本文を1回だけ投稿した | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
 
-確認済み: **33件**
+確認済み: **39件**
 
 ## 3. 未確認項目
 
@@ -59,15 +65,10 @@
 
 | 状態・項目 | 目的 | 前提 | 操作 | 期待結果 | 実施日 | 実施者 | 証跡 | 後片付け |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [ ] 毎日予約の実際の投稿 | daily実配送の確認 | 隔離チャンネル、本文ありdaily | 近い未来に作成して待つ | 指定JST時刻に1回投稿し次回runを生成 | — | — | — | 予約とテスト投稿を整理 |
-| [ ] 毎週予約の実際の投稿 | weekly実配送の確認 | 隔離チャンネル、本文ありweekly | 指定曜日・時刻まで待つ | 1回投稿し翌週runを生成 | — | — | — | 予約とテスト投稿を整理 |
-| [ ] 終了日当日の投稿とended | 終了境界の確認 | 終了日当日にrunがある定期予約 | 最後のrunを到来させる | 投稿後ended、以後runなし | — | — | — | 証跡保管後整理 |
 | [ ] transientの1分・5分・15分再試行 | retry間隔の確認 | 専用テストDB、Fake Gateway、固定Clock | transientを連続返す | attempt 2/3/4が1/5/15分後になる | — | — | — | テストDBだけ破棄 |
 | [ ] 4回目の最終failed | 最大試行境界の確認 | 専用テストDB、Fake Gateway | 4回transientを返す | run failed、単発Schedule failed、通知生成 | — | — | — | テストDBだけ破棄 |
 | [ ] Rate Limit | Retry-After優先の確認 | 専用テストDB、Fake Gateway | 未来のretry_atを返す | 指定時刻を優先し追加送信をしない | — | — | — | テストDBだけ破棄 |
 | [ ] sending後unknown | 二重投稿防止の確認 | 専用テストDB、Fake Gateway | sending後に結果不明を模擬 | unknown/failedへ確定し自動再送しない | — | — | — | テストDBだけ破棄 |
-| [ ] Bot停止中の単発15分以内 | 遅延投稿Recoveryの確認 | 隔離環境、未来単発 | Bot停止中に予定を過ぎ15分以内に再起動 | pending維持、遅延通知、通常loopで投稿 | — | — | — | 正常停止し予約整理 |
-| [ ] Bot停止中の単発15分超過 | 期限超過の確認 | 隔離環境、未来単発 | 15分超過後に再起動 | 投稿せずrun skipped、Schedule failed、通知 | — | — | — | 予約を明示削除 |
 | [ ] processing中断Recovery | lease復旧の確認 | 専用テストDB、Fake Gateway | claimed/sending中断を個別に模擬 | claimedは安全ならretry、sendingはunknownで再送なし | — | — | — | テストDBだけ破棄 |
 | [ ] 定期欠落回Recovery | 停止中定期回の確認 | 隔離環境、定期予約 | 複数回を過ぎて再起動 | 過去回skipped、未来run 1件、集約通知 | — | — | — | 予約整理 |
 | [ ] Notification Recovery | 通知lease復旧の確認 | 専用テストDB、Fake Gateway | claimed/sending通知のlease切れを模擬 | claimedは規則に従いretry、sendingはunknown | — | — | — | テストDBだけ破棄 |
@@ -75,7 +76,6 @@
 | [ ] operator DM失敗からlog | 最終fallback確認 | Fake Gateway、専用テストDB | operator DMもpermanent失敗 | log経路が固定ERRORを記録しDiscord送信なし | — | — | — | テストDBだけ破棄 |
 | [ ] 通知unknown | 通知二重送信防止の確認 | Fake Gateway、専用テストDB | 通知sending後の結果不明を模擬 | unknownで終端しretry・fallbackなし | — | — | — | テストDBだけ破棄 |
 | [ ] stale cancel | 不要通知抑止の確認 | 専用テストDB、future draft通知 | active化/pause/delete/日時変更後にdue化 | cancelledとなりDiscordを呼ばない | — | — | — | テストDBだけ破棄 |
-| [ ] startup delayed通知 | 遅延通知接続の確認 | 隔離環境、15分以内単発 | 停止・再起動 | run_delayed Embedがoperatorへ届く | — | — | — | 予約整理 |
 | [ ] Recovery不整合通知 | 不整合通知の確認 | 専用テストDBのみ | Attempt不整合を安全にfixtureで作る | recovery通知が冪等生成される | — | — | — | テストDBだけ破棄 |
 | [ ] JST 04:00 cleanup | maintenance時刻と削除の確認 | 専用テストDB、固定Clock相当の受入fixture | due終端データでcycleを検証 | 04:00境界、30日包含、FK順で削除 | — | — | — | テストDBだけ破棄 |
 | [ ] cleanup失敗中の投稿・通知継続 | loop分離の確認 | 専用テスト環境 | cleanup対象だけを失敗させる | incomplete/errorでも投稿・通知loop継続 | — | — | — | 障害fixture解除 |
@@ -84,7 +84,7 @@
 | [ ] 別DBへの復元 | 復元可能性の確認 | 承認済みバックアップ、別の空DB | Runbookどおりpg_restoreと読取検証 | revision、件数、CHECK/FKが整合 | — | — | — | 復元DBを運用判断後に隔離・廃棄 |
 | [ ] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | — | — | — | Bot停止、postgresだけ停止 |
 
-未確認: **24件**
+未確認: **18件**
 
 ## 4. 判定記録
 
