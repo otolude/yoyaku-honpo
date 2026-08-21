@@ -56,8 +56,10 @@
 | [x] Bot停止中の単発15分以内 | 遅延投稿Recoveryの確認 | 開発用Discord guild、開発DB、未来の単発予約 | 予定時刻前にBotを正常停止し、予定時刻から15分以内に再起動 | 起動時Recovery後に本文を1回だけ投稿した。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
 | [x] Bot停止中の単発15分超過 | 期限超過の確認 | 開発用Discord guild、開発DB、未来の単発予約 | 予定時刻前にBotを正常停止し、予定時刻から15分を超えて再起動 | 予約本文を投稿せず、Scheduleがfailedとなり、運営者チャンネルへ失敗通知Embedを表示した。重複投稿なし | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
 | [x] startup delayed通知 | 遅延通知接続の確認 | 開発用Discord guild、開発DB、15分以内の単発予約 | Botを停止・再起動 | 運営者チャンネルへ「遅延した予約投稿を処理します」Embedを表示した。状態は処理中で、投稿先、元の予定日時、完全なUUIDv7、対応案内を表示し、投稿本文は含めない。通知後に実際の本文を1回だけ投稿した | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
+| [x] operator channel失敗からoperator DM | fallback確認 | 開発用Discord guild、開発DB | 予約先への投稿とoperator channelへの通知を権限不足で失敗させる | operator DMへ失敗通知Embedが1件届いた。投稿本文を含めず、投稿先、状態、予定日時、予約ID、対応案内を表示した。重複通知なし | 2026-08-21 | Oto | 実DiscordおよびBotターミナルで目視確認 | `#bot-failure-test`と`#一般`のBot送信権限、開発用サーバーからのDM受信設定を復元し、Botの継続稼働を確認 |
+| [x] operator DM失敗からlog fallback | 最終fallback確認 | 開発用Discord guild、開発DB | 予約先への投稿とoperator channelへの通知を権限不足で失敗させ、operator DMをサーバーのDM設定で拒否する | Discordへの通知は届かず、Botターミナルに固定ERRORイベント`notification_log_route_terminal`を記録した。投稿本文、token、DATABASE_URL、Discordレスポンス本文、例外全文、tracebackなし。`internal_errors=0`で、fallback後も投稿loopと通知loopが継続し、予約状態はfailed | 2026-08-21 | Oto | 実DiscordおよびBotターミナルで目視確認 | `#bot-failure-test`と`#一般`のBot送信権限、開発用サーバーからのDM受信設定を復元し、Botの継続稼働を確認 |
 
-確認済み: **39件**
+確認済み: **41件**
 
 ## 3. 未確認項目
 
@@ -72,8 +74,6 @@
 | [ ] processing中断Recovery | lease復旧の確認 | 専用テストDB、Fake Gateway | claimed/sending中断を個別に模擬 | claimedは安全ならretry、sendingはunknownで再送なし | — | — | — | テストDBだけ破棄 |
 | [ ] 定期欠落回Recovery | 停止中定期回の確認 | 隔離環境、定期予約 | 複数回を過ぎて再起動 | 過去回skipped、未来run 1件、集約通知 | — | — | — | 予約整理 |
 | [ ] Notification Recovery | 通知lease復旧の確認 | 専用テストDB、Fake Gateway | claimed/sending通知のlease切れを模擬 | claimedは規則に従いretry、sendingはunknown | — | — | — | テストDBだけ破棄 |
-| [ ] operator channel失敗からoperator DM | fallback確認 | Fake Gateway、専用テストDB | operator channelをpermanent失敗 | operator DM用outboxが1件生成・送信される | — | — | — | テストDBだけ破棄 |
-| [ ] operator DM失敗からlog | 最終fallback確認 | Fake Gateway、専用テストDB | operator DMもpermanent失敗 | log経路が固定ERRORを記録しDiscord送信なし | — | — | — | テストDBだけ破棄 |
 | [ ] 通知unknown | 通知二重送信防止の確認 | Fake Gateway、専用テストDB | 通知sending後の結果不明を模擬 | unknownで終端しretry・fallbackなし | — | — | — | テストDBだけ破棄 |
 | [ ] stale cancel | 不要通知抑止の確認 | 専用テストDB、future draft通知 | active化/pause/delete/日時変更後にdue化 | cancelledとなりDiscordを呼ばない | — | — | — | テストDBだけ破棄 |
 | [ ] Recovery不整合通知 | 不整合通知の確認 | 専用テストDBのみ | Attempt不整合を安全にfixtureで作る | recovery通知が冪等生成される | — | — | — | テストDBだけ破棄 |
@@ -84,7 +84,7 @@
 | [ ] 別DBへの復元 | 復元可能性の確認 | 承認済みバックアップ、別の空DB | Runbookどおりpg_restoreと読取検証 | revision、件数、CHECK/FKが整合 | — | — | — | 復元DBを運用判断後に隔離・廃棄 |
 | [ ] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | — | — | — | Bot停止、postgresだけ停止 |
 
-未確認: **18件**
+未確認: **16件**
 
 ## 4. 判定記録
 
