@@ -318,3 +318,89 @@ async def test_recovery_savepoint_rollback_restores_all_rows(db_session: AsyncSe
     assert schedule.status == "active" and schedule.next_run_at == run.scheduled_for
     assert run.status == "pending"
     assert await db_session.scalar(select(func.count(OperationLog.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recurring_recovery_is_atomic_and_idempotent(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with factory.begin() as seed:
+        schedule, _original = await add_schedule_run(
+            seed,
+            schedule_type="daily",
+            scheduled_for=CUTOFF - timedelta(days=2),
+            local_time=time(12, 0),
+        )
+        schedule_id = schedule.id
+
+    first, second = factory(), factory()
+    first_tx, second_tx = await first.begin(), await second.begin()
+    try:
+        first_result = await PendingStartupRecoveryService(first).recover_pending(
+            recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+        )
+        second_result = await PendingStartupRecoveryService(second).recover_pending(
+            recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+        )
+        assert first_result.selected == 1 and second_result.selected == 0
+        async with factory() as observer:
+            observed = await observer.get(Schedule, schedule_id)
+            assert observed is not None and observed.version == 1
+            assert (
+                await observer.scalar(
+                    select(func.count(ScheduleRun.id)).where(ScheduleRun.schedule_id == schedule_id)
+                )
+                == 1
+            )
+            assert (
+                await observer.scalar(
+                    select(func.count(NotificationLog.id)).where(
+                        NotificationLog.schedule_id == schedule_id
+                    )
+                )
+                == 0
+            )
+    finally:
+        await first_tx.rollback()
+        await second_tx.rollback()
+        await first.close()
+        await second.close()
+
+    async with factory.begin() as recovering:
+        first_result = await PendingStartupRecoveryService(recovering).recover_pending(
+            recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+        )
+    async with factory.begin() as repeated:
+        second_result = await PendingStartupRecoveryService(repeated).recover_pending(
+            recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+        )
+    assert first_result.selected == 1 and second_result.selected == 0
+
+    async with factory() as verifier:
+        persisted = await verifier.get(Schedule, schedule_id)
+        assert persisted is not None and persisted.version == 2
+        assert (
+            await verifier.scalar(
+                select(func.count(ScheduleRun.id)).where(
+                    ScheduleRun.schedule_id == schedule_id,
+                    ScheduleRun.status == "pending",
+                    ScheduleRun.scheduled_for > CUTOFF,
+                )
+            )
+            == 1
+        )
+        assert (
+            await verifier.scalar(
+                select(func.count(NotificationLog.id)).where(
+                    NotificationLog.schedule_id == schedule_id
+                )
+            )
+            == 1
+        )
+
+    async with factory.begin() as cleanup:
+        log_ids = select(NotificationLog.id).where(NotificationLog.schedule_id == schedule_id)
+        await cleanup.execute(delete(NotificationLog).where(NotificationLog.id.in_(log_ids)))
+        await cleanup.execute(delete(ScheduleRun).where(ScheduleRun.schedule_id == schedule_id))
+        await cleanup.execute(delete(Schedule).where(Schedule.id == schedule_id))

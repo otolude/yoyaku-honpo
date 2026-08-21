@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from discord_ai_reminder_bot.application.notification_events import NotificationEventService
@@ -21,7 +21,10 @@ from discord_ai_reminder_bot.domain.enums import (
     NotificationStatus,
     NotificationType,
 )
-from discord_ai_reminder_bot.domain.notification import global_notification_deduplication_key
+from discord_ai_reminder_bot.domain.notification import (
+    global_notification_deduplication_key,
+    notification_deduplication_key,
+)
 from discord_ai_reminder_bot.infrastructure.database.models import (
     NotificationAttempt,
     NotificationLog,
@@ -234,6 +237,209 @@ async def test_notification_lease_recovery(
         await cleanup(factory, [notification_id])
 
 
+async def _expired_notification(factory, *, attempt_number: int = 1):
+    row = pending(event_id=uuid.uuid7())
+    notification_id = await seed(factory, row)
+    worker_id = uuid.uuid7()
+    claim_time = NOW
+    for prior in range(1, attempt_number):
+        async with factory() as session, session.begin():
+            claimed = await NotificationLogRepository(session).claim_due(
+                now=claim_time,
+                worker_id=worker_id,
+                batch_size=1,
+                lease_timeout=timedelta(seconds=1),
+            )
+            assert len(claimed) == 1 and claimed[0].attempt.attempt_number == prior
+            await NotificationAttemptRepository(session).mark_failed(
+                attempt_id=claimed[0].attempt.id,
+                worker_id=worker_id,
+                now=claim_time + timedelta(microseconds=1),
+                error_kind="transient",
+                error_code="safe_transient",
+                error_summary="Safe transient failure",
+            )
+            await NotificationLogRepository(session).return_to_pending(
+                notification_id=notification_id,
+                worker_id=worker_id,
+                now=claim_time + timedelta(microseconds=1),
+                retry_at=claim_time + timedelta(minutes=1),
+                error_code="safe_transient",
+                error_summary="Notification will be retried",
+            )
+        claim_time += timedelta(minutes=10)
+    async with factory() as session, session.begin():
+        claimed = await NotificationLogRepository(session).claim_due(
+            now=claim_time,
+            worker_id=worker_id,
+            batch_size=1,
+            lease_timeout=timedelta(seconds=1),
+        )
+        assert len(claimed) == 1
+        return (
+            notification_id,
+            claimed[0].attempt.id,
+            worker_id,
+            claim_time + timedelta(seconds=2),
+        )
+
+
+@pytest.mark.parametrize(
+    ("attempt_number", "delay", "expected_status", "fallbacks"),
+    [
+        (1, timedelta(minutes=1), "pending", 0),
+        (2, timedelta(minutes=5), "pending", 0),
+        (3, None, "failed", 1),
+    ],
+)
+async def test_notification_recovery_attempt_boundaries_and_fallback_idempotency(
+    test_engine: AsyncEngine,
+    attempt_number: int,
+    delay: timedelta | None,
+    expected_status: str,
+    fallbacks: int,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    notification_id, attempt_id, _, recovered_at = await _expired_notification(
+        factory, attempt_number=attempt_number
+    )
+    try:
+        async with factory() as session, session.begin():
+            first = await NotificationRecoveryService(
+                session, operator_channel_id=400, operator_user_id=300
+            ).recover_expired(recovered_at=recovered_at, batch_size=20)
+        async with factory() as session, session.begin():
+            second = await NotificationRecoveryService(
+                session, operator_channel_id=400, operator_user_id=300
+            ).recover_expired(recovered_at=recovered_at, batch_size=20)
+        assert first.selected == 1 and second.selected == 0
+        assert first.fallbacks_created == fallbacks
+        async with factory() as session:
+            log = await session.get(NotificationLog, notification_id)
+            attempt = await session.get(NotificationAttempt, attempt_id)
+            assert log is not None and log.status == expected_status
+            assert attempt is not None and attempt.status == "failed"
+            assert log.next_attempt_at == (recovered_at + delay if delay is not None else None)
+            rows = list((await session.execute(select(NotificationLog))).scalars())
+            assert len(rows) == 1 + fallbacks
+            if fallbacks:
+                fallback = next(row for row in rows if row.id != notification_id)
+                assert fallback.recipient_type == "operator_dm"
+                assert fallback.status == "pending"
+            ids = [row.id for row in rows]
+    finally:
+        await cleanup(factory, ids if "ids" in locals() else [notification_id])
+
+
+@pytest.mark.parametrize("inconsistency", ["missing", "number", "worker", "claimed_at", "state"])
+async def test_notification_recovery_inconsistency_only_terminalizes_log(
+    test_engine: AsyncEngine, inconsistency: str
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    notification_id, attempt_id, _, recovered_at = await _expired_notification(factory)
+    original = None
+    async with factory() as session, session.begin():
+        log = await session.get(NotificationLog, notification_id)
+        attempt = await session.get(NotificationAttempt, attempt_id)
+        assert log is not None and attempt is not None
+        if inconsistency == "missing":
+            await session.delete(attempt)
+        elif inconsistency == "number":
+            attempt.attempt_number = 2
+        elif inconsistency == "worker":
+            attempt.claimed_by = uuid.uuid7()
+        elif inconsistency == "claimed_at":
+            attempt.claimed_at = NOW - timedelta(microseconds=1)
+        else:
+            attempt.status = "failed"
+            attempt.finished_at = NOW + timedelta(microseconds=1)
+            attempt.error_kind = "permanent"
+            attempt.error_code = "safe_failure"
+            attempt.error_summary = "Safe failure"
+        await session.flush()
+        if inconsistency != "missing":
+            original = (
+                attempt.attempt_number,
+                attempt.status,
+                attempt.claimed_by,
+                attempt.claimed_at,
+                attempt.finished_at,
+                attempt.error_kind,
+                attempt.error_code,
+                attempt.error_summary,
+            )
+    try:
+        async with factory() as session, session.begin():
+            result = await NotificationRecoveryService(
+                session, operator_channel_id=400, operator_user_id=300
+            ).recover_expired(recovered_at=recovered_at, batch_size=20)
+        assert result.selected == result.unknown == 1
+        assert result.fallbacks_created == 0
+        async with factory() as session:
+            log = await session.get(NotificationLog, notification_id)
+            attempt = await session.get(NotificationAttempt, attempt_id)
+            assert log is not None and log.status == "unknown" and log.next_attempt_at is None
+            assert await session.scalar(select(func.count(NotificationLog.id))) == 1
+            if original is None:
+                assert attempt is None
+            else:
+                assert attempt is not None
+                assert (
+                    attempt.attempt_number,
+                    attempt.status,
+                    attempt.claimed_by,
+                    attempt.claimed_at,
+                    attempt.finished_at,
+                    attempt.error_kind,
+                    attempt.error_code,
+                    attempt.error_summary,
+                ) == original
+    finally:
+        await cleanup(factory, [notification_id])
+
+
+async def test_notification_recovery_skip_locked_changes_are_invisible_and_rollback(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    first_id, _, _, recovered_at = await _expired_notification(factory)
+    second_id, _, _, _ = await _expired_notification(factory)
+    first, second = factory(), factory()
+    first_tx, second_tx = await first.begin(), await second.begin()
+    try:
+        first_result = await NotificationRecoveryService(
+            first, operator_channel_id=400, operator_user_id=300
+        ).recover_expired(recovered_at=recovered_at, batch_size=1)
+        second_result = await NotificationRecoveryService(
+            second, operator_channel_id=400, operator_user_id=300
+        ).recover_expired(recovered_at=recovered_at, batch_size=1)
+        assert first_result.selected == second_result.selected == 1
+        async with factory() as observer:
+            observed = list(
+                (
+                    await observer.execute(
+                        select(NotificationLog).where(NotificationLog.id.in_([first_id, second_id]))
+                    )
+                ).scalars()
+            )
+            assert all(row.status == "processing" for row in observed)
+    finally:
+        await first_tx.rollback()
+        await second_tx.rollback()
+        await first.close()
+        await second.close()
+    async with factory() as verifier:
+        rows = list(
+            (
+                await verifier.execute(
+                    select(NotificationLog).where(NotificationLog.id.in_([first_id, second_id]))
+                )
+            ).scalars()
+        )
+        assert all(row.status == "processing" for row in rows)
+    await cleanup(factory, [first_id, second_id])
+
+
 async def _seed_business_event(
     factory,
     *,
@@ -289,6 +495,154 @@ async def _cleanup_business(factory, schedule_id: int) -> None:
         )
         await session.execute(delete(ScheduleRun).where(ScheduleRun.schedule_id == schedule_id))
         await session.execute(delete(Schedule).where(Schedule.id == schedule_id))
+
+
+async def _seed_due_draft_notification(factory) -> tuple[int, int, int]:
+    run_at = NOW + timedelta(hours=25)
+    async with factory() as session, session.begin():
+        schedule = Schedule(
+            public_id=uuid.uuid7(),
+            guild_id=100,
+            channel_id=200,
+            creator_user_id=300,
+            schedule_type="daily",
+            status="draft",
+            content=None,
+            next_run_at=run_at,
+            local_time=time(12, 0),
+            version=1,
+        )
+        session.add(schedule)
+        await session.flush()
+        run = ScheduleRun(
+            schedule_id=schedule.id,
+            scheduled_for=run_at,
+            status="pending",
+            attempt_count=0,
+            next_attempt_at=run_at,
+        )
+        session.add(run)
+        await session.flush()
+        log = NotificationLog(
+            schedule_id=schedule.id,
+            schedule_run_id=run.id,
+            notification_type="draft_24h",
+            recipient_type="creator_dm",
+            recipient_id=schedule.creator_user_id,
+            status="pending",
+            deduplication_key=notification_deduplication_key(
+                event_kind="draft_reminder",
+                schedule_public_id=schedule.public_id,
+                scheduled_for=run.scheduled_for,
+                notification_type=NotificationType.DRAFT_24H,
+                recipient_type=NotificationRecipientType.CREATOR_DM,
+            ),
+            scheduled_at=NOW + timedelta(hours=1),
+            next_attempt_at=NOW + timedelta(hours=1),
+            attempt_count=0,
+        )
+        session.add(log)
+        await session.flush()
+        return schedule.id, run.id, log.id
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["active", "paused", "deleted", "next_run", "run", "type", "scheduled_at"],
+)
+async def test_due_draft_notification_cancels_for_each_stale_change(
+    test_engine: AsyncEngine, change: str
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    schedule_id, run_id, log_id = await _seed_due_draft_notification(factory)
+    async with factory() as session, session.begin():
+        schedule = await session.get(Schedule, schedule_id)
+        run = await session.get(ScheduleRun, run_id)
+        log = await session.get(NotificationLog, log_id)
+        assert schedule is not None and run is not None and log is not None
+        if change == "active":
+            schedule.status, schedule.content = "active", "safe body"
+        elif change == "paused":
+            schedule.status, schedule.next_run_at = "paused", None
+        elif change == "deleted":
+            schedule.status, schedule.next_run_at = "deleted", None
+            schedule.deleted_at = schedule.terminal_at = NOW + timedelta(hours=2)
+        elif change == "next_run":
+            schedule.next_run_at = run.scheduled_for + timedelta(days=1)
+        elif change == "run":
+            other = ScheduleRun(
+                schedule_id=schedule.id,
+                scheduled_for=run.scheduled_for + timedelta(days=1),
+                status="pending",
+                attempt_count=0,
+                next_attempt_at=run.scheduled_for + timedelta(days=1),
+            )
+            session.add(other)
+            await session.flush()
+            log.schedule_run_id = other.id
+        elif change == "type":
+            log.notification_type = "draft_1h"
+        else:
+            log.scheduled_at += timedelta(minutes=30)
+            log.next_attempt_at = log.scheduled_at
+
+    gateway = FakeGateway()
+    try:
+        first = await worker(
+            factory, gateway, clock=FixedClock(NOW + timedelta(hours=2))
+        ).poll_once()
+        second = await worker(
+            factory, gateway, clock=FixedClock(NOW + timedelta(hours=2))
+        ).poll_once()
+        assert first.cancelled == 1 and second.claimed == 0
+        assert gateway.calls == 0
+        async with factory() as session:
+            log = await session.get(NotificationLog, log_id)
+            assert log is not None and log.status == "cancelled"
+            assert (
+                await session.scalar(
+                    select(func.count(NotificationLog.id)).where(
+                        NotificationLog.schedule_id == schedule_id
+                    )
+                )
+                == 1
+            )
+    finally:
+        await _cleanup_business(factory, schedule_id)
+
+
+async def test_processing_owned_and_terminal_notifications_are_not_changed_by_other_worker(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    processing_id = await seed(factory, pending(event_id=uuid.uuid7()))
+    terminal_id = await seed(factory, pending(event_id=uuid.uuid7()))
+    owner = uuid.uuid7()
+    async with factory() as session, session.begin():
+        claimed = await NotificationLogRepository(session).claim_due(
+            now=NOW, worker_id=owner, batch_size=1, lease_timeout=timedelta(minutes=5)
+        )
+        assert claimed[0].notification.id == processing_id
+        terminal = await session.get(NotificationLog, terminal_id)
+        assert terminal is not None
+        await NotificationLogRepository(session).cancel(
+            notification_id=terminal.id,
+            now=NOW,
+            error_code="stale",
+            error_summary="Notification is stale",
+        )
+    gateway = FakeGateway()
+    try:
+        result = await worker(factory, gateway).poll_once()
+        assert result.claimed == 0 and gateway.calls == 0
+        async with factory() as session:
+            processing = await session.get(NotificationLog, processing_id)
+            terminal = await session.get(NotificationLog, terminal_id)
+            assert processing is not None and processing.status == "processing"
+            assert processing.claimed_by == owner
+            assert terminal is not None and terminal.status == "cancelled"
+    finally:
+        await cleanup(factory, [processing_id, terminal_id])
 
 
 @pytest.mark.parametrize(

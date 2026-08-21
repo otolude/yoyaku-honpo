@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.delivery import RESULT_UNKNOWN
+from discord_ai_reminder_bot.application.notification_events import NotificationEventService
 from discord_ai_reminder_bot.application.recovery import (
     BEFORE_SEND_CODE,
     UNKNOWN_CODE,
@@ -327,6 +328,74 @@ async def test_finalization_failure_rolls_back_run_attempt_and_schedule(
         assert await verifier.scalar(select(func.count(NotificationLog.id))) == 0
 
     await _cleanup(test_engine, [schedule_id], [run_id])
+
+
+@pytest.mark.parametrize("end_date", [None, date(2026, 8, 17)])
+async def test_event_failure_rolls_back_complete_recurring_finalization(
+    test_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, end_date: date | None
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with factory.begin() as seed:
+        run, attempt, _ = await add_expired(
+            seed, attempt_status="sending", schedule_type="daily", end_date=end_date
+        )
+        assert attempt is not None
+        schedule_id, run_id, attempt_id = run.schedule_id, run.id, attempt.id
+
+    async def fail_event(*args, **kwargs):
+        raise RuntimeError("forced safe outbox failure")
+
+    monkeypatch.setattr(NotificationEventService, "add_run_event", fail_event)
+    with pytest.raises(RuntimeError, match="forced safe outbox failure"):
+        async with factory.begin() as recovering:
+            await recovery(recovering).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
+
+    async with factory() as verifier:
+        schedule = await verifier.get(Schedule, schedule_id)
+        persisted_run = await verifier.get(ScheduleRun, run_id)
+        persisted_attempt = await verifier.get(DeliveryAttempt, attempt_id)
+        assert schedule is not None and schedule.status == "active" and schedule.version == 1
+        assert persisted_run is not None and persisted_run.status == "processing"
+        assert schedule.next_run_at == persisted_run.scheduled_for
+        assert persisted_attempt is not None and persisted_attempt.status == "sending"
+        assert (
+            await verifier.scalar(
+                select(func.count(ScheduleRun.id)).where(ScheduleRun.schedule_id == schedule_id)
+            )
+            == 1
+        )
+        assert (
+            await verifier.scalar(
+                select(func.count(OperationLog.id)).where(OperationLog.schedule_id == schedule_id)
+            )
+            == 0
+        )
+        assert (
+            await verifier.scalar(
+                select(func.count(NotificationLog.id)).where(
+                    NotificationLog.schedule_id == schedule_id
+                )
+            )
+            == 0
+        )
+
+    await _cleanup(test_engine, [schedule_id], [run_id])
+
+
+async def test_inconsistent_recovery_is_idempotent_for_terminal_run_and_outbox(
+    db_session: AsyncSession,
+) -> None:
+    run, _attempt, _ = await add_expired(db_session, attempt_status=None)
+    first = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
+    second = await recovery(db_session).recover_expired(recovered_at=RECOVERED_AT, batch_size=20)
+    assert len(first) == 1 and second == []
+    assert run.status == "failed"
+    assert (
+        await db_session.scalar(
+            select(func.count(NotificationLog.id)).where(NotificationLog.schedule_run_id == run.id)
+        )
+        == 1
+    )
 
 
 async def test_future_lease_is_excluded_and_batch_order_is_stable(

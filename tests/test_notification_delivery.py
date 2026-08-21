@@ -178,6 +178,38 @@ def test_presenter_uses_safe_fixed_business_reason(
         field.name + field.value for field in rendered.embed.fields
     )
     assert "private post body" not in displayed
+
+
+def test_recovery_presenter_excludes_internal_and_secret_diagnostics() -> None:
+    public_id = uuid.uuid7()
+    forbidden = (
+        "private recovery body",
+        "internal_id=987654321",
+        "worker_id=018f0000-0000-7000-8000-000000000001",
+        "RuntimeError: private failure",
+        "Traceback (most recent call last)",
+        "private-bot-token",
+        "postgresql+psycopg://private",
+        '{"message":"private Discord response"}',
+    )
+    rendered = build_notification_message(
+        NotificationPresentation(
+            notification_type=NotificationType.RECOVERY,
+            recipient_type=NotificationRecipientType.OPERATOR_CHANNEL,
+            recipient_id=400,
+            schedule_public_id=public_id,
+            scheduled_for=NOW,
+            channel_id=500,
+            current_status="failed",
+            result_code="startup_inconsistent_pending",
+        )
+    )
+    assert rendered.content is None and rendered.embed is not None
+    displayed = rendered.embed.description + "".join(
+        field.name + field.value for field in rendered.embed.fields
+    )
+    assert all(value not in displayed for value in forbidden)
+    assert "987654321" not in displayed
     assert "postgresql" not in displayed
 
 
