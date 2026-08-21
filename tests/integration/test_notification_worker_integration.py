@@ -237,6 +237,106 @@ async def test_notification_lease_recovery(
         await cleanup(factory, [notification_id])
 
 
+async def test_unknown_result_is_terminal_without_reclaim_fallback_or_secret_leak(
+    test_engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    notification_id = await seed(factory, pending(event_id=uuid.uuid7()))
+    secrets = (
+        "private post body",
+        "bot-token-secret",
+        "postgresql+psycopg://secret",
+        "complete exception details",
+        "Traceback (most recent call last)",
+        "discord response body",
+    )
+
+    class UnknownGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages = []
+
+        async def send(self, message):
+            self.calls += 1
+            self.messages.append(message)
+            raise RuntimeError(" | ".join(secrets))
+
+    gateway = UnknownGateway()
+    notification_worker = worker(factory, gateway)
+    try:
+        with caplog.at_level(logging.ERROR, logger="test.notification.worker"):
+            first = await notification_worker.poll_once()
+            second = await notification_worker.poll_once()
+        assert first.claimed == first.unknown == 1
+        assert first.fallbacks_created == 0
+        assert second.claimed == second.fallbacks_created == 0
+        assert gateway.calls == 1
+        assert len(gateway.messages) == 1
+        rendered_message = repr(gateway.messages[0])
+        rendered_log = caplog.text
+        assert all(secret not in rendered_message for secret in secrets)
+        assert all(secret not in rendered_log for secret in secrets)
+        assert str(notification_worker._worker_id) not in rendered_message
+        async with factory() as session:
+            log = await session.get(NotificationLog, notification_id)
+            attempts = list(
+                (
+                    await session.execute(
+                        select(NotificationAttempt).where(
+                            NotificationAttempt.notification_log_id == notification_id
+                        )
+                    )
+                ).scalars()
+            )
+            assert log is not None and log.status == "unknown" and log.next_attempt_at is None
+            assert len(attempts) == 1 and attempts[0].status == "unknown"
+            assert await session.scalar(select(func.count(NotificationLog.id))) == 1
+    finally:
+        await cleanup(factory, [notification_id])
+
+
+async def test_recovered_sending_unknown_is_not_reclaimed_or_fallbacked(
+    test_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    notification_id = await seed(factory, pending(event_id=uuid.uuid7()))
+    owner = uuid.uuid7()
+    async with factory() as session, session.begin():
+        claimed = await NotificationLogRepository(session).claim_due(
+            now=NOW,
+            worker_id=owner,
+            batch_size=1,
+            lease_timeout=timedelta(seconds=1),
+        )
+        attempt_id = claimed[0].attempt.id
+        await NotificationAttemptRepository(session).mark_sending(
+            attempt_id=attempt_id,
+            worker_id=owner,
+            now=NOW + timedelta(microseconds=1),
+        )
+    gateway = FakeGateway()
+    try:
+        async with factory() as session, session.begin():
+            recovered = await NotificationRecoveryService(
+                session, operator_channel_id=400, operator_user_id=300
+            ).recover_expired(recovered_at=NOW + timedelta(seconds=2), batch_size=20)
+        after_recovery = await worker(
+            factory, gateway, clock=FixedClock(NOW + timedelta(seconds=3))
+        ).poll_once()
+        assert recovered.selected == recovered.unknown == 1
+        assert recovered.fallbacks_created == 0
+        assert after_recovery.claimed == after_recovery.fallbacks_created == 0
+        assert gateway.calls == 0
+        async with factory() as session:
+            log = await session.get(NotificationLog, notification_id)
+            attempt = await session.get(NotificationAttempt, attempt_id)
+            assert log is not None and log.status == "unknown" and log.next_attempt_at is None
+            assert attempt is not None and attempt.status == "unknown"
+            assert await session.scalar(select(func.count(NotificationLog.id))) == 1
+    finally:
+        await cleanup(factory, [notification_id])
+
+
 async def _expired_notification(factory, *, attempt_number: int = 1):
     row = pending(event_id=uuid.uuid7())
     notification_id = await seed(factory, row)

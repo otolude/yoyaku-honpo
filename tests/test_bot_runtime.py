@@ -190,6 +190,55 @@ async def test_on_ready_recovers_once_and_starts_one_loop(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_concurrent_and_repeated_on_ready_share_one_startup_and_three_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def processing(**kwargs):
+        entered.set()
+        await release.wait()
+        return 0
+
+    bot.recover_expired_processing = AsyncMock(side_effect=processing)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        return_value=PendingRecoverySummary()
+    )
+    bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=NotificationRecoverySummary()
+    )
+    bot.bootstrap_draft_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=DraftNotificationBootstrapSummary()
+    )
+    starts = [MagicMock(), MagicMock(), MagicMock()]
+    for loop, start in zip(
+        (bot.polling_loop, bot.notification_polling_loop, bot.maintenance_loop),
+        starts,
+        strict=True,
+    ):
+        monkeypatch.setattr(loop, "start", start)
+        monkeypatch.setattr(loop, "is_running", lambda: False)
+
+    ready_tasks = [asyncio.create_task(bot.on_ready()) for _ in range(3)]
+    await entered.wait()
+    startup_task = bot._startup_task
+    assert startup_task is not None and not startup_task.done()
+    assert sum(task is startup_task for task in asyncio.all_tasks()) == 1
+    release.set()
+    await asyncio.gather(*ready_tasks)
+    await bot.on_ready()
+
+    bot.recover_expired_processing.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.recover_overdue_pending.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.recover_expired_notifications.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.bootstrap_draft_notifications.assert_awaited_once()  # type: ignore[attr-defined]
+    assert bot._startup_task is startup_task and startup_task.done()
+    assert all(start.call_count == 1 for start in starts)
+
+
+@pytest.mark.asyncio
 async def test_startup_recoveries_share_one_fixed_cutoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,6 +463,74 @@ async def test_maintenance_cycle_propagates_cancellation() -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await bot.maintenance_loop()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_keeps_all_loops_available_for_later_cycles(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    bot = make_bot()
+    unsafe = (
+        DATABASE_URL,
+        "complete exception details",
+        "Traceback (most recent call last)",
+    )
+    bot.cleanup_service.run_cycle = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[RuntimeError(" | ".join(unsafe)), CleanupResult(cleanup_cutoff=NOW)]
+    )
+    bot.polling_worker.poll_once = AsyncMock(return_value=PollResult(succeeded=1))  # type: ignore[method-assign]
+    bot.notification_worker.poll_once = AsyncMock()  # type: ignore[method-assign]
+    stops = [MagicMock(), MagicMock(), MagicMock()]
+    cancels = [MagicMock(), MagicMock(), MagicMock()]
+    for loop, stop, cancel in zip(
+        (bot.polling_loop, bot.notification_polling_loop, bot.maintenance_loop),
+        stops,
+        cancels,
+        strict=True,
+    ):
+        monkeypatch.setattr(loop, "stop", stop)
+        monkeypatch.setattr(loop, "cancel", cancel)
+
+    with caplog.at_level(logging.ERROR):
+        await bot.maintenance_loop()
+        await bot.polling_loop()
+        await bot.notification_polling_loop()
+        await bot.maintenance_loop()
+
+    assert bot.cleanup_service.run_cycle.await_count == 2  # type: ignore[attr-defined]
+    bot.polling_worker.poll_once.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.notification_worker.poll_once.assert_awaited_once()  # type: ignore[attr-defined]
+    assert all(stop.call_count == 0 for stop in stops)
+    assert all(cancel.call_count == 0 for cancel in cancels)
+    assert caplog.messages.count("maintenance_cleanup_cycle_failed") == 1
+    assert all(value not in caplog.text for value in unsafe)
+
+
+@pytest.mark.asyncio
+async def test_ready_starts_scheduled_maintenance_without_running_cleanup_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    bot.recover_expired_processing = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        return_value=PendingRecoverySummary()
+    )
+    bot.bootstrap_draft_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=DraftNotificationBootstrapSummary()
+    )
+    monkeypatch.setattr(bot.polling_loop, "start", MagicMock())
+    monkeypatch.setattr(bot.polling_loop, "is_running", lambda: False)
+    monkeypatch.setattr(bot.notification_polling_loop, "start", MagicMock())
+    monkeypatch.setattr(bot.notification_polling_loop, "is_running", lambda: False)
+    maintenance_start = MagicMock()
+    monkeypatch.setattr(bot.maintenance_loop, "start", maintenance_start)
+    monkeypatch.setattr(bot.maintenance_loop, "is_running", lambda: False)
+    bot.cleanup_service.run_cycle = AsyncMock()  # type: ignore[method-assign]
+
+    await bot.on_ready()
+
+    maintenance_start.assert_called_once()
+    bot.cleanup_service.run_cycle.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 class Transaction(AbstractAsyncContextManager):
@@ -688,6 +805,35 @@ async def test_close_collects_waiting_startup_recovery_task(
 
     assert startup_task.done()
     assert startup_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_close_collects_all_three_loop_tasks_and_startup_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    loops = (bot.polling_loop, bot.notification_polling_loop, bot.maintenance_loop)
+    loop_tasks = [asyncio.create_task(asyncio.Event().wait()) for _ in loops]
+    startup_task = asyncio.create_task(asyncio.Event().wait())
+    bot._startup_task = startup_task
+    stops = [MagicMock() for _ in loops]
+    cancels = []
+    for loop, task, stop in zip(loops, loop_tasks, stops, strict=True):
+        cancel = MagicMock(side_effect=task.cancel)
+        cancels.append(cancel)
+        monkeypatch.setattr(loop, "stop", stop)
+        monkeypatch.setattr(loop, "cancel", cancel)
+        monkeypatch.setattr(loop, "get_task", lambda task=task: task)
+    monkeypatch.setattr(commands.Bot, "close", AsyncMock())
+    bot.post_commands.close_confirmation_views = AsyncMock()  # type: ignore[method-assign]
+
+    await bot.close()
+    await bot.close()
+
+    assert all(task.done() and task.cancelled() for task in loop_tasks)
+    assert startup_task.done() and startup_task.cancelled()
+    assert all(stop.call_count == 1 for stop in stops)
+    assert all(cancel.call_count == 1 for cancel in cancels)
 
 
 def test_formatter_suppresses_exception_details() -> None:

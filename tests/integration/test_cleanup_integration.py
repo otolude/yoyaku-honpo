@@ -465,3 +465,56 @@ async def test_schedule_limit_deletes_100_and_leaves_101st(test_engine: AsyncEng
             )
     finally:
         await _cleanup_seed(factory)
+
+
+async def test_cleanup_cycle_reads_clock_once_and_reuses_one_cutoff(
+    test_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    class CountingClock:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def now(self) -> datetime:
+            self.calls += 1
+            return NOW
+
+    clock = CountingClock()
+    observed_cutoffs: list[datetime] = []
+    original_schedule = CleanupRepository.lock_next_schedule
+    original_global = CleanupRepository.lock_next_global_notification
+    original_counts = CleanupRepository.count_due_schedules
+    original_global_counts = CleanupRepository.count_due_global_notifications
+
+    async def schedule(repository, *, retention_cutoff, excluded_ids=frozenset()):
+        observed_cutoffs.append(retention_cutoff)
+        return await original_schedule(
+            repository, retention_cutoff=retention_cutoff, excluded_ids=excluded_ids
+        )
+
+    async def global_notification(repository, *, retention_cutoff, excluded_ids=frozenset()):
+        observed_cutoffs.append(retention_cutoff)
+        return await original_global(
+            repository, retention_cutoff=retention_cutoff, excluded_ids=excluded_ids
+        )
+
+    async def schedule_counts(repository, *, retention_cutoff):
+        observed_cutoffs.append(retention_cutoff)
+        return await original_counts(repository, retention_cutoff=retention_cutoff)
+
+    async def global_counts(repository, *, retention_cutoff):
+        observed_cutoffs.append(retention_cutoff)
+        return await original_global_counts(repository, retention_cutoff=retention_cutoff)
+
+    monkeypatch.setattr(CleanupRepository, "lock_next_schedule", schedule)
+    monkeypatch.setattr(CleanupRepository, "lock_next_global_notification", global_notification)
+    monkeypatch.setattr(CleanupRepository, "count_due_schedules", schedule_counts)
+    monkeypatch.setattr(CleanupRepository, "count_due_global_notifications", global_counts)
+
+    result = await CleanupService(session_factory=factory, clock=clock).run_cycle()
+
+    assert clock.calls == 1
+    assert result.cleanup_cutoff == NOW
+    assert observed_cutoffs
+    assert set(observed_cutoffs) == {OLD}
