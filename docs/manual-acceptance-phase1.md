@@ -58,8 +58,10 @@
 | [x] startup delayed通知 | 遅延通知接続の確認 | 開発用Discord guild、開発DB、15分以内の単発予約 | Botを停止・再起動 | 運営者チャンネルへ「遅延した予約投稿を処理します」Embedを表示した。状態は処理中で、投稿先、元の予定日時、完全なUUIDv7、対応案内を表示し、投稿本文は含めない。通知後に実際の本文を1回だけ投稿した | 2026-08-21 | Oto | 実Discord上で目視確認 | テスト用予約は終了状態またはfailed状態で保持し、30日cleanup対象とする |
 | [x] operator channel失敗からoperator DM | fallback確認 | 開発用Discord guild、開発DB | 予約先への投稿とoperator channelへの通知を権限不足で失敗させる | operator DMへ失敗通知Embedが1件届いた。投稿本文を含めず、投稿先、状態、予定日時、予約ID、対応案内を表示した。重複通知なし | 2026-08-21 | Oto | 実DiscordおよびBotターミナルで目視確認 | `#bot-failure-test`と`#一般`のBot送信権限、開発用サーバーからのDM受信設定を復元し、Botの継続稼働を確認 |
 | [x] operator DM失敗からlog fallback | 最終fallback確認 | 開発用Discord guild、開発DB | 予約先への投稿とoperator channelへの通知を権限不足で失敗させ、operator DMをサーバーのDM設定で拒否する | Discordへの通知は届かず、Botターミナルに固定ERRORイベント`notification_log_route_terminal`を記録した。投稿本文、token、DATABASE_URL、Discordレスポンス本文、例外全文、tracebackなし。`internal_errors=0`で、fallback後も投稿loopと通知loopが継続し、予約状態はfailed | 2026-08-21 | Oto | 実DiscordおよびBotターミナルで目視確認 | `#bot-failure-test`と`#一般`のBot送信権限、開発用サーバーからのDM受信設定を復元し、Botの継続稼働を確認 |
+| [x] PostgreSQLバックアップ | dump手順の確認 | 開発用PostgreSQL、開発DB`discord_bot_dev`、Bot停止状態 | PostgreSQL公式`pg_dump`でリポジトリ外の一時ディレクトリへcustom形式dumpを取得し、サイズ、SHA-256、`pg_restore --list`を確認 | 44,754 bytesのdumpを作成し、SHA-256は`10d9f0cdff2172015addb0f4999a1cc598d2e11c4318f7721b45ec4182b65abc`。`pg_restore --list`で読取成功。開発DBは読み取りのみで、`.env`やパスワードを表示していない | 2026-08-21 | Oto | Codex CLIの検証結果 | 一時dump削除済み。開発用postgresはhealthy、postgres_data Volume維持 |
+| [x] 別DBへの復元 | 復元可能性の確認 | 開発用PostgreSQL、開発DB`discord_bot_dev`、新規の空DB`discord_bot_restore_verify_20260821`、Bot停止状態 | custom形式dumpを開発DBとは別の一時DBへ復元し、revision、主要6テーブル件数、構造を読み取り検証 | 復元成功。Alembic currentとrepository headは`8e5b2f1c4a90`でupgrade不要・未実施。件数はschedules 18/18、schedule_runs 23/23、delivery_attempts 11/11、operation_logs 22/22、notification_logs 14/14、notification_attempts 12/12。テーブル、列、UNIQUE、FK、インデックスが一致し、CHECK制約56件はcast表現を除く正規化後定義・制約名・属性で意味的に一致。notification_attemptsのFKはON DELETE RESTRICT、必要な部分インデックス4件、operation_logsのcompleted許可、NotificationLogの6状態、NotificationAttemptの5状態を確認。開発DBの事前・事後でrevision、件数、構造ハッシュ、DML統計が一致し、開発DBへのDML・restoreおよびMigration操作なし | 2026-08-21 | Oto | Codex CLIの検証結果 | 一時復元DBと一時dumpを削除済み。開発用postgresはhealthy、postgres_data Volume維持 |
 
-確認済み: **41件**
+確認済み: **43件**
 
 ## 3. 未確認項目
 
@@ -80,11 +82,9 @@
 | [ ] JST 04:00 cleanup | maintenance時刻と削除の確認 | 専用テストDB、固定Clock相当の受入fixture | due終端データでcycleを検証 | 04:00境界、30日包含、FK順で削除 | — | — | — | テストDBだけ破棄 |
 | [ ] cleanup失敗中の投稿・通知継続 | loop分離の確認 | 専用テスト環境 | cleanup対象だけを失敗させる | incomplete/errorでも投稿・通知loop継続 | — | — | — | 障害fixture解除 |
 | [ ] 再接続時のloop二重起動防止 | runtime冪等性の確認 | 隔離Bot環境 | Discord再接続を安全に発生させる | Recoveryと3 loopが二重startしない | — | — | — | Bot正常停止 |
-| [ ] バックアップ | dump手順の確認 | 承認済み非本番DB、保存先 | Runbookどおりcustom dump、list、hash | 成功確認でき秘密を残さない | — | — | — | 制限付き別保管または安全に廃棄 |
-| [ ] 別DBへの復元 | 復元可能性の確認 | 承認済みバックアップ、別の空DB | Runbookどおりpg_restoreと読取検証 | revision、件数、CHECK/FKが整合 | — | — | — | 復元DBを運用判断後に隔離・廃棄 |
 | [ ] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | — | — | — | Bot停止、postgresだけ停止 |
 
-未確認: **16件**
+未確認: **14件**
 
 ## 4. 判定記録
 
