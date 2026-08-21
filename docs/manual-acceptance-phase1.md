@@ -69,8 +69,12 @@
 | [x] Notification Recovery | 通知lease復旧の確認 | 専用PostgreSQL、固定Clock、Fake Gateway | claimed/sending通知のlease切れと各不整合を模擬 | attempt 1は1分後、attempt 2は5分後にpending、attempt 3はfinal failedとなりfallbackを冪等に1件生成。sending期限切れはunknownで自動再送・fallbackなし。各不整合のunknown化、既存Attempt非変更、SKIP LOCKED、rollbackを確認 | 2026-08-22 | Oto | 専用PostgreSQL＋固定Clock＋Fake Gatewayによる隔離受入。追加テスト22 passed、0 failed、0 skipped。重点テスト109 passed、0 failed、0 skipped。PostgreSQL込み全pytest 815 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`b77145379ae8c380fc317ee5349da9f638cb0ee8`。安全性と再現性のため実DiscordでRecovery障害を意図的に発生させていない | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
 | [x] stale cancel | 不要通知抑止の確認 | 専用PostgreSQL、固定Clock、Fake Gateway、future draft通知 | active化、pause、delete、日時・Run・通知種別・通知時刻の不一致後にdue化 | 送信前にcancelledとなり、Fake Gateway呼び出し、fallback、再claimなし。terminal通知と別worker所有通知を保護 | 2026-08-22 | Oto | 専用PostgreSQL＋固定Clock＋Fake Gatewayによる隔離受入。追加テスト22 passed、0 failed、0 skipped。重点テスト109 passed、0 failed、0 skipped。PostgreSQL込み全pytest 815 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`b77145379ae8c380fc317ee5349da9f638cb0ee8`。安全性と再現性のため実DiscordでRecovery障害や不整合を意図的に発生させていない | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
 | [x] Recovery不整合通知 | 不整合通知の確認 | 専用PostgreSQL、固定Clock、Fake Gateway | Attempt不整合とoutbox生成失敗を安全にfixtureで作る | 状態確定とNotificationLog outbox生成の原子性、同じ論理イベントの通知重複なしを確認。Presenterは固定された安全な内容だけを生成し、投稿本文、内部DB ID、worker ID、例外全文、traceback、token、DATABASE_URL、Discordレスポンス本文を含まない | 2026-08-22 | Oto | 専用PostgreSQL＋固定Clock＋Fake Gatewayによる隔離受入。追加テスト22 passed、0 failed、0 skipped。重点テスト109 passed、0 failed、0 skipped。PostgreSQL込み全pytest 815 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`b77145379ae8c380fc317ee5349da9f638cb0ee8`。安全性と再現性のため実DiscordでRecovery障害や不整合を意図的に発生させていない | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
+| [x] 通知unknown | 通知二重送信防止の確認 | 固定Clock、Fake Gateway、専用PostgreSQL | Notification Gatewayの送信結果不明とsending lease期限切れを模擬 | NotificationLogとNotificationAttemptをunknownへ終端化し、`next_attempt_at`はNULL。次のpoll cycleとlease Recovery後も再claim・再送なし。Fake Gateway呼び出し1回、fallback 0件。通知とログに秘密情報、投稿本文、例外詳細を含めない | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで障害を意図的に発生させていない | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
+| [x] JST 04:00 cleanup | maintenance時刻と削除の確認 | 固定Clock、モック、専用PostgreSQL | loop設定と起動順を確認し、due終端データでcleanup cycleを直接実行 | timezone-awareなAsia/Tokyo 04:00設定。Bot起動直後はcleanup本体を実行せず、Recovery・Bootstrap成功後にmaintenance loopを開始。1サイクルのClock取得は1回で同一cutoffを全cleanup処理に使用。30日境界、対象外状態、in-flight保持、100件上限を確認 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間で04:00まで待機せず、実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853` | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
+| [x] cleanup失敗中の投稿・通知継続 | loop分離の確認 | 固定Clock、モック、隔離テスト環境 | cleanup cycleで通常例外とCancelledErrorを個別に発生させ、後続cycleを実行 | 通常例外を固定された安全なログへ変換し、例外全文、traceback、DATABASE_URLを含めない。後続cycleで投稿WorkerとNotification Workerを実行し、投稿・通知loopをstop／cancelせず、maintenance loopも次回実行可能。CancelledErrorは再送出 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで障害を意図的に発生させていない | 障害モックを解除し、postgres_testを停止・削除 |
+| [x] 再接続時のloop二重起動防止 | runtime冪等性の確認 | 固定Clock、モック、隔離Bot環境 | 同時および連続して`on_ready`を呼び、続けてcloseを2回実行 | Startup Recoveryは1回で、投稿、通知、maintenanceの各`loop.start()`も1回。重複Taskなし。close時に3 loopとstartup Taskを回収し、二重closeも安全 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで再接続競合を意図的に発生させていない | Bot接続なし。Taskとloopをテスト内で回収 |
 
-確認済み: **52件**
+確認済み: **56件**
 
 ## 3. 未確認項目
 
@@ -78,13 +82,9 @@
 
 | 状態・項目 | 目的 | 前提 | 操作 | 期待結果 | 実施日 | 実施者 | 証跡 | 後片付け |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [ ] 通知unknown | 通知二重送信防止の確認 | Fake Gateway、専用テストDB | 通知sending後の結果不明を模擬 | unknownで終端しretry・fallbackなし | — | — | — | テストDBだけ破棄 |
-| [ ] JST 04:00 cleanup | maintenance時刻と削除の確認 | 専用テストDB、固定Clock相当の受入fixture | due終端データでcycleを検証 | 04:00境界、30日包含、FK順で削除 | — | — | — | テストDBだけ破棄 |
-| [ ] cleanup失敗中の投稿・通知継続 | loop分離の確認 | 専用テスト環境 | cleanup対象だけを失敗させる | incomplete/errorでも投稿・通知loop継続 | — | — | — | 障害fixture解除 |
-| [ ] 再接続時のloop二重起動防止 | runtime冪等性の確認 | 隔離Bot環境 | Discord再接続を安全に発生させる | Recoveryと3 loopが二重startしない | — | — | — | Bot正常停止 |
 | [ ] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | — | — | — | Bot停止、postgresだけ停止 |
 
-未確認: **5件**
+未確認: **1件**
 
 ## 4. 判定記録
 
