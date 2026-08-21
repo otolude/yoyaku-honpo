@@ -73,8 +73,9 @@
 | [x] JST 04:00 cleanup | maintenance時刻と削除の確認 | 固定Clock、モック、専用PostgreSQL | loop設定と起動順を確認し、due終端データでcleanup cycleを直接実行 | timezone-awareなAsia/Tokyo 04:00設定。Bot起動直後はcleanup本体を実行せず、Recovery・Bootstrap成功後にmaintenance loopを開始。1サイクルのClock取得は1回で同一cutoffを全cleanup処理に使用。30日境界、対象外状態、in-flight保持、100件上限を確認 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間で04:00まで待機せず、実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853` | テストDBの6業務テーブルが0件であることを確認し、postgres_testを停止・削除 |
 | [x] cleanup失敗中の投稿・通知継続 | loop分離の確認 | 固定Clock、モック、隔離テスト環境 | cleanup cycleで通常例外とCancelledErrorを個別に発生させ、後続cycleを実行 | 通常例外を固定された安全なログへ変換し、例外全文、traceback、DATABASE_URLを含めない。後続cycleで投稿WorkerとNotification Workerを実行し、投稿・通知loopをstop／cancelせず、maintenance loopも次回実行可能。CancelledErrorは再送出 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで障害を意図的に発生させていない | 障害モックを解除し、postgres_testを停止・削除 |
 | [x] 再接続時のloop二重起動防止 | runtime冪等性の確認 | 固定Clock、モック、隔離Bot環境 | 同時および連続して`on_ready`を呼び、続けてcloseを2回実行 | Startup Recoveryは1回で、投稿、通知、maintenanceの各`loop.start()`も1回。重複Taskなし。close時に3 loopとstartup Taskを回収し、二重closeも安全 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで再接続競合を意図的に発生させていない | Bot接続なし。Taskとloopをテスト内で回収 |
+| [x] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | 2026-08-22 | Oto | 使い捨てworktree＋専用Compose project＋tmpfs PostgreSQLによる隔離受入。基準コミット`da4f52a1d72a1de48ad79d99cbceeef5b6540629`からdetached worktreeと新規CPython 3.14.4仮想環境を作成し、`.[dev]`導入とpip checkに成功。`.env`はpermission 600、Git ignore・非追跡で、非実在Discord設定とダミーtokenのみ使用。専用Compose project`discord_bot_phase1_setup_20260822`のPostgreSQL 18.4をhost port 56432、tmpfs、専用Volumeなしで起動し、health、upgrade head、current／heads `8e5b2f1c4a90 (head)`、Alembic checkを確認。downgrade、stamp、手動DDLなし。通常pytest 579 passed／243 expected skipped、PostgreSQL統合243 passed／0 failed／0 skipped、全pytest 822 passed／0 failed／0 skipped、Bot未接続境界32 passed、Ruff check・format check・git diff check成功、追跡差分なし、終了時6業務テーブル0件。`python -m discord_ai_reminder_bot`は実行せず、package import、設定読込、Engine／Session／Bot構築、tokenの`bot.run()`境界での展開、Schema revision確認まで実施し、実Discordへのログイン・同期・送信なし | 専用postgresをstop・rmし、専用network、detached worktree、一時override、一時ルートを削除。専用Volume作成なし、`down -v`未使用、port 56432解放、専用project資源残存なし。元リポジトリ、開発用postgres、開発DB、postgres_data Volumeは事前・事後で不変 |
 
-確認済み: **56件**
+確認済み: **57件**
 
 ## 3. 未確認項目
 
@@ -82,12 +83,10 @@
 
 | 状態・項目 | 目的 | 前提 | 操作 | 期待結果 | 実施日 | 実施者 | 証跡 | 後片付け |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [ ] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | — | — | — | Bot停止、postgresだけ停止 |
-
-未確認: **1件**
+未確認: **0件**
 
 ## 4. 判定記録
 
-- Phase 1手動受入判定: **未完了**
+- Phase 1手動受入判定: **完了**
 - 完了条件: 未確認項目を安全な適用環境で確認し、重大な差異が解消され、実施日・実施者・証跡・後片付けが記録されていること。
 - PostgreSQL統合テスト結果はこの手動表と分けて記録し、skipを成功扱いにしない。
