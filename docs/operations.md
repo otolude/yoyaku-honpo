@@ -8,6 +8,8 @@
 
 基本セットアップは[README](../README.md)、仕様は[要件書](requirements-beta.md)と[技術設計書](technical-design-beta.md)、実Discord確認は[手動受入チェックリスト](manual-acceptance-phase1.md)を参照する。
 
+`/post list` は全件数・総ページ数を表示し、前後ボタンと選択メニューで詳細を確認できる。Viewは120秒で消え、操作のたびに最新状態と権限を確認するため、操作間の作成・変更・削除により表示位置が変わることは正常である。終了日は `明日`、`8/30`、`2026-08-30` などを指定でき、成功表示では常に完全な `YYYY-MM-DD` となる。
+
 ## 2. コンポーネント構成
 
 - Discord Bot runtime: guild限定スラッシュコマンド、起動停止、3つのloopを管理する。

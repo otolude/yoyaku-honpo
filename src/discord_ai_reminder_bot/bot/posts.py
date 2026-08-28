@@ -37,6 +37,7 @@ from discord_ai_reminder_bot.application.schedule_pause import (
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
+    SchedulePage,
     ScheduleQueryService,
     parse_public_id,
 )
@@ -59,6 +60,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
+    schedule_select_option,
 )
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -66,6 +68,8 @@ from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.recurrence import TOKYO, require_utc
 from discord_ai_reminder_bot.domain.schedule_creation import (
     FullwidthCreateDateTimeError,
+    FullwidthEndDateError,
+    InvalidEndDateFormatError,
     InvalidScheduleContentError,
     ParsedOnceSchedule,
     parse_end_date,
@@ -116,12 +120,122 @@ RESUME_TIME_MESSAGE = (
     "指定時刻は現在から5分以上先にしてください。\n"
     "別の時刻を入力するか、「今すぐ投稿」「次回から再開」を選んでください。"
 )
+END_DATE_DESCRIPTION = "終了日｜例：明日、8/30、2026-08-30"
+END_DATE_INPUT_MESSAGE = "終了日を確認してください。例：明日、8/30、2026-08-30"
+FULLWIDTH_END_DATE_INPUT_MESSAGE = (
+    "終了日の数字と記号は半角で入力してください。例：8/30、2026-08-30"
+)
 
 
 @dataclass(frozen=True)
 class InteractionActor:
     user_id: int
     administrator: bool
+
+
+class ScheduleListSelect(discord.ui.Select):
+    def __init__(self, owner: ScheduleListView, page: SchedulePage) -> None:
+        options = [
+            schedule_select_option(
+                item,
+                channel_name=owner.commands._channel_name(
+                    owner.initial_interaction, item.channel_id
+                ),
+            )
+            for item in page.schedules
+        ]
+        super().__init__(
+            placeholder="詳細を表示する予約を選択",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="post_list_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.view.commands._show_list_selection(self.view, interaction, self.values[0])
+
+
+class ScheduleListView(discord.ui.View):
+    """One-user list navigation retaining no Session or transaction."""
+
+    def __init__(
+        self,
+        *,
+        commands: PostCommands,
+        interaction: discord.Interaction,
+        actor_user_id: int,
+        administrator: bool,
+        status: ScheduleStatus | None,
+        page: SchedulePage,
+    ) -> None:
+        super().__init__(timeout=120.0)
+        self.commands = commands
+        self.initial_interaction = interaction
+        self.actor_user_id = actor_user_id
+        self.administrator = administrator
+        self.status = status
+        self.page = page.page
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+        self.closed = False
+        self._render_controls(page)
+
+    def _render_controls(self, page: SchedulePage, *, detail: bool = False) -> None:
+        self.clear_items()
+        self.page = page.page
+        if detail:
+            button = discord.ui.Button(
+                label="一覧へ戻る",
+                style=discord.ButtonStyle.secondary,
+                custom_id="post_list_back",
+            )
+            button.callback = self._back
+            self.add_item(button)
+            return
+        previous = discord.ui.Button(
+            label="前へ",
+            style=discord.ButtonStyle.secondary,
+            disabled=page.page <= 1,
+            custom_id="post_list_previous",
+        )
+        previous.callback = self._previous
+        following = discord.ui.Button(
+            label="次へ",
+            style=discord.ButtonStyle.secondary,
+            disabled=page.page >= page.total_pages,
+            custom_id="post_list_next",
+        )
+        following.callback = self._next
+        self.add_item(previous)
+        self.add_item(following)
+        if page.schedules:
+            self.add_item(ScheduleListSelect(self, page))
+
+    async def _previous(self, interaction: discord.Interaction) -> None:
+        await self.commands._move_list_page(self, interaction, self.page - 1)
+
+    async def _next(self, interaction: discord.Interaction) -> None:
+        await self.commands._move_list_page(self, interaction, self.page + 1)
+
+    async def _back(self, interaction: discord.Interaction) -> None:
+        await self.commands._move_list_page(self, interaction, self.page)
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self.commands._configured_guild_id,
+            allowed_role_ids=self.commands._allowed_role_ids,
+        )
+        if actor is not None and actor.user_id == self.actor_user_id:
+            return True
+        await respond_ephemeral(
+            interaction, PERMISSION_DENIED_MESSAGE, logger=self.commands._logger
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        await self.commands._expire_list(self)
 
 
 class ScheduleDeletionConfirmView(discord.ui.View):
@@ -386,6 +500,7 @@ class PostCommands(app_commands.Group):
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
         self._create_views: set[OnceScheduleConfirmView] = set()
         self._resume_views: set[ResumeChoiceView] = set()
+        self._list_views: set[ScheduleListView] = set()
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
@@ -450,7 +565,7 @@ class PostCommands(app_commands.Group):
     @app_commands.describe(
         channel="投稿先のテキストチャンネルです",
         local_time="日本時間をHH:MMで指定します",
-        end_date="終了日をYYYY-MM-DDで指定します",
+        end_date=END_DATE_DESCRIPTION,
         content="投稿本文です。未指定の場合は下書きになります",
         allow_duplicate="重複候補があっても意図的に作成します",
     )
@@ -459,7 +574,7 @@ class PostCommands(app_commands.Group):
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         local_time: app_commands.Range[str, 5, 5],
-        end_date: app_commands.Range[str, 10, 10] | None = None,
+        end_date: app_commands.Range[str, 2, 10] | None = None,
         content: app_commands.Range[str, 1, 2_000] | None = None,
         allow_duplicate: bool = False,
     ) -> None:
@@ -479,7 +594,7 @@ class PostCommands(app_commands.Group):
         channel="投稿先のテキストチャンネルです",
         weekday="投稿する曜日です",
         local_time="日本時間をHH:MMで指定します",
-        end_date="終了日をYYYY-MM-DDで指定します",
+        end_date=END_DATE_DESCRIPTION,
         content="投稿本文です。未指定の場合は下書きになります",
         allow_duplicate="重複候補があっても意図的に作成します",
     )
@@ -495,7 +610,7 @@ class PostCommands(app_commands.Group):
         channel: discord.TextChannel,
         weekday: app_commands.Choice[int],
         local_time: app_commands.Range[str, 5, 5],
-        end_date: app_commands.Range[str, 10, 10] | None = None,
+        end_date: app_commands.Range[str, 2, 10] | None = None,
         content: app_commands.Range[str, 1, 2_000] | None = None,
         allow_duplicate: bool = False,
     ) -> None:
@@ -529,12 +644,13 @@ class PostCommands(app_commands.Group):
             return
         try:
             parsed_status = ScheduleStatus(status.value) if status is not None else None
-            schedules = await self._queries.list_schedules(
+            result = await self._queries.get_schedule_page(
                 guild_id=self._configured_guild_id,
                 requester_user_id=actor.user_id,
                 administrator=actor.administrator,
                 status=parsed_status,
                 page=page,
+                clamp=False,
             )
         except InvalidScheduleQueryError:
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
@@ -543,10 +659,28 @@ class PostCommands(app_commands.Group):
             self._logger.error("schedule_list_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        await self._respond_embed(
-            interaction,
-            lambda: schedule_list_embed(schedules, page=page, status_filter=parsed_status),
-        )
+        try:
+            embed = schedule_list_embed(
+                result.schedules,
+                page=result.page,
+                status_filter=parsed_status,
+                total_count=result.total_count,
+                total_pages=result.total_pages,
+            )
+            list_view = ScheduleListView(
+                commands=self,
+                interaction=interaction,
+                actor_user_id=actor.user_id,
+                administrator=actor.administrator,
+                status=parsed_status,
+                page=result,
+            )
+        except Exception:  # noqa: BLE001 - presentation failures remain sanitized
+            self._logger.error("schedule_presentation_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        if await respond_ephemeral(interaction, embed=embed, view=list_view, logger=self._logger):
+            self._list_views.add(list_view)
 
     @app_commands.command(name="show", description="予約の詳細を表示します")
     @app_commands.describe(public_id="予約IDを指定します")
@@ -579,7 +713,7 @@ class PostCommands(app_commands.Group):
         scheduled_at="単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
         local_time="毎日・毎週のみ｜投稿時刻（HH:MM）",
         weekday="毎週のみ｜投稿する曜日",
-        end_date="毎日・毎週のみ｜変更後の終了日（YYYY-MM-DD）",
+        end_date=END_DATE_DESCRIPTION,
         content="変更後の本文｜本文削除とは併用不可",
         clear_content="本文を削除｜新しい本文とは併用不可",
         clear_end_date="毎日・毎週のみ｜終了日を解除",
@@ -598,7 +732,7 @@ class PostCommands(app_commands.Group):
         scheduled_at: app_commands.Range[str, 16, 16] | None = None,
         local_time: app_commands.Range[str, 5, 5] | None = None,
         weekday: app_commands.Choice[int] | None = None,
-        end_date: app_commands.Range[str, 10, 10] | None = None,
+        end_date: app_commands.Range[str, 2, 10] | None = None,
         content: app_commands.Range[str, 1, 2_000] | None = None,
         clear_content: bool = False,
         clear_end_date: bool = False,
@@ -633,7 +767,19 @@ class PostCommands(app_commands.Group):
                 parse_once_scheduled_at(scheduled_at, now=now) if scheduled_at else None
             )
             parsed_time = parse_local_time(local_time) if local_time else None
-            parsed_end = parse_end_date(end_date) if end_date else None
+            parsed_end = parse_end_date(end_date, now=now) if end_date else None
+        except FullwidthEndDateError:
+            await respond_ephemeral(
+                interaction, FULLWIDTH_END_DATE_INPUT_MESSAGE, logger=self._logger
+            )
+            return
+        except InvalidEndDateFormatError:
+            await respond_ephemeral(interaction, END_DATE_INPUT_MESSAGE, logger=self._logger)
+            return
+        except InvalidScheduleQueryError, InvalidDateTimeError, ValueError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
             if content is not None:
                 content = validate_create_content(content)
         except (
@@ -1213,6 +1359,118 @@ class PostCommands(app_commands.Group):
         if views:
             await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
 
+    async def _move_list_page(
+        self, view: ScheduleListView, interaction: discord.Interaction, page: int
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                return
+            actor = authorized_actor(
+                interaction,
+                configured_guild_id=self._configured_guild_id,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            if actor is None or actor.user_id != view.actor_user_id:
+                await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+                return
+            try:
+                result = await self._queries.get_schedule_page(
+                    guild_id=self._configured_guild_id,
+                    requester_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    status=view.status,
+                    page=max(1, page),
+                    clamp=True,
+                )
+                embed = schedule_list_embed(
+                    result.schedules,
+                    page=result.page,
+                    status_filter=view.status,
+                    total_count=result.total_count,
+                    total_pages=result.total_pages,
+                )
+                view._render_controls(result)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - no private query/Discord details
+                self._logger.error("schedule_list_navigation_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+
+    async def _show_list_selection(
+        self, view: ScheduleListView, interaction: discord.Interaction, public_id: str
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                return
+            actor = authorized_actor(
+                interaction,
+                configured_guild_id=self._configured_guild_id,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            if actor is None or actor.user_id != view.actor_user_id:
+                await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+                return
+            try:
+                schedule = await self._queries.show_schedule(
+                    guild_id=self._configured_guild_id,
+                    requester_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    public_id=public_id,
+                )
+                if schedule is None:
+                    await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                    return
+                embed = schedule_detail_embed(schedule)
+                placeholder = SchedulePage((), view.page, 0)
+                view._render_controls(placeholder, detail=True)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except InvalidScheduleQueryError:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+            except Exception:  # noqa: BLE001 - no private query/Discord details
+                self._logger.error("schedule_list_selection_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+
+    async def _expire_list(self, view: ScheduleListView) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                return
+            view.finished = True
+            view.stop()
+            self._list_views.discard(view)
+            try:
+                await view.initial_interaction.edit_original_response(
+                    view=None, allowed_mentions=discord.AllowedMentions.none()
+                )
+            except Exception:  # noqa: BLE001 - Discord details remain private
+                self._logger.error("schedule_list_timeout_response_failed")
+
+    async def close_list_views(self) -> None:
+        views = tuple(self._list_views)
+        self._list_views.clear()
+        for view in views:
+            view.closed = True
+            view.finished = True
+            view.stop()
+        if views:
+            await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
+
+    def _channel_name(self, interaction: discord.Interaction, channel_id: int) -> str:
+        guild = interaction.guild
+        channel = guild.get_channel(channel_id) if guild is not None else None
+        name = getattr(channel, "name", None)
+        return name if isinstance(name, str) else str(channel_id)
+
     async def close_confirmation_views(self) -> None:
         create_views = tuple(self._create_views)
         self._create_views.clear()
@@ -1225,6 +1483,7 @@ class PostCommands(app_commands.Group):
             view.finished = True
             view.stop()
         await self.close_delete_views()
+        await self.close_list_views()
         if create_views:
             await asyncio.gather(*(view.wait() for view in create_views), return_exceptions=True)
         if resume_views:
@@ -1258,9 +1517,17 @@ class PostCommands(app_commands.Group):
         try:
             channel_id = self._validated_channel(interaction, channel)
             parsed_time: time = parse_local_time(local_time_value)
-            parsed_end_date: date | None = parse_end_date(end_date_value)
-            content = validate_create_content(content)
             now = self._clock.now()
+            parsed_end_date: date | None = parse_end_date(end_date_value, now=now)
+            content = validate_create_content(content)
+        except FullwidthEndDateError:
+            await respond_ephemeral(
+                interaction, FULLWIDTH_END_DATE_INPUT_MESSAGE, logger=self._logger
+            )
+            return
+        except InvalidEndDateFormatError:
+            await respond_ephemeral(interaction, END_DATE_INPUT_MESSAGE, logger=self._logger)
+            return
         except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
             return

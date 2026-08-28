@@ -129,9 +129,9 @@ docker compose --profile test rm -f postgres_test
 ## `/post`コマンド
 
 - `/post create`: 単発予約
-- `/post create-daily`: 毎日予約
+- `/post create-daily`: 毎日予約（終了日は `明日`、`8/30`、`2026-08-30` など）
 - `/post create-weekly`: 毎週予約
-- `/post list`: 操作可能な予約の一覧
+- `/post list`: 操作可能な予約の一覧（全件数、ページ移動、選択詳細）
 - `/post show`: 予約詳細
 - `/post edit`: 予約編集
 - `/post delete`: 確認View付き論理削除

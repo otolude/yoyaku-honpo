@@ -26,7 +26,7 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ResumePreview,
     ScheduleStateChangeUnavailable,
 )
-from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
+from discord_ai_reminder_bot.application.schedule_queries import SchedulePage, ScheduleView
 from discord_ai_reminder_bot.bot.posts import (
     CREATE_CANCELLED_MESSAGE,
     CREATE_DATETIME_DESCRIPTION,
@@ -37,6 +37,7 @@ from discord_ai_reminder_bot.bot.posts import (
     DELETE_EXPIRED_MESSAGE,
     DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
+    END_DATE_DESCRIPTION,
     FULLWIDTH_DATETIME_INPUT_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
@@ -392,6 +393,42 @@ def test_create_option_description_and_other_command_ranges_are_stable() -> None
     assert PostCommands.create_daily_command.parameters[1].name == "local_time"
     assert PostCommands.create_weekly_command.parameters[2].name == "local_time"
     assert PostCommands.edit_command.parameters[2].name == "scheduled_at"
+    for command in (
+        PostCommands.create_daily_command,
+        PostCommands.create_weekly_command,
+        PostCommands.edit_command,
+    ):
+        parameter = next(item for item in command.parameters if item.name == "end_date")
+        assert parameter.description == END_DATE_DESCRIPTION
+        assert len(parameter.description) <= 100
+        assert (parameter.min_value, parameter.max_value) == (2, 10)
+
+
+@pytest.mark.asyncio
+async def test_daily_short_end_date_is_normalized_before_database(monkeypatch) -> None:
+    group = commands(AsyncMock())
+    value = interaction(done=True)
+    channel = text_channel(value)
+    service = AsyncMock()
+    service.create.return_value = CreatedRecurringSchedule(
+        public_id=uuid.uuid7(),
+        channel_id=channel.id,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE,
+        content="body",
+        local_time=time(12, 5),
+        weekday=None,
+        end_date=date(2026, 8, 19),
+        next_run_at=NOW.replace(minute=5),
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.RecurringScheduleCreationService",
+        lambda unused: service,
+    )
+    await group.create_daily_command.callback(group, value, channel, "12:05", "明日", "body", False)
+    assert service.create.await_args.kwargs["end_date"] == date(2026, 8, 19)
+    embed = value.followup.send.await_args.kwargs["embed"]
+    assert "2026-08-19" in str(embed.to_dict())
 
 
 @pytest.mark.asyncio
@@ -487,16 +524,17 @@ def test_weekly_command_exposes_all_seven_japanese_weekday_choices() -> None:
 @pytest.mark.asyncio
 async def test_creator_list_responds_ephemerally_without_mentions() -> None:
     queries = AsyncMock()
-    queries.list_schedules.return_value = [view()]
+    queries.get_schedule_page.return_value = SchedulePage((view(),), 1, 1)
     group = commands(queries)
     value = interaction()
     await group.list_command.callback(group, value, None, 1)
-    queries.list_schedules.assert_awaited_once_with(
+    queries.get_schedule_page.assert_awaited_once_with(
         guild_id=GUILD_ID,
         requester_user_id=USER_ID,
         administrator=False,
         status=None,
         page=1,
+        clamp=False,
     )
     kwargs = value.response.send_message.await_args.kwargs
     assert kwargs["ephemeral"] is True
@@ -506,21 +544,105 @@ async def test_creator_list_responds_ephemerally_without_mentions() -> None:
 @pytest.mark.asyncio
 async def test_admin_list_passes_administrator_and_deleted_filter() -> None:
     queries = AsyncMock()
-    queries.list_schedules.return_value = []
+    queries.get_schedule_page.return_value = SchedulePage((), 2, 12)
     group = commands(queries)
     value = interaction(administrator=True)
     choice = app_commands.Choice(name="削除済み", value="deleted")
     await group.list_command.callback(group, value, choice, 2)
-    queries.list_schedules.assert_awaited_once_with(
+    queries.get_schedule_page.assert_awaited_once_with(
         guild_id=GUILD_ID,
         requester_user_id=USER_ID,
         administrator=True,
         status=ScheduleStatus.DELETED,
         page=2,
+        clamp=False,
     )
     embed = value.response.send_message.await_args.kwargs["embed"]
     assert embed.title == "予約一覧"
     assert "表示できる予約はありません" in embed.fields[0].value
+
+
+@pytest.mark.asyncio
+async def test_list_view_navigation_refreshes_and_clamps_latest_page() -> None:
+    queries = AsyncMock()
+    first = SchedulePage(tuple(view() for _ in range(10)), 2, 24)
+    refreshed = SchedulePage((view(),), 2, 11)
+    queries.get_schedule_page.side_effect = [first, refreshed]
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 2)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    assert [item.label for item in list_view.children[:2]] == ["前へ", "次へ"]
+    assert all(not item.disabled for item in list_view.children[:2])
+    assert len(list_view.children[2].options) == 10
+
+    clicked = interaction()
+    await group._move_list_page(list_view, clicked, 3)
+    assert queries.get_schedule_page.await_args.kwargs["clamp"] is True
+    assert list_view.page == 2
+    assert list_view.children[1].disabled is True
+    kwargs = clicked.response.edit_message.await_args.kwargs
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_list_selection_shows_detail_and_back_refreshes() -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((selected,), 1, 1),
+        SchedulePage((selected,), 1, 1),
+    ]
+    queries.show_schedule.return_value = selected
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+
+    clicked = interaction()
+    await group._show_list_selection(list_view, clicked, str(selected.public_id))
+    assert clicked.response.edit_message.await_args.kwargs["embed"].title == "予約詳細"
+    assert [item.label for item in list_view.children] == ["一覧へ戻る"]
+
+    back = interaction()
+    await group._move_list_page(list_view, back, 1)
+    assert back.response.edit_message.await_args.kwargs["embed"].title == "予約一覧"
+
+
+@pytest.mark.asyncio
+async def test_list_view_rejects_other_user_and_timeout_removes_view() -> None:
+    queries = AsyncMock()
+    queries.get_schedule_page.return_value = SchedulePage((view(),), 1, 1)
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+
+    other = interaction()
+    other.user.id = USER_ID + 1
+    assert await list_view.interaction_check(other) is False
+    assert other.response.send_message.await_args.kwargs["ephemeral"] is True
+
+    await group._expire_list(list_view)
+    assert list_view.finished is True
+    assert list_view not in group._list_views
+    kwargs = original.edit_original_response.await_args.kwargs
+    assert kwargs["view"] is None
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_close_collects_list_view_wait_task() -> None:
+    queries = AsyncMock()
+    queries.get_schedule_page.return_value = SchedulePage((), 1, 0)
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    await group.close_confirmation_views()
+    assert list_view.closed is True
+    assert list_view.finished is True
+    assert not group._list_views
 
 
 @pytest.mark.asyncio
@@ -632,7 +754,7 @@ def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> No
         "単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
         "毎日・毎週のみ｜投稿時刻（HH:MM）",
         "毎週のみ｜投稿する曜日",
-        "毎日・毎週のみ｜変更後の終了日（YYYY-MM-DD）",
+        END_DATE_DESCRIPTION,
         "変更後の本文｜本文削除とは併用不可",
         "本文を削除｜新しい本文とは併用不可",
         "毎日・毎週のみ｜終了日を解除",

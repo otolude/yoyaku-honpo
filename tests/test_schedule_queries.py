@@ -102,6 +102,40 @@ async def test_administrator_list_can_include_explicit_deleted_status(
     )
 
 
+@pytest.mark.asyncio
+async def test_page_counts_with_same_creator_filter_and_clamps(monkeypatch) -> None:
+    repository = AsyncMock()
+    repository.count_by_creator.return_value = 24
+    repository.list_by_creator.return_value = [schedule()]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_queries.ScheduleRepository",
+        lambda unused: repository,
+    )
+    result = await ScheduleQueryService(lambda: FakeSession()).get_schedule_page(  # type: ignore[arg-type]
+        guild_id=10,
+        requester_user_id=20,
+        administrator=False,
+        status=ScheduleStatus.PAUSED,
+        page=99,
+        clamp=True,
+    )
+    assert (result.page, result.total_count, result.total_pages) == (3, 24, 3)
+    repository.count_by_creator.assert_awaited_once_with(
+        guild_id=10,
+        creator_user_id=20,
+        status=ScheduleStatus.PAUSED,
+        exclude_deleted=False,
+    )
+    repository.list_by_creator.assert_awaited_once_with(
+        guild_id=10,
+        creator_user_id=20,
+        status=ScheduleStatus.PAUSED,
+        exclude_deleted=False,
+        limit=10,
+        offset=20,
+    )
+
+
 @pytest.mark.parametrize("page", [0, -1, MAX_PAGE_NUMBER + 1, True])
 @pytest.mark.asyncio
 async def test_invalid_page_is_rejected_before_query(page: int) -> None:

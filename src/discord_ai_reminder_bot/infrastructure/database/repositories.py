@@ -431,6 +431,39 @@ class ScheduleRepository:
             exclude_deleted=exclude_deleted,
         )
 
+    async def count_by_creator(
+        self,
+        *,
+        guild_id: int,
+        creator_user_id: int,
+        status: ScheduleStatus | None = None,
+        exclude_deleted: bool = False,
+    ) -> int:
+        statement = select(func.count(Schedule.id)).where(
+            Schedule.guild_id == guild_id,
+            Schedule.creator_user_id == creator_user_id,
+        )
+        return await self._count(statement, status=status, exclude_deleted=exclude_deleted)
+
+    async def count_by_guild(
+        self,
+        *,
+        guild_id: int,
+        status: ScheduleStatus | None = None,
+        exclude_deleted: bool = False,
+    ) -> int:
+        statement = select(func.count(Schedule.id)).where(Schedule.guild_id == guild_id)
+        return await self._count(statement, status=status, exclude_deleted=exclude_deleted)
+
+    async def _count(
+        self, statement, *, status: ScheduleStatus | None, exclude_deleted: bool
+    ) -> int:
+        if status is not None:
+            statement = statement.where(Schedule.status == status.value)
+        elif exclude_deleted:
+            statement = statement.where(Schedule.status != ScheduleStatus.DELETED.value)
+        return int((await self._session.scalar(statement)) or 0)
+
     async def _list(
         self,
         statement,

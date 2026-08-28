@@ -64,6 +64,8 @@ STATUS_COLOURS = {
     ScheduleStatus.DELETED: 0x7F8C8D,
 }
 WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
+SELECT_LABEL_LIMIT = 100
+SELECT_VALUE_LIMIT = 100
 
 
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
@@ -291,12 +293,21 @@ def _delete_reason_text(reason: str) -> str:
 
 
 def schedule_list_embed(
-    schedules: list[ScheduleView], *, page: int, status_filter: ScheduleStatus | None
+    schedules: list[ScheduleView] | tuple[ScheduleView, ...],
+    *,
+    page: int,
+    status_filter: ScheduleStatus | None,
+    total_count: int | None = None,
+    total_pages: int | None = None,
 ) -> discord.Embed:
     filter_label = STATUS_LABELS[status_filter] if status_filter is not None else "すべて"
     embed = discord.Embed(
         title="予約一覧",
-        description=f"ページ {page}｜表示：{filter_label}｜日本時間（JST）",
+        description=(
+            f"{page} / {total_pages}ページ｜全{total_count}件\n表示：{filter_label}｜日本時間（JST）"
+            if total_count is not None and total_pages is not None
+            else f"ページ {page}｜表示：{filter_label}｜日本時間（JST）"
+        ),
         colour=0x5865F2,
     )
     if not schedules:
@@ -342,6 +353,32 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     _add_detail_content(embed, schedule.content)
     _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
     return _validated(embed)
+
+
+def schedule_select_option(schedule: ScheduleView, *, channel_name: str) -> discord.SelectOption:
+    """Build a bounded option that never contains the body or an internal identifier."""
+    safe_channel = " ".join(channel_name.split()) or "不明なチャンネル"
+    timing = _select_timing(schedule)
+    label = (
+        f"{STATUS_ICONS[schedule.status]} {TYPE_LABELS[schedule.schedule_type]}｜"
+        f"{timing}｜#{safe_channel}"
+    )
+    if len(label) > SELECT_LABEL_LIMIT:
+        label = label[: SELECT_LABEL_LIMIT - 1] + "…"
+    value = str(schedule.public_id)
+    if not label or len(label) > SELECT_LABEL_LIMIT or len(value) > SELECT_VALUE_LIMIT:
+        raise ValueError("select option exceeds Discord limits")
+    return discord.SelectOption(label=label, value=value)
+
+
+def _select_timing(schedule: ScheduleView) -> str:
+    if schedule.schedule_type is ScheduleType.DAILY:
+        return local_time_text(schedule.local_time).removesuffix(" JST")
+    if schedule.schedule_type is ScheduleType.WEEKLY:
+        return f"{weekday_text(schedule.weekday)} {local_time_text(schedule.local_time).removesuffix(' JST')}"
+    if schedule.next_run_at is None:
+        return "日時なし"
+    return schedule.next_run_at.astimezone(_TOKYO).strftime("%-m/%-d %H:%M")
 
 
 def status_text(status: ScheduleStatus) -> str:

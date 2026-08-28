@@ -102,7 +102,7 @@ Bot層はSQLAlchemyモデルを直接操作せず、次回日時や状態遷移�
 
 `/post create`、`/post list`、`/post show` の成功表示はBot層の共通presenterで1つのDiscord Embedへ変換する。タイトル256文字、description 4,096文字、Field名256文字、Field値1,024文字、Field数25、Embed合計6,000文字を上限とし、利用者入力由来の本文はメンションとMarkdownを無効化する。予約IDは省略せずインラインコードで表示し、状態は日本語名とアイコンを色に加えて示す。
 
-予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、1ページ10件を既存の安定順序で取得する。View、ボタン、一時状態、永続的なページ状態は使用しない。範囲外のページ番号は入力境界で拒否し、空ページは正常な空結果として返す。各実行時点のDB状態を表示し、実行間の追加・更新・削除による表示位置の変化を許容してスナップショットは保証しない。状態未指定時は `deleted` を除外し、明示指定時だけ含める。
+予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、同一のguild・作成者/管理者・status条件でCOUNTと1ページ10件を取得する。不変DTOだけをBotへ返し、`next_run_at ASC NULLS LAST, id ASC`を維持する。本人限定・120秒の非永続Viewは前後ボタンと最大10件のUUIDv7選択肢を持ち、詳細は既存Presenterを再利用する。各操作は短い新規read Sessionと再認可で最新状態を取得し、Session、transaction、row lockを待機中に保持しない。`asyncio.Lock`と終了状態で多重操作を直列化し、timeoutとBot closeでViewを除去・停止してwaitを回収する。ボタン操作時だけ消滅した末尾ページを補正し、コマンドで明示した巨大pageの安全な空結果は維持する。状態未指定時は `deleted` を除外し、明示指定時だけ含める。
 
 ### 4.2 アプリケーション層
 
@@ -270,7 +270,7 @@ discord-ai-reminder-bot/
 
 単発作成の重複候補は、同一サーバー、投稿先、予定日時、本文（NULL同士を含む）、`once`、かつ状態が `draft`、`active`、`paused` の予約とする。`allow_duplicate=false` では保存せず、trueなら作成する。この確認は誤操作防止であり、同時実行を直列化するロックや一意制約は設けないため、完全な重複防止は保証しない。作成時はDB不要の検証後に、完全なJST日時を固定したephemeral確認Embedと緑色の予約・灰色のキャンセルボタンを持つ120秒の非永続Viewを表示する。本人だけが操作でき、操作はView単位のlockで直列化する。確認中はDB Session、トランザクション、行ロックを保持しない。予約ボタン時にguildと共通認可、TextChannelとBotのview/send権限、本文、固定済み日時の5分境界を最新状態で再検証し、その後だけ新しい1つのトランザクションでSchedule、最初のpending ScheduleRun、必要なdraft通知計画を保存する。年や日付はボタン時に再推論しない。キャンセル、timeout、再検証失敗、重複警告では保存せずViewを終了する。autocompleteとカレンダーUIは対象外とする。
 
-定期作成は既存の `/post create` を変更せず、毎日を `/post create-daily channel:<TextChannel> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>`、毎週を `/post create-weekly channel:<TextChannel> weekday:<月曜日0～日曜日6> local_time:<HH:MM> end_date:<任意、YYYY-MM-DD> content:<任意> allow_duplicate:<任意、既定false>` とする。開始日は保存しない。重複候補は同一サーバー、投稿先、種別、`local_time`、`weekday`、`end_date`、本文（各NULL同士を含む）、かつ状態が `draft`、`active`、`paused` の予約とする。作成者、`next_run_at`、内部IDは比較しない。単発と同様に警告のみとし、`allow_duplicate=true`で作成を許可するため、同時実行による完全な重複防止は保証しない。
+定期作成は既存の `/post create` を変更せず、毎日を `/post create-daily`、毎週を `/post create-weekly` とする。終了日Domain parserはClockのUTC aware datetimeをJSTへ変換し、`今日`、`明日`、`明後日`、`M/D`、`YYYY/M/D`、厳密な`YYYY-MM-DD`から純粋な`date`を返す。限定的な前後・Unicode空白正規化だけを行い、NFKCは使わない。半角違反と一般形式不正は型付き例外でBot案内を分け、DB開始前に拒否する。正規化したdateを既存Application検証と重複条件へ渡し、入力文字列は保存しない。
 
 定期作成でもDB不要の検証後にephemeralでdeferし、呼び出し側のorchestration boundaryが所有する1トランザクションでScheduleと最初のpending ScheduleRunを保存する。`Schedule.next_run_at`、`ScheduleRun.scheduled_for`、`ScheduleRun.next_attempt_at`には同じUTC日時を設定する。draftでは必要な事前通知NotificationLogも同じトランザクションで計画する。Repositoryと業務Application Serviceはcommitまたはrollbackせず、トランザクション中にDiscord APIを呼ばない。
 

@@ -101,6 +101,20 @@ async def test_real_postgres_list_boundaries_order_and_pagination(
         status=ScheduleStatus.DELETED,
         page=1,
     )
+    creator_page = await service.get_schedule_page(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=False,
+        status=None,
+        page=1,
+    )
+    admin_page = await service.get_schedule_page(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=True,
+        status=None,
+        page=1,
+    )
 
     assert [item.public_id for item in first] == [item.public_id for item in expected[:10]]
     assert [item.public_id for item in second] == [item.public_id for item in expected[10:]]
@@ -108,6 +122,9 @@ async def test_real_postgres_list_boundaries_order_and_pagination(
     assert all(item.public_id != other_guild.public_id for item in administrator)
     assert all(item.status is not ScheduleStatus.DELETED for item in administrator)
     assert [item.public_id for item in deleted_only] == [deleted.public_id]
+    assert (creator_page.total_count, creator_page.total_pages) == (12, 2)
+    assert admin_page.total_count == 13
+    assert all(item.public_id != other_guild.public_id for item in admin_page.schedules)
 
 
 async def test_real_postgres_empty_and_maximum_page_are_safe(db_session: AsyncSession) -> None:

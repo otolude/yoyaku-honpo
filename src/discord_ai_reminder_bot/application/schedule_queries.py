@@ -36,6 +36,17 @@ class ScheduleView:
     end_date: date | None
 
 
+@dataclass(frozen=True)
+class SchedulePage:
+    schedules: tuple[ScheduleView, ...]
+    page: int
+    total_count: int
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (self.total_count + SCHEDULES_PER_PAGE - 1) // SCHEDULES_PER_PAGE)
+
+
 def parse_public_id(value: str) -> uuid.UUID:
     """Accept only canonical UUIDv7 identifiers used by schedules."""
     try:
@@ -83,6 +94,47 @@ class ScheduleQueryService:
                     **arguments,
                 )
             return [_to_view(schedule) for schedule in schedules]
+
+    async def get_schedule_page(
+        self,
+        *,
+        guild_id: int,
+        requester_user_id: int,
+        administrator: bool,
+        status: ScheduleStatus | None,
+        page: int,
+        clamp: bool = False,
+    ) -> SchedulePage:
+        _validate_query_ids(guild_id=guild_id, requester_user_id=requester_user_id)
+        if isinstance(page, bool) or not 1 <= page <= MAX_PAGE_NUMBER:
+            raise InvalidScheduleQueryError("invalid page")
+        async with self._session_factory() as session:
+            repository = ScheduleRepository(session)
+            common = {"guild_id": guild_id, "status": status, "exclude_deleted": status is None}
+            if administrator:
+                total = await repository.count_by_guild(**common)
+            else:
+                total = await repository.count_by_creator(
+                    creator_user_id=requester_user_id, **common
+                )
+            total_pages = max(1, (total + SCHEDULES_PER_PAGE - 1) // SCHEDULES_PER_PAGE)
+            effective_page = min(page, total_pages) if clamp else page
+            list_args = {
+                **common,
+                "limit": SCHEDULES_PER_PAGE,
+                "offset": (effective_page - 1) * SCHEDULES_PER_PAGE,
+            }
+            if administrator:
+                schedules = await repository.list_by_guild(**list_args)
+            else:
+                schedules = await repository.list_by_creator(
+                    creator_user_id=requester_user_id, **list_args
+                )
+            return SchedulePage(
+                schedules=tuple(_to_view(item) for item in schedules),
+                page=effective_page,
+                total_count=total,
+            )
 
     async def show_schedule(
         self,

@@ -16,9 +16,51 @@ from discord_ai_reminder_bot.domain.recurrence import (
     next_daily_run,
     next_weekly_run,
 )
-from discord_ai_reminder_bot.domain.schedule_creation import parse_end_date, parse_local_time
+from discord_ai_reminder_bot.domain.schedule_creation import (
+    FullwidthEndDateError,
+    InvalidEndDateFormatError,
+    parse_end_date,
+    parse_local_time,
+)
 
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)  # Tuesday 12:00 JST
+END_NOW = datetime(2026, 8, 28, 15, 30, tzinfo=UTC)  # 2026-08-29 JST
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("今日", date(2026, 8, 29)),
+        ("明日", date(2026, 8, 30)),
+        ("明後日", date(2026, 8, 31)),
+        ("8/29", date(2026, 8, 29)),
+        ("8/28", date(2027, 8, 28)),
+        ("2026/8/30", date(2026, 8, 30)),
+        ("2026-08-30", date(2026, 8, 30)),
+        ("  明日  ", date(2026, 8, 30)),
+    ],
+)
+def test_end_date_accepts_supported_forms(value: str, expected: date) -> None:
+    assert parse_end_date(value, now=END_NOW) == expected
+
+
+def test_end_date_month_day_finds_next_leap_day() -> None:
+    assert parse_end_date("2/29", now=END_NOW) == date(2028, 2, 29)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2/30", "2027/2/29", "13/1", "0/10", "月末", "来週", "8月30日", "次の日曜日", "8/30\t"],
+)
+def test_end_date_rejects_invalid_or_ambiguous_input(value: str) -> None:
+    with pytest.raises(InvalidEndDateFormatError):
+        parse_end_date(value, now=END_NOW)
+
+
+@pytest.mark.parametrize("value", ["８/３０", "8／30", "2026－08－30"])
+def test_end_date_classifies_fullwidth_digits_and_separators(value: str) -> None:
+    with pytest.raises(FullwidthEndDateError):
+        parse_end_date(value, now=END_NOW)
 
 
 @pytest.mark.parametrize(

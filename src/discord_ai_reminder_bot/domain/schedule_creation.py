@@ -89,6 +89,14 @@ class FullwidthCreateDateTimeError(InvalidCreateDateTimeFormatError):
     """The create-only date/time contains a non-ASCII digit or separator."""
 
 
+class InvalidEndDateFormatError(InvalidDateTimeError):
+    """An end date does not match a supported, deliberately small input form."""
+
+
+class FullwidthEndDateError(InvalidEndDateFormatError):
+    """An end date contains a non-ASCII digit or separator."""
+
+
 class CreateDateTimeTooSoonError(InvalidDateTimeError):
     """The create-only date/time is less than five minutes in the future."""
 
@@ -219,14 +227,44 @@ def parse_local_time(value: str) -> time:
     return parsed.replace(second=0, microsecond=0)
 
 
-def parse_end_date(value: str | None) -> date | None:
-    """Parse an optional exact Tokyo-local calendar date."""
+def parse_end_date(value: str | None, *, now: datetime | None = None) -> date | None:
+    """Parse an optional end date relative to the operation date in Tokyo."""
     if value is None:
         return None
+    if not isinstance(value, str):
+        raise InvalidEndDateFormatError("invalid end date")
+    if any(character in _FULLWIDTH_DATETIME_CHARACTERS for character in value):
+        raise FullwidthEndDateError("non-ASCII end date character")
+    if "\t" in value:
+        raise InvalidEndDateFormatError("tab is not supported")
+    normalized = _normalize_create_input(value)
+    local_today = require_utc(now).astimezone(TOKYO).date() if now is not None else None
+    relative = {"今日": 0, "明日": 1, "明後日": 2}
+    if normalized in relative:
+        if local_today is None:
+            raise InvalidEndDateFormatError("relative end date requires now")
+        return local_today + timedelta(days=relative[normalized])
     try:
-        parsed = date.fromisoformat(value)
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", normalized):
+            return date.fromisoformat(normalized)
+        match = re.fullmatch(
+            r"(?:(?P<year>[0-9]{4})/)?(?P<month>[0-9]{1,2})/(?P<day>[0-9]{1,2})",
+            normalized,
+        )
+        if match is None:
+            raise InvalidEndDateFormatError("invalid end date")
+        month, day = int(match["month"]), int(match["day"])
+        if match["year"] is not None:
+            return date(int(match["year"]), month, day)
+        if local_today is None:
+            raise InvalidEndDateFormatError("short end date requires now")
+        for offset in range(YEAR_SEARCH_LIMIT + 1):
+            try:
+                candidate = date(local_today.year + offset, month, day)
+            except ValueError:
+                continue
+            if candidate >= local_today:
+                return candidate
     except (TypeError, ValueError) as error:
-        raise InvalidDateTimeError("invalid end date") from error
-    if parsed.strftime(DATE_FORMAT) != value:
-        raise InvalidDateTimeError("invalid end date")
-    return parsed
+        raise InvalidEndDateFormatError("invalid end date") from error
+    raise InvalidEndDateFormatError("no valid date within search limit")

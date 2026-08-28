@@ -30,6 +30,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
+    schedule_select_option,
 )
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 
@@ -220,6 +221,26 @@ def test_list_ten_items_stays_within_all_embed_limits_and_order() -> None:
     assert all("🗓️ 投稿予定：" in field.value for field in embed.fields)
     assert all("📝 本文：" in field.value for field in embed.fields)
     assert all("🆔 予約ID：" in field.value for field in embed.fields)
+
+
+def test_list_header_contains_total_count_and_total_pages() -> None:
+    embed = schedule_list_embed(
+        [view()],
+        page=1,
+        status_filter=ScheduleStatus.PAUSED,
+        total_count=12,
+        total_pages=2,
+    )
+    assert embed.description == "1 / 2ページ｜全12件\n表示：一時停止中｜日本時間（JST）"
+
+
+def test_select_option_is_bounded_and_contains_only_public_summary() -> None:
+    item = view(content="絶対に選択肢へ出さない本文")
+    option = schedule_select_option(item, channel_name="x" * 200)
+    assert len(option.label) <= 100
+    assert option.value == str(item.public_id)
+    assert len(option.value) == 36
+    assert "本文" not in option.label
 
 
 @pytest.mark.parametrize("schedule_type", [ScheduleType.DAILY, ScheduleType.WEEKLY])
