@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,9 +41,17 @@ from discord_ai_reminder_bot.infrastructure.database.repositories import (
     ScheduleRunRepository,
 )
 
+_TOKYO = ZoneInfo("Asia/Tokyo")
+
 
 class ScheduleStateChangeUnavailable(Exception):
     """The target is absent, unauthorized, conflicting, or ineligible."""
+
+
+class ResumeMode(StrEnum):
+    NEXT_REGULAR = "next_regular"
+    IMMEDIATE_ONCE = "immediate_once"
+    RESCHEDULED_ONCE = "rescheduled_once"
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,7 @@ class PausedSchedule:
     schedule_type: ScheduleType
     previous_status: ScheduleStatus
     pending_runs_skipped: int
+    held_run_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +75,18 @@ class ResumedSchedule:
     weekday: int | None
     end_date: date | None
     content: str | None
+    resume_mode: ResumeMode = ResumeMode.NEXT_REGULAR
+    missed_scheduled_for: datetime | None = None
+    replacement_scheduled_for: datetime | None = None
+    next_regular_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ResumePreview:
+    public_id: uuid.UUID
+    held_run_at: datetime | None
+    same_tokyo_date: bool
+    rescue_allowed: bool
 
 
 @dataclass(frozen=True)
@@ -109,8 +132,17 @@ class SchedulePauseService:
         except (ValueError, TypeError) as error:
             raise ScheduleStateChangeUnavailable from error
         self._validate_runs(schedule, runs)
-        pending_count = sum(run.status == RunStatus.PENDING.value for run in runs)
-        await self._runs.skip_pending_for_paused_schedule(runs=runs, paused_at=paused_at)
+        held = await self._held_candidate(schedule, runs, paused_at)
+        pending_count = sum(
+            run.status == RunStatus.PENDING.value and run is not held for run in runs
+        )
+        await self._runs.skip_pending_for_paused_schedule(
+            runs=runs, paused_at=paused_at, preserve_run_id=held.id if held else None
+        )
+        if held is not None:
+            await self._runs.cancel_pristine_draft_notifications_for_pause(
+                run_id=held.id, paused_at=paused_at
+            )
         schedule.status = ScheduleStatus.PAUSED.value
         schedule.next_run_at = None
         schedule.terminal_at = None
@@ -126,6 +158,7 @@ class SchedulePauseService:
             changes={
                 "status": {"from": "active", "to": "paused"},
                 "pending_runs_skipped": pending_count,
+                "held_scheduled_for": held.scheduled_for.isoformat() if held else None,
             },
         )
         return PausedSchedule(
@@ -134,6 +167,43 @@ class SchedulePauseService:
             schedule_type=ScheduleType(schedule.schedule_type),
             previous_status=ScheduleStatus.ACTIVE,
             pending_runs_skipped=pending_count,
+            held_run_at=held.scheduled_for if held else None,
+        )
+
+    async def preview_resume(
+        self,
+        *,
+        guild_id: int,
+        public_id: str,
+        actor_user_id: int,
+        administrator: bool,
+        resumed_at: datetime,
+    ) -> ResumePreview:
+        resumed_at = require_utc(resumed_at)
+        schedule = await self._find(guild_id=guild_id, public_id=public_id)
+        self._authorize(schedule, actor_user_id=actor_user_id, administrator=administrator)
+        try:
+            validate_resume_target(
+                schedule_type=ScheduleType(schedule.schedule_type),
+                status=ScheduleStatus(schedule.status),
+            )
+        except (ValueError, TypeError) as error:
+            raise ScheduleStateChangeUnavailable from error
+        runs = await self._runs.list_for_schedule_state_change(schedule_id=schedule.id, lock=False)
+        held = await self._paused_held_run(schedule, runs)
+        same_day = bool(
+            held
+            and held.scheduled_for.astimezone(_TOKYO).date() == resumed_at.astimezone(_TOKYO).date()
+        )
+        rescue = bool(
+            same_day
+            and (
+                schedule.end_date is None
+                or resumed_at.astimezone(_TOKYO).date() <= schedule.end_date
+            )
+        )
+        return ResumePreview(
+            schedule.public_id, held.scheduled_for if held else None, same_day, rescue
         )
 
     async def resume(
@@ -145,6 +215,8 @@ class SchedulePauseService:
         administrator: bool,
         resumed_at: datetime,
         configured_guild_id: int | None = None,
+        mode: ResumeMode = ResumeMode.NEXT_REGULAR,
+        replacement_at: datetime | None = None,
     ) -> ResumedSchedule:
         resumed_at = require_utc(resumed_at)
         snapshot = _snapshot(await self._find(guild_id=guild_id, public_id=public_id))
@@ -162,21 +234,64 @@ class SchedulePauseService:
         except (ValueError, TypeError) as error:
             raise ScheduleStateChangeUnavailable from error
         self._validate_runs(schedule, runs)
+        held = await self._paused_held_run(schedule, runs)
         if schedule.local_time is None:
             raise ScheduleStateChangeUnavailable
-        boundary = latest_scheduled_for(
-            scheduled_for=[run.scheduled_for for run in runs], resumed_at=resumed_at
-        )
-        try:
-            next_at = recurring_next_run(
-                schedule_type=schedule_type,
-                local_time=schedule.local_time,
-                weekday=schedule.weekday,
-                end_date=schedule.end_date,
-                finalized_at=boundary,
-            )
-        except (ValueError, TypeError) as error:
-            raise ScheduleStateChangeUnavailable from error
+        if held is not None and held.scheduled_for > resumed_at:
+            if mode is not ResumeMode.NEXT_REGULAR or replacement_at is not None:
+                raise ScheduleStateChangeUnavailable
+            next_at = held.scheduled_for
+            created_run = held
+            missed = None
+        else:
+            missed = held.scheduled_for if held else None
+            if mode in {ResumeMode.IMMEDIATE_ONCE, ResumeMode.RESCHEDULED_ONCE}:
+                replacement_at = resumed_at if mode is ResumeMode.IMMEDIATE_ONCE else replacement_at
+                if held is None or replacement_at is None:
+                    raise ScheduleStateChangeUnavailable
+                replacement_at = require_utc(replacement_at)
+                local_today = resumed_at.astimezone(_TOKYO).date()
+                if (
+                    held.scheduled_for.astimezone(_TOKYO).date() != local_today
+                    or replacement_at.astimezone(_TOKYO).date() != local_today
+                    or replacement_at < resumed_at
+                    or (schedule.end_date is not None and local_today > schedule.end_date)
+                ):
+                    raise ScheduleStateChangeUnavailable
+                await self._runs.skip_pending_for_paused_schedule(runs=[held], paused_at=resumed_at)
+                try:
+                    created_run = await self._runs.add(
+                        ScheduleRun(
+                            schedule_id=schedule.id,
+                            scheduled_for=replacement_at,
+                            status=RunStatus.PENDING.value,
+                            attempt_count=0,
+                            next_attempt_at=replacement_at,
+                            updated_at=resumed_at,
+                        )
+                    )
+                except DuplicateRecordError as error:
+                    raise ScheduleStateChangeUnavailable from error
+                next_at = replacement_at
+            else:
+                if held is not None:
+                    await self._runs.skip_pending_for_paused_schedule(
+                        runs=[held], paused_at=resumed_at
+                    )
+                boundary = latest_scheduled_for(
+                    scheduled_for=[run.scheduled_for for run in runs], resumed_at=resumed_at
+                )
+                try:
+                    next_at = recurring_next_run(
+                        schedule_type=schedule_type,
+                        local_time=schedule.local_time,
+                        weekday=schedule.weekday,
+                        end_date=schedule.end_date,
+                        finalized_at=boundary,
+                    )
+                except (ValueError, TypeError) as error:
+                    raise ScheduleStateChangeUnavailable from error
+                created_run = None
 
         if next_at is None:
             if schedule.content is None:
@@ -186,27 +301,28 @@ class SchedulePauseService:
             schedule.terminal_at = resumed_at
         else:
             target = ScheduleStatus.ACTIVE if schedule.content is not None else ScheduleStatus.DRAFT
-            try:
-                created_run = await self._runs.add(
-                    ScheduleRun(
-                        schedule_id=schedule.id,
-                        scheduled_for=next_at,
-                        status=RunStatus.PENDING.value,
-                        attempt_count=0,
-                        next_attempt_at=next_at,
-                        claimed_by=None,
-                        claimed_at=None,
-                        lease_expires_at=None,
-                        discord_message_id=None,
-                        result_code=None,
-                        error_summary=None,
-                        started_at=None,
-                        finished_at=None,
-                        updated_at=resumed_at,
+            if created_run is None:
+                try:
+                    created_run = await self._runs.add(
+                        ScheduleRun(
+                            schedule_id=schedule.id,
+                            scheduled_for=next_at,
+                            status=RunStatus.PENDING.value,
+                            attempt_count=0,
+                            next_attempt_at=next_at,
+                            claimed_by=None,
+                            claimed_at=None,
+                            lease_expires_at=None,
+                            discord_message_id=None,
+                            result_code=None,
+                            error_summary=None,
+                            started_at=None,
+                            finished_at=None,
+                            updated_at=resumed_at,
+                        )
                     )
-                )
-            except DuplicateRecordError as error:
-                raise ScheduleStateChangeUnavailable from error
+                except DuplicateRecordError as error:
+                    raise ScheduleStateChangeUnavailable from error
             schedule.next_run_at = next_at
             schedule.terminal_at = None
         schedule.status = target.value
@@ -222,6 +338,15 @@ class SchedulePauseService:
             changes={
                 "status": {"from": "paused", "to": target.value},
                 "next_run_recalculated": next_at is not None,
+                "resume_mode": mode.value,
+                "missed_scheduled_for": missed.isoformat() if missed else None,
+                "replacement_scheduled_for": (
+                    replacement_at.isoformat()
+                    if mode is not ResumeMode.NEXT_REGULAR and replacement_at
+                    else None
+                ),
+                "regular_local_time": schedule.local_time.strftime("%H:%M"),
+                "pending_runs_skipped": int(missed is not None),
             },
         )
         configured_guild_id = configured_guild_id or self._configured_guild_id
@@ -243,6 +368,55 @@ class SchedulePauseService:
             weekday=schedule.weekday,
             end_date=schedule.end_date,
             content=schedule.content,
+            resume_mode=mode,
+            missed_scheduled_for=missed,
+            replacement_scheduled_for=(
+                replacement_at if mode is not ResumeMode.NEXT_REGULAR else None
+            ),
+            next_regular_at=(
+                recurring_next_run(
+                    schedule_type=schedule_type,
+                    local_time=schedule.local_time,
+                    weekday=schedule.weekday,
+                    end_date=schedule.end_date,
+                    finalized_at=next_at,
+                )
+                if next_at is not None
+                else None
+            ),
+        )
+
+    async def _held_candidate(
+        self, schedule: Schedule, runs: list[ScheduleRun], at: datetime
+    ) -> ScheduleRun | None:
+        future = [
+            run for run in runs if run.status == RunStatus.PENDING.value and run.scheduled_for > at
+        ]
+        valid = [run for run in future if await self._is_pristine(run)]
+        if len(valid) > 1:
+            raise ScheduleStateChangeUnavailable
+        if valid and valid[0].scheduled_for != schedule.next_run_at:
+            raise ScheduleStateChangeUnavailable
+        return valid[0] if valid else None
+
+    async def _paused_held_run(
+        self, schedule: Schedule, runs: list[ScheduleRun]
+    ) -> ScheduleRun | None:
+        pending = [run for run in runs if run.status == RunStatus.PENDING.value]
+        valid = [run for run in pending if await self._is_pristine(run)]
+        if len(pending) > 1 or len(valid) != len(pending):
+            raise ScheduleStateChangeUnavailable
+        return valid[0] if valid else None
+
+    async def _is_pristine(self, run: ScheduleRun) -> bool:
+        attempts = await self._runs.list_attempts(run_id=run.id)
+        return (
+            run.attempt_count == 0
+            and run.next_attempt_at == run.scheduled_for
+            and run.claimed_by is None
+            and run.claimed_at is None
+            and run.lease_expires_at is None
+            and not attempts
         )
 
     async def _find(self, *, guild_id: int, public_id: str) -> Schedule:

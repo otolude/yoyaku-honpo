@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from discord_ai_reminder_bot.domain.enums import (
     DeliveryAttemptStatus,
+    NotificationStatus,
     NotificationType,
     RunStatus,
     ScheduleStatus,
@@ -29,6 +30,7 @@ from discord_ai_reminder_bot.infrastructure.database.exceptions import (
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NotificationAttempt,
     NotificationLog,
     OperationLog,
     Schedule,
@@ -76,11 +78,13 @@ def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[
         raise ValueError(f"batch_size must be between 1 and {MAX_CLAIM_BATCH_SIZE}")
     return (
         select(ScheduleRun)
+        .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
         .where(
             ScheduleRun.status == RunStatus.PENDING.value,
             ScheduleRun.scheduled_for <= now,
             ScheduleRun.next_attempt_at <= now,
             ScheduleRun.attempt_count < 4,
+            Schedule.status.in_((ScheduleStatus.ACTIVE.value, ScheduleStatus.DRAFT.value)),
         )
         .order_by(
             ScheduleRun.next_attempt_at.asc(),
@@ -88,7 +92,7 @@ def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[
             ScheduleRun.id.asc(),
         )
         .limit(batch_size)
-        .with_for_update(skip_locked=True)
+        .with_for_update(of=ScheduleRun, skip_locked=True)
     )
 
 
@@ -147,6 +151,7 @@ def build_startup_pending_statement(
         attempt_count == ScheduleRun.attempt_count,
         failed_attempt_count == ScheduleRun.attempt_count,
         max_attempt_number == ScheduleRun.attempt_count,
+        Schedule.status.in_((ScheduleStatus.ACTIVE.value, ScheduleStatus.DRAFT.value)),
     )
     healthy_delayed_once = and_(
         ScheduleRun.attempt_count == 0,
@@ -157,6 +162,14 @@ def build_startup_pending_statement(
         Schedule.content.is_not(None),
         Schedule.next_run_at == ScheduleRun.scheduled_for,
     )
+    healthy_paused_hold = and_(
+        ScheduleRun.attempt_count == 0,
+        attempt_count == 0,
+        Schedule.status == ScheduleStatus.PAUSED.value,
+        Schedule.schedule_type.in_((ScheduleType.DAILY.value, ScheduleType.WEEKLY.value)),
+        Schedule.next_run_at.is_(None),
+        ScheduleRun.next_attempt_at == ScheduleRun.scheduled_for,
+    )
     return (
         select(ScheduleRun)
         .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
@@ -165,6 +178,7 @@ def build_startup_pending_statement(
             ScheduleRun.scheduled_for <= recovered_at,
             ~healthy_retry,
             ~healthy_delayed_once,
+            ~healthy_paused_hold,
         )
         .order_by(ScheduleRun.scheduled_for.asc(), ScheduleRun.id.asc())
         .limit(batch_size)
@@ -548,11 +562,11 @@ class ScheduleRunRepository:
         return runs
 
     async def skip_pending_for_paused_schedule(
-        self, *, runs: list[ScheduleRun], paused_at: datetime
+        self, *, runs: list[ScheduleRun], paused_at: datetime, preserve_run_id: int | None = None
     ) -> list[ScheduleRun]:
         paused_at = require_utc(paused_at)
         for run in runs:
-            if run.status != RunStatus.PENDING.value:
+            if run.status != RunStatus.PENDING.value or run.id == preserve_run_id:
                 continue
             run.status = RunStatus.SKIPPED.value
             run.next_attempt_at = None
@@ -566,6 +580,50 @@ class ScheduleRunRepository:
             run.updated_at = paused_at
         await self._session.flush()
         return runs
+
+    async def cancel_pristine_draft_notifications_for_pause(
+        self, *, run_id: int, paused_at: datetime
+    ) -> int:
+        """Cancel only never-claimed draft reminders made stale by schedule pause."""
+        paused_at = require_utc(paused_at)
+        draft_types = (
+            NotificationType.DRAFT_24H.value,
+            NotificationType.DRAFT_1H.value,
+            NotificationType.DRAFT_IMMEDIATE.value,
+        )
+        has_attempt = (
+            select(NotificationAttempt.id)
+            .where(NotificationAttempt.notification_log_id == NotificationLog.id)
+            .exists()
+        )
+        result = await self._session.execute(
+            update(NotificationLog)
+            .where(
+                NotificationLog.schedule_run_id == run_id,
+                NotificationLog.notification_type.in_(draft_types),
+                NotificationLog.status == NotificationStatus.PENDING.value,
+                NotificationLog.attempt_count == 0,
+                NotificationLog.claimed_by.is_(None),
+                NotificationLog.claimed_at.is_(None),
+                NotificationLog.lease_expires_at.is_(None),
+                NotificationLog.started_at.is_(None),
+                NotificationLog.finished_at.is_(None),
+                ~has_attempt,
+            )
+            .values(
+                status=NotificationStatus.CANCELLED.value,
+                scheduled_at=paused_at,
+                next_attempt_at=None,
+                finished_at=paused_at,
+                error_code="schedule_paused",
+                error_summary="Draft notification was cancelled when the schedule was paused",
+            )
+            .returning(NotificationLog)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        rows = list(result.scalars())
+        await self._session.flush()
+        return len(rows)
 
     async def skip_pending_for_deleted_schedule(
         self, *, runs: list[ScheduleRun], deleted_at: datetime

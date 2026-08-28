@@ -262,7 +262,7 @@ async def test_gateway_outcomes(test_engine: AsyncEngine, outcome: Exception, fi
             assert notification.error_code is None and notification.error_summary is None
 
 
-@pytest.mark.parametrize("status", ["draft", "paused", "deleted", "ended"])
+@pytest.mark.parametrize("status", ["draft"])
 @pytest.mark.asyncio
 async def test_non_sendable_schedule_is_skipped(test_engine: AsyncEngine, status: str) -> None:
     schedule_id, run_id = (await seed(test_engine, status=status, schedule_type="daily"))[0]
@@ -298,6 +298,20 @@ async def test_non_sendable_schedule_is_skipped(test_engine: AsyncEngine, status
                 )
                 == 0
             )
+
+
+@pytest.mark.parametrize("status", ["paused", "deleted", "ended"])
+@pytest.mark.asyncio
+async def test_paused_or_terminal_schedule_is_not_claimed(
+    test_engine: AsyncEngine, status: str
+) -> None:
+    _schedule_id, run_id = (await seed(test_engine, status=status, schedule_type="daily"))[0]
+    gateway = FakeGateway()
+    result = await worker(test_engine, gateway).poll_once()
+    assert result.claimed == 0 and not gateway.calls
+    async with factory(test_engine)() as session:
+        run = await session.get(ScheduleRun, run_id)
+        assert run is not None and run.status == "pending"
 
 
 @pytest.mark.asyncio

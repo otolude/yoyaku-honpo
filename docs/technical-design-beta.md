@@ -291,7 +291,7 @@ clear=falseだけ、排他的な値とclearの同時指定、実値が変わら�
 定期の新候補は`edited_at + 5分`以降の最初の発生から求める。候補が現在pendingと同日時なら
 維持し、それ以外の既存runと同日時なら、最大でも既存run件数+1回の候補評価で次の発生へ進む。
 終了日を超えれば次回なしとする。本文ありactiveは`ended`、本文なしdraftは編集全体を拒否する。
-pausedは設定だけを保存してpausedとNULLのnext_run_atを維持し、再開時に編集後設定を使う。
+pausedはNULLの`next_run_at`を維持する。未来の健全な通常初回runはpendingのまま保持できる。channel・本文編集では保持し、local_time・weekday・end_date変更では旧保持runを`skipped(schedule_edited)`として、再開時に編集後設定を使う。
 retry待ちpendingも編集可能で、本文・channel変更は維持、日時・recurrence変更はskipする。
 
 編集トランザクションはロックなしでScheduleの内部参照、version、next_run_atを得て、全runを
@@ -540,17 +540,19 @@ outboxには`scheduled_at`、`next_attempt_at`、`attempt_count`、claim・lease
 
 - 編集後は、編集完了時刻を基準に次回日時を再計算する。
 - 次回投稿の5分前を過ぎている場合は編集を拒否する。
-- 再開時は再開完了時刻より後の最初の予定を計算する。
-- 一時停止中に過ぎた回は生成せず、まとめて投稿しない。
+- 未来の健全な通常初回runは停止中も保持し、予定時刻前の再開では同じrun IDを再利用する。
+- 到来後は本人限定の非永続Viewで、次回から再開、同日分の即時処理、同日分の5分以上先への時刻指定、キャンセルを選ぶ。数日前の回と終了日超過後は救済しない。
 - 次回が存在せず本文がある場合は `ended` へ遷移する。
 - 次回が存在せず本文がない `paused` は `ended` へ遷移せず、本文を設定して終了処理するか削除する。本文なしの `draft` も自動的に `ended` へ変更せず、利用者または管理者が確認して削除する。
 - 本文なしの定期 `draft` で現在回を `skipped` にした場合も、次回が存在すれば `draft` を維持して未来の次回実行を1件だけ生成する。次回が存在しなければ、DB制約上必要な既存の `next_run_at`、状態、versionを変更せず、確認・削除対象として残す。
 
 一時停止と再開はそれぞれ `/post pause public_id:<canonical UUIDv7>`、`/post resume public_id:<canonical UUIDv7>` とし、理由、confirm、確認Viewなしで即時実行する。ローカル入力検証後にephemeralでdeferし、Botコマンドが所有するトランザクションをcommitした後に成功Embedをfollowupする。
 
-一時停止対象は処理・確定待ちでない`active`の毎日・毎週予約だけとする。対象の通常pendingと再試行待ちpendingをすべてID昇順でロックし、同一トランザクションで`skipped`、`next_attempt_at = NULL`、`finished_at = updated_at = paused_at`、`result_code = 'schedule_paused'`とする。claim、lease、Discord message IDはNULLとし、DeliveryAttemptを新規作成せず既存履歴と終端runを変更しない。Scheduleは`paused`、`next_run_at = NULL`、`updated_at = paused_at`、`version + 1`とし、本文と繰り返し設定を保持する。一時停止で見送った実行回は、再開時にも再利用、再有効化、削除、同じ`scheduled_for`での再作成を行わない。
+一時停止対象は処理・確定待ちでない`active`の毎日・毎週予約だけとする。runをID昇順でロック後にScheduleをロックする。未来、初回、attempt 0、`next_attempt_at = scheduled_for`、claim/leaseなし、DeliveryAttemptなしでScheduleと整合するrunを最大1件保持する。それ以外のpendingは`skipped`、`next_attempt_at = NULL`、`finished_at = updated_at = paused_at`、`result_code = 'schedule_paused'`とする。Scheduleは`paused`、`next_run_at = NULL`、`version + 1`とする。
 
-再開対象は処理・確定待ちでない`paused`の毎日・毎週予約だけとする。再開完了時刻と対象Scheduleに属する最新の`scheduled_for`のうち遅い方を基準に、`next_daily_run`または`next_weekly_run`で厳密に未来の次回を計算する。新規作成時の5分境界は適用しない。次回があれば、本文ありは`active`、本文なしは`draft`とし、Scheduleの`next_run_at`と新しいpending runの`scheduled_for`、`next_attempt_at`を同じUTC日時にする。次回がなければ、本文ありは`ended`として`terminal_at = resumed_at`、本文なしは無変更で拒否する。
+再開対象は処理・確定待ちでない`paused`の毎日・毎週予約だけとする。保持runが未来なら同じrunを再利用する。到来済みならView確定時の新transactionで再検証し、`next_regular`では保持runをskipして次の通常runを作る。`immediate_once`と`rescheduled_once`では保持runをskipし、今回だけのpending runを作ってScheduleをそのrunへ向ける。本文ありはactive、本文なしはdraftとし、例外run完了後は基本recurrenceから次回を生成する。OperationLogは既存`resumed` actionに固定のresume modeと日時を保存する。
+
+pause時は保持runに紐づく未claimのdraft通知だけを`cancelled(error_code='schedule_paused')`にする。対象はattempt 0、NotificationAttemptなし、claim/lease・started/finishedなしのpendingに限定する。draft再開時に同じ通知を再計画する場合も、このpause由来、attempt 0、Attemptなし、claim/leaseなしのcancelled行だけをpendingへ戻す。経過済み閾値は計画対象にせず、processing、succeeded、failed、unknownおよび他理由のcancelledは変更しない。
 
 pause/resumeトランザクションは、ロックなしでguild付きpublic_idから内部参照、version、next_run_atを取得し、関係runをID昇順で`FOR UPDATE`してからScheduleを`FOR UPDATE`する。Scheduleロック後にrunをロックしてはならない。所有者、guild、version、状態、run状態を再検証し、processing、claimed、sending、Discord送信成功後のSchedule確定待ちは全体を無変更で拒否する。Schedule、run、OperationLogは同一トランザクションで更新し、RepositoryとApplication Serviceはcommitまたはrollbackせず、Discord API通信を行わない。
 

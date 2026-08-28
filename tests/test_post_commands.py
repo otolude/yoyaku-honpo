@@ -23,6 +23,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
 from discord_ai_reminder_bot.application.schedule_pause import (
     PausedSchedule,
     ResumedSchedule,
+    ResumePreview,
     ScheduleStateChangeUnavailable,
 )
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
@@ -669,6 +670,7 @@ async def test_pause_resume_defer_commit_and_use_interaction_identity(
         end_date=None,
         content="body",
     )
+    service.preview_resume.return_value = ResumePreview(public_id, None, False, False)
     monkeypatch.setattr(
         "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
     )
@@ -712,6 +714,7 @@ async def test_resume_unavailable_uses_common_response_after_defer(
 ) -> None:
     service = AsyncMock()
     service.resume.side_effect = ScheduleStateChangeUnavailable
+    service.preview_resume.return_value = ResumePreview(uuid.uuid7(), None, False, False)
     monkeypatch.setattr(
         "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
     )

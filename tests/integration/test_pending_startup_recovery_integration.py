@@ -137,6 +137,49 @@ async def test_once_draft_skips_without_changing_schedule(db_session: AsyncSessi
 
 
 @pytest.mark.asyncio
+async def test_paused_pristine_overdue_run_is_preserved(db_session: AsyncSession) -> None:
+    scheduled_for = CUTOFF - timedelta(hours=1)
+    schedule = Schedule(
+        guild_id=100,
+        channel_id=200,
+        creator_user_id=300,
+        schedule_type="daily",
+        status="paused",
+        content="body",
+        next_run_at=None,
+        local_time=time(12),
+        version=1,
+        created_at=scheduled_for,
+        updated_at=scheduled_for,
+    )
+    db_session.add(schedule)
+    await db_session.flush()
+    run = ScheduleRun(
+        schedule_id=schedule.id,
+        scheduled_for=scheduled_for,
+        status="pending",
+        attempt_count=0,
+        next_attempt_at=scheduled_for,
+        updated_at=scheduled_for,
+    )
+    db_session.add(run)
+    await db_session.flush()
+    result = await PendingStartupRecoveryService(db_session).recover_pending(
+        recovery_cutoff=CUTOFF, batch_size=20, **EVENT_ARGS
+    )
+    assert result.selected == 0
+    assert run.status == "pending" and run.attempt_count == 0
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(DeliveryAttempt)
+            .where(DeliveryAttempt.schedule_run_id == run.id)
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("schedule_type", "weekday"), [("daily", None), ("weekly", 2)])
 async def test_recurring_skips_missed_and_creates_one_future(
     db_session: AsyncSession, schedule_type: str, weekday: int | None

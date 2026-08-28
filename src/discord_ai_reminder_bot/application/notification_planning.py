@@ -22,6 +22,7 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
     ScheduleRun,
 )
 from discord_ai_reminder_bot.infrastructure.database.notification_repositories import (
+    NotificationAttemptRepository,
     NotificationLogRepository,
 )
 
@@ -35,7 +36,9 @@ class NotificationPlanningService:
     """Insert creator-DM routes; never commit or roll back."""
 
     def __init__(self, session: AsyncSession, *, configured_guild_id: int) -> None:
+        self._session = session
         self._logs = NotificationLogRepository(session)
+        self._attempts = NotificationAttemptRepository(session)
         self._guild_id = configured_guild_id
 
     async def plan_for_run(
@@ -62,7 +65,7 @@ class NotificationPlanningService:
         for plan in plans:
             if plan.notification_type.value in excluded_types:
                 continue
-            await self._logs.add_idempotent(
+            stored = await self._logs.add_idempotent(
                 NotificationLog(
                     schedule_id=schedule.id,
                     schedule_run_id=run.id,
@@ -82,8 +85,28 @@ class NotificationPlanningService:
                     scheduled_at=plan.scheduled_at,
                     next_attempt_at=plan.scheduled_at,
                     attempt_count=0,
-                )
+                ),
+                allow_existing_event_time=True,
             )
+            if (
+                stored.status == NotificationStatus.CANCELLED.value
+                and stored.error_code == "schedule_paused"
+                and stored.attempt_count == 0
+                and stored.claimed_by is None
+                and stored.claimed_at is None
+                and stored.lease_expires_at is None
+                and stored.started_at is None
+                and stored.finished_at is not None
+                and stored.sent_at is None
+                and await self._attempts.get_latest(notification_id=stored.id) is None
+            ):
+                stored.status = NotificationStatus.PENDING.value
+                stored.scheduled_at = plan.scheduled_at
+                stored.next_attempt_at = plan.scheduled_at
+                stored.claimed_by = stored.claimed_at = stored.lease_expires_at = None
+                stored.started_at = stored.finished_at = stored.sent_at = None
+                stored.error_code = stored.error_summary = None
+                await self._session.flush()
         return NotificationPlanningResult(
             sum(plan.notification_type.value not in excluded_types for plan in plans)
         )

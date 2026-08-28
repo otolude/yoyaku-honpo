@@ -232,13 +232,15 @@ class ScheduleEditingService:
                 elif candidate != current_next:
                     next_run = candidate
                     replace_run = True
+        elif recurrence_changed:
+            replace_run = True
 
         pending_count = 0
         created_run: ScheduleRun | None = None
         if replace_run:
             pending_count = sum(run.status == RunStatus.PENDING.value for run in runs)
             await self._runs.skip_pending_for_edited_schedule(runs=runs, edited_at=edited_at)
-            if next_run is not None:
+            if next_run is not None and status is not ScheduleStatus.PAUSED:
                 try:
                     created_run = await self._runs.add(
                         ScheduleRun(

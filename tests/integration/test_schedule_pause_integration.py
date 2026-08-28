@@ -9,12 +9,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.schedule_pause import (
+    ResumeMode,
     SchedulePauseService,
     ScheduleStateChangeUnavailable,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus
+from discord_ai_reminder_bot.domain.enums import (
+    NotificationRecipientType,
+    NotificationType,
+    ScheduleStatus,
+)
+from discord_ai_reminder_bot.domain.notification import notification_deduplication_key
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NotificationAttempt,
+    NotificationLog,
     OperationLog,
     Schedule,
     ScheduleRun,
@@ -93,7 +101,7 @@ async def resume(session: AsyncSession, schedule: Schedule, *, administrator: bo
 
 
 @pytest.mark.parametrize("schedule_type", ["daily", "weekly"])
-async def test_pause_skips_all_pending_and_preserves_configuration(
+async def test_pause_preserves_future_initial_and_skips_retry(
     db_session: AsyncSession, schedule_type: str
 ) -> None:
     schedule, first = await add_recurring(db_session, schedule_type=schedule_type)
@@ -122,18 +130,17 @@ async def test_pause_skips_all_pending_and_preserves_configuration(
     await db_session.flush()
     values = (schedule.content, schedule.local_time, schedule.weekday, schedule.end_date)
     result = await pause(db_session, schedule)
-    assert result.pending_runs_skipped == 2
+    assert result.pending_runs_skipped == 1
+    assert result.held_run_at == first.scheduled_for
     assert schedule.status == "paused" and schedule.next_run_at is None
     assert schedule.version == 2 and schedule.updated_at == NOW
     assert schedule.terminal_at is schedule.deleted_at is None
     assert (schedule.content, schedule.local_time, schedule.weekday, schedule.end_date) == values
-    for run in (first, retry):
-        assert run.status == "skipped"
-        assert run.next_attempt_at is None and run.finished_at == run.updated_at == NOW
-        assert run.result_code == "schedule_paused"
-        assert run.error_summary == "Schedule was paused before Discord delivery"
-        assert run.claimed_by is run.claimed_at is run.lease_expires_at is None
-        assert run.discord_message_id is None
+    assert first.status == "pending" and first.next_attempt_at == first.scheduled_for
+    assert first.attempt_count == 0 and first.finished_at is None
+    assert retry.status == "skipped"
+    assert retry.next_attempt_at is None and retry.finished_at == retry.updated_at == NOW
+    assert retry.result_code == "schedule_paused"
     assert terminal.status == "succeeded" and terminal.discord_message_id == 99
     assert await db_session.scalar(select(func.count()).select_from(DeliveryAttempt)) == 0
     operation = (
@@ -146,7 +153,8 @@ async def test_pause_skips_all_pending_and_preserves_configuration(
     assert operation.delete_kind is operation.delete_reason is None
     assert operation.changes == {
         "status": {"from": "active", "to": "paused"},
-        "pending_runs_skipped": 2,
+        "pending_runs_skipped": 1,
+        "held_scheduled_for": first.scheduled_for.isoformat(),
     }
 
 
@@ -188,14 +196,14 @@ async def test_pause_rejects_once_and_draft_without_changes(
     assert await db_session.scalar(select(func.count()).select_from(OperationLog)) == 0
 
 
-async def test_daily_pause_at_0800_resume_at_0830_creates_next_day_0900(
+async def test_daily_pause_at_0800_resume_at_0830_reuses_same_0900_run(
     db_session: AsyncSession,
 ) -> None:
     schedule, skipped = await add_recurring(db_session)
     await pause(db_session, schedule)
     result = await resume(db_session, schedule)
-    expected = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
-    assert skipped.status == "skipped"
+    expected = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
+    assert skipped.status == "pending"
     assert result.status is ScheduleStatus.ACTIVE and result.next_run_at == expected
     runs = list(
         (
@@ -206,10 +214,7 @@ async def test_daily_pause_at_0800_resume_at_0830_creates_next_day_0900(
             )
         ).all()
     )
-    assert [(run.scheduled_for, run.status) for run in runs] == [
-        (datetime(2026, 8, 19, 0, 0, tzinfo=UTC), "skipped"),
-        (expected, "pending"),
-    ]
+    assert [(run.scheduled_for, run.status) for run in runs] == [(expected, "pending")]
     assert runs[-1].next_attempt_at == schedule.next_run_at == expected
     assert runs[-1].attempt_count == 0 and runs[-1].result_code is None
 
@@ -218,7 +223,127 @@ async def test_weekly_resume_advances_past_skipped_occurrence(db_session: AsyncS
     schedule, skipped = await add_recurring(db_session, schedule_type="weekly")
     await pause(db_session, schedule)
     result = await resume(db_session, schedule)
-    assert result.next_run_at == skipped.scheduled_for + timedelta(days=7)
+    assert result.next_run_at == skipped.scheduled_for
+
+
+async def test_pause_skips_due_initial_run(db_session: AsyncSession) -> None:
+    schedule, run = await add_recurring(db_session, next_at=NOW)
+    result = await pause(db_session, schedule)
+    assert result.held_run_at is None and result.pending_runs_skipped == 1
+    assert run.status == "skipped" and run.result_code == "schedule_paused"
+
+
+async def test_overdue_resume_next_regular_skips_hold_and_creates_regular(
+    db_session: AsyncSession,
+) -> None:
+    held_at = NOW - timedelta(minutes=30)
+    schedule, held = await add_recurring(db_session, status="paused")
+    held = ScheduleRun(
+        schedule_id=schedule.id,
+        scheduled_for=held_at,
+        status="pending",
+        attempt_count=0,
+        next_attempt_at=held_at,
+        updated_at=NOW,
+    )
+    db_session.add(held)
+    await db_session.flush()
+    result = await SchedulePauseService(db_session).resume(
+        guild_id=schedule.guild_id,
+        public_id=str(schedule.public_id),
+        actor_user_id=CREATOR_ID,
+        administrator=False,
+        resumed_at=RESUMED,
+        mode=ResumeMode.NEXT_REGULAR,
+    )
+    assert held.status == "skipped"
+    assert result.resume_mode is ResumeMode.NEXT_REGULAR
+    assert result.missed_scheduled_for == held_at
+    assert result.next_run_at == datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
+
+
+async def test_same_day_overdue_resume_creates_immediate_exception_run(
+    db_session: AsyncSession,
+) -> None:
+    held_at = NOW - timedelta(minutes=15)
+    schedule, _ = await add_recurring(db_session, status="paused")
+    held = ScheduleRun(
+        schedule_id=schedule.id,
+        scheduled_for=held_at,
+        status="pending",
+        attempt_count=0,
+        next_attempt_at=held_at,
+        updated_at=NOW,
+    )
+    db_session.add(held)
+    await db_session.flush()
+    result = await SchedulePauseService(db_session).resume(
+        guild_id=schedule.guild_id,
+        public_id=str(schedule.public_id),
+        actor_user_id=CREATOR_ID,
+        administrator=False,
+        resumed_at=RESUMED,
+        mode=ResumeMode.IMMEDIATE_ONCE,
+    )
+    assert held.status == "skipped"
+    assert result.replacement_scheduled_for == RESUMED
+    replacement = await ScheduleRunRepository(db_session).get_by_schedule_and_time(
+        schedule_id=schedule.id, scheduled_for=RESUMED
+    )
+    assert replacement is not None and replacement.status == "pending"
+    assert replacement.attempt_count == 0 and replacement.next_attempt_at == RESUMED
+
+
+async def test_pause_cancelled_pristine_draft_notification_is_safely_replanned(
+    db_session: AsyncSession,
+) -> None:
+    next_at = NOW + timedelta(hours=2)
+    schedule, run = await add_recurring(db_session, next_at=next_at)
+    notification = NotificationLog(
+        schedule_id=schedule.id,
+        schedule_run_id=run.id,
+        notification_type=NotificationType.DRAFT_1H.value,
+        recipient_type=NotificationRecipientType.CREATOR_DM.value,
+        recipient_id=schedule.creator_user_id,
+        status="pending",
+        deduplication_key=notification_deduplication_key(
+            event_kind="draft_reminder",
+            schedule_public_id=schedule.public_id,
+            scheduled_for=run.scheduled_for,
+            notification_type=NotificationType.DRAFT_1H,
+            recipient_type=NotificationRecipientType.CREATOR_DM,
+        ),
+        scheduled_at=next_at - timedelta(hours=1),
+        next_attempt_at=next_at - timedelta(hours=1),
+        attempt_count=0,
+    )
+    db_session.add(notification)
+    await db_session.flush()
+    await pause(db_session, schedule)
+    assert notification.status == "cancelled"
+    assert notification.error_code == "schedule_paused"
+    assert notification.attempt_count == 0
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(NotificationAttempt)
+            .where(NotificationAttempt.notification_log_id == notification.id)
+        )
+        == 0
+    )
+    schedule.content = None
+    await db_session.flush()
+    await SchedulePauseService(db_session).resume(
+        guild_id=schedule.guild_id,
+        public_id=str(schedule.public_id),
+        actor_user_id=CREATOR_ID,
+        administrator=False,
+        resumed_at=RESUMED,
+        configured_guild_id=GUILD_ID,
+    )
+    assert notification.status == "pending"
+    assert notification.next_attempt_at == next_at - timedelta(hours=1)
+    assert notification.finished_at is None and notification.error_code is None
 
 
 @pytest.mark.parametrize("attempt_status", ["claimed", "sending"])
@@ -326,7 +451,7 @@ async def test_admin_can_pause_another_creators_schedule(db_session: AsyncSessio
             select(OperationLog).where(OperationLog.schedule_id == schedule.id)
         )
     ).one()
-    assert schedule.status == "paused" and run.status == "skipped"
+    assert schedule.status == "paused" and run.status == "pending"
     assert operation.actor_user_id == CREATOR_ID
 
 

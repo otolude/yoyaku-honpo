@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
 import discord
 from discord import app_commands
@@ -30,6 +30,7 @@ from discord_ai_reminder_bot.application.schedule_editing import (
     ScheduleEditUnavailable,
 )
 from discord_ai_reminder_bot.application.schedule_pause import (
+    ResumeMode,
     SchedulePauseService,
     ScheduleStateChangeUnavailable,
 )
@@ -62,6 +63,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
+from discord_ai_reminder_bot.domain.recurrence import TOKYO, require_utc
 from discord_ai_reminder_bot.domain.schedule_creation import (
     FullwidthCreateDateTimeError,
     InvalidScheduleContentError,
@@ -108,6 +110,12 @@ CREATE_EXPIRED_MESSAGE = (
 )
 CREATE_UNAVAILABLE_MESSAGE = "予約を作成できませんでした。入力内容と権限を確認してください。"
 CREATE_DATETIME_DESCRIPTION = "数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30"
+RESUME_CANCELLED_MESSAGE = "予約の再開をキャンセルしました。一時停止中のままです。"
+RESUME_EXPIRED_MESSAGE = "選択の有効期限が切れました。予約は一時停止中のままです。"
+RESUME_TIME_MESSAGE = (
+    "指定時刻は現在から5分以上先にしてください。\n"
+    "別の時刻を入力するか、「今すぐ投稿」「次回から再開」を選んでください。"
+)
 
 
 @dataclass(frozen=True)
@@ -242,6 +250,91 @@ class OnceScheduleConfirmView(discord.ui.View):
         await self.commands._expire_once_creation(self)
 
 
+class ResumeTimeModal(discord.ui.Modal, title="本日分の投稿時刻を指定"):
+    local_time = discord.ui.TextInput(label="時刻（半角HH:MM）", min_length=5, max_length=5)
+
+    def __init__(self, view: ResumeChoiceView) -> None:
+        super().__init__(timeout=120.0, custom_id="post_resume_time_modal")
+        self.resume_view = view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.resume_view.commands._submit_resume_time(
+            self.resume_view, interaction, str(self.local_time.value)
+        )
+
+
+class ResumeChoiceView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        commands: PostCommands,
+        interaction: discord.Interaction,
+        public_id: str,
+        actor_user_id: int,
+        rescue_allowed: bool,
+    ) -> None:
+        super().__init__(timeout=120.0)
+        self.commands = commands
+        self.initial_interaction = interaction
+        self.public_id = public_id
+        self.actor_user_id = actor_user_id
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+        if not rescue_allowed:
+            self.immediate_button.disabled = True
+            self.time_button.disabled = True
+        now = require_utc(commands._clock.now()).astimezone(TOKYO)
+        if now + timedelta(minutes=5) >= datetime.combine(
+            now.date() + timedelta(days=1), time(), TOKYO
+        ):
+            self.time_button.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self.commands._configured_guild_id,
+            allowed_role_ids=self.commands._allowed_role_ids,
+        )
+        if actor is not None and actor.user_id == self.actor_user_id:
+            return True
+        await respond_ephemeral(
+            interaction, PERMISSION_DENIED_MESSAGE, logger=self.commands._logger
+        )
+        return False
+
+    @discord.ui.button(
+        label="次回から再開", style=discord.ButtonStyle.success, custom_id="post_resume_next"
+    )
+    async def next_button(self, interaction: discord.Interaction, unused) -> None:
+        await self.commands._finish_resume_choice(self, interaction, ResumeMode.NEXT_REGULAR)
+
+    @discord.ui.button(
+        label="本日分を今すぐ投稿", style=discord.ButtonStyle.primary, custom_id="post_resume_now"
+    )
+    async def immediate_button(self, interaction: discord.Interaction, unused) -> None:
+        await self.commands._finish_resume_choice(self, interaction, ResumeMode.IMMEDIATE_ONCE)
+
+    @discord.ui.button(
+        label="本日分の時刻を指定", style=discord.ButtonStyle.primary, custom_id="post_resume_time"
+    )
+    async def time_button(self, interaction: discord.Interaction, unused) -> None:
+        if self.finished:
+            await respond_ephemeral(
+                interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self.commands._logger
+            )
+            return
+        await interaction.response.send_modal(ResumeTimeModal(self))
+
+    @discord.ui.button(
+        label="キャンセル", style=discord.ButtonStyle.secondary, custom_id="post_resume_cancel"
+    )
+    async def cancel_button(self, interaction: discord.Interaction, unused) -> None:
+        await self.commands._cancel_resume_choice(self, interaction)
+
+    async def on_timeout(self) -> None:
+        await self.commands._expire_resume_choice(self)
+
+
 def authorized_actor(
     interaction: discord.Interaction,
     *,
@@ -292,6 +385,7 @@ class PostCommands(app_commands.Group):
         self._logger = logger
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
         self._create_views: set[OnceScheduleConfirmView] = set()
+        self._resume_views: set[ResumeChoiceView] = set()
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
@@ -624,6 +718,44 @@ class PostCommands(app_commands.Group):
                 interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
             )
             return
+        if resume:
+            try:
+                async with self._session_factory() as session:
+                    preview = await SchedulePauseService(session).preview_resume(
+                        guild_id=interaction.guild_id,
+                        public_id=public_id,
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        resumed_at=self._clock.now(),
+                    )
+            except ScheduleStateChangeUnavailable, ValueError:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_resume_preview_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            now = require_utc(self._clock.now())
+            if preview.held_run_at is not None and preview.held_run_at <= now:
+                view = ResumeChoiceView(
+                    commands=self,
+                    interaction=interaction,
+                    public_id=public_id,
+                    actor_user_id=actor.user_id,
+                    rescue_allowed=preview.rescue_allowed,
+                )
+                embed = discord.Embed(
+                    title="予約の再開方法を選択してください",
+                    description="一時停止中に投稿時刻を過ぎました。DBはまだ更新されていません。",
+                    colour=0xE67E22,
+                )
+                if await respond_ephemeral(
+                    interaction, embed=embed, view=view, logger=self._logger
+                ):
+                    self._resume_views.add(view)
+                return
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception:  # noqa: BLE001 - Discord response details must remain private
@@ -660,6 +792,129 @@ class PostCommands(app_commands.Group):
             return
         presenter = resumed_schedule_embed if resume else paused_schedule_embed
         await self._respond_embed(interaction, lambda: presenter(changed))
+
+    async def _finish_resume_choice(
+        self,
+        view: ResumeChoiceView,
+        interaction: discord.Interaction,
+        mode: ResumeMode,
+        replacement_at: datetime | None = None,
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_resume_defer_failed")
+                return
+            try:
+                async with self._session_factory() as session, session.begin():
+                    changed = await SchedulePauseService(session).resume(
+                        guild_id=self._configured_guild_id,
+                        public_id=view.public_id,
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        resumed_at=self._clock.now(),
+                        configured_guild_id=self._configured_guild_id,
+                        mode=mode,
+                        replacement_at=replacement_at,
+                    )
+            except ScheduleStateChangeUnavailable:
+                await self._finish_resume_view(
+                    view, interaction, content=STATE_CHANGE_UNAVAILABLE_MESSAGE
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_resume_failed")
+                await self._finish_resume_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
+                return
+            await self._finish_resume_view(view, interaction, embed=resumed_schedule_embed(changed))
+
+    async def _submit_resume_time(
+        self, view: ResumeChoiceView, interaction: discord.Interaction, value: str
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            try:
+                parsed = parse_local_time(value)
+                now = require_utc(self._clock.now())
+                local_now = now.astimezone(TOKYO)
+                replacement = datetime.combine(local_now.date(), parsed, TOKYO).astimezone(
+                    now.tzinfo
+                )
+                if replacement < now + timedelta(minutes=5):
+                    raise ValueError
+            except InvalidDateTimeError, ValueError:
+                await respond_ephemeral(interaction, RESUME_TIME_MESSAGE, logger=self._logger)
+                return
+        await self._finish_resume_choice(
+            view, interaction, ResumeMode.RESCHEDULED_ONCE, replacement
+        )
+
+    async def _cancel_resume_choice(
+        self, view: ResumeChoiceView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished:
+                return
+            view.finished = True
+            view.stop()
+            self._resume_views.discard(view)
+            await interaction.response.edit_message(
+                content=RESUME_CANCELLED_MESSAGE,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    async def _expire_resume_choice(self, view: ResumeChoiceView) -> None:
+        async with view.action_lock:
+            if view.finished:
+                return
+            view.finished = True
+            view.stop()
+            self._resume_views.discard(view)
+            try:
+                await view.initial_interaction.edit_original_response(
+                    content=RESUME_EXPIRED_MESSAGE,
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_resume_timeout_response_failed")
+
+    async def _finish_resume_view(
+        self,
+        view: ResumeChoiceView,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        view.finished = True
+        view.stop()
+        self._resume_views.discard(view)
+        await interaction.edit_original_response(
+            content=content if embed is None else None,
+            embed=embed,
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @app_commands.command(name="delete", description="予約を確認して論理削除します")
     @app_commands.describe(
@@ -961,12 +1216,19 @@ class PostCommands(app_commands.Group):
     async def close_confirmation_views(self) -> None:
         create_views = tuple(self._create_views)
         self._create_views.clear()
+        resume_views = tuple(self._resume_views)
+        self._resume_views.clear()
         for view in create_views:
+            view.finished = True
+            view.stop()
+        for view in resume_views:
             view.finished = True
             view.stop()
         await self.close_delete_views()
         if create_views:
             await asyncio.gather(*(view.wait() for view in create_views), return_exceptions=True)
+        if resume_views:
+            await asyncio.gather(*(view.wait() for view in resume_views), return_exceptions=True)
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(

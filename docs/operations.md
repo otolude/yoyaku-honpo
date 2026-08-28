@@ -226,8 +226,9 @@ Discord経路は固定タイトル・説明、日本語状態、投稿先チャ�
 全Recoveryは1回の固定UTC `recovery_cutoff`を共有し、それぞれ最大25バッチで処理する。
 
 - Processing Recovery: processing lease期限切れを取得する。送信前のclaimedは試行回数に応じてpendingへ戻せる。sending、unknown、不整合は自動再送せずfailedへ確定する。
-- Pending Startup Recovery: 期限超過pendingを整理する。単発activeの初回runは15分以内（ちょうど15分を含む）なら遅延投稿対象、15分超過なら投稿せずfailedにする。
+- Pending Startup Recovery: 期限超過pendingを整理する。単発activeの初回runは15分以内（ちょうど15分を含む）なら遅延投稿対象、15分超過なら投稿せずfailedにする。pausedの健全な通常初回runは再開選択用に保持し、paused retryまたは不整合pendingは安全側でskipする。
 - retry pending: 15分ルールの対象外で、保存済み`next_attempt_at`に従って維持する。
+- PollingWorkerのrun claimは親Scheduleがactiveまたはdraftの場合だけ行う。paused保持runはdueになってもclaimせず、送信前のpaused再検証も防御層として残す。
 - 定期欠落回: 過去回をskippedで記録し、cutoffより厳密に未来の未使用runを1件生成する。1 Schedule・1起動単位で集約通知する。
 - Notification Recovery: expired claimedは通知の再試行規則へ戻し、sendingはunknownとして再送しない。
 - Draft Notification Bootstrap: 過ぎた24時間前・1時間前通知を後追いせずcancelし、未来draft runに必要な計画だけを冪等作成する。残り1時間未満ならimmediateを計画する。

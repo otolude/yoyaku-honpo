@@ -78,7 +78,8 @@ def test_pause_embed_explains_preservation_and_skipped_occurrence() -> None:
     assert embed.title == "予約を一時停止しました"
     assert "一時停止中は投稿されません" in text
     assert "本文と繰り返し設定は保持" in text
-    assert "再開しても送信されません" in text
+    assert "現在の状態" in text
+    assert "⏸️ 一時停止中" in text
 
 
 def test_edit_embed_shows_changes_and_safe_state_notes() -> None:

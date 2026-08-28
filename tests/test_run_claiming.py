@@ -19,7 +19,9 @@ def test_claim_statement_compiles_to_postgresql_locking_query() -> None:
     statement = build_due_runs_claim_statement(now=NOW, batch_size=20)
     sql = str(statement.compile(dialect=postgresql.dialect())).upper()
 
-    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "FOR UPDATE OF SCHEDULE_RUNS SKIP LOCKED" in sql
+    assert "JOIN SCHEDULES" in sql
+    assert "SCHEDULES.STATUS IN" in sql
     assert "LIMIT" in sql
     assert "STATUS" in sql
     assert "SCHEDULED_FOR" in sql
