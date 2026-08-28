@@ -196,14 +196,17 @@ async def test_pause_rejects_once_and_draft_without_changes(
     assert await db_session.scalar(select(func.count()).select_from(OperationLog)) == 0
 
 
-async def test_daily_pause_at_0800_resume_at_0830_reuses_same_0900_run(
-    db_session: AsyncSession,
+@pytest.mark.parametrize("schedule_type", ["daily", "weekly"])
+async def test_active_resume_before_posting_time_reuses_same_run(
+    db_session: AsyncSession, schedule_type: str
 ) -> None:
-    schedule, skipped = await add_recurring(db_session)
+    schedule, held = await add_recurring(db_session, schedule_type=schedule_type)
+    held_id = held.id
     await pause(db_session, schedule)
     result = await resume(db_session, schedule)
     expected = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
-    assert skipped.status == "pending"
+    assert held.status == "pending"
+    assert result.held_run_reused is True
     assert result.status is ScheduleStatus.ACTIVE and result.next_run_at == expected
     runs = list(
         (
@@ -214,16 +217,20 @@ async def test_daily_pause_at_0800_resume_at_0830_reuses_same_0900_run(
             )
         ).all()
     )
+    assert runs[0].id == held_id
     assert [(run.scheduled_for, run.status) for run in runs] == [(expected, "pending")]
     assert runs[-1].next_attempt_at == schedule.next_run_at == expected
     assert runs[-1].attempt_count == 0 and runs[-1].result_code is None
-
-
-async def test_weekly_resume_advances_past_skipped_occurrence(db_session: AsyncSession) -> None:
-    schedule, skipped = await add_recurring(db_session, schedule_type="weekly")
-    await pause(db_session, schedule)
-    result = await resume(db_session, schedule)
-    assert result.next_run_at == skipped.scheduled_for
+    assert await db_session.scalar(select(func.count()).select_from(DeliveryAttempt)) == 0
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(
+                OperationLog.schedule_id == schedule.id,
+                OperationLog.action == "resumed",
+            )
+        )
+    ).one()
+    assert operation.changes["next_run_recalculated"] is False
 
 
 async def test_pause_skips_due_initial_run(db_session: AsyncSession) -> None:
@@ -257,13 +264,21 @@ async def test_overdue_resume_next_regular_skips_hold_and_creates_regular(
         mode=ResumeMode.NEXT_REGULAR,
     )
     assert held.status == "skipped"
+    assert result.held_run_reused is False
     assert result.resume_mode is ResumeMode.NEXT_REGULAR
     assert result.missed_scheduled_for == held_at
     assert result.next_run_at == datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
 
 
-async def test_same_day_overdue_resume_creates_immediate_exception_run(
-    db_session: AsyncSession,
+@pytest.mark.parametrize(
+    ("mode", "replacement_at"),
+    [
+        (ResumeMode.IMMEDIATE_ONCE, None),
+        (ResumeMode.RESCHEDULED_ONCE, RESUMED + timedelta(minutes=5)),
+    ],
+)
+async def test_same_day_overdue_resume_creates_exception_run(
+    db_session: AsyncSession, mode: ResumeMode, replacement_at: datetime | None
 ) -> None:
     held_at = NOW - timedelta(minutes=15)
     schedule, _ = await add_recurring(db_session, status="paused")
@@ -283,15 +298,27 @@ async def test_same_day_overdue_resume_creates_immediate_exception_run(
         actor_user_id=CREATOR_ID,
         administrator=False,
         resumed_at=RESUMED,
-        mode=ResumeMode.IMMEDIATE_ONCE,
+        mode=mode,
+        replacement_at=replacement_at,
     )
+    expected = RESUMED if replacement_at is None else replacement_at
     assert held.status == "skipped"
-    assert result.replacement_scheduled_for == RESUMED
+    assert result.held_run_reused is False
+    assert result.replacement_scheduled_for == expected
     replacement = await ScheduleRunRepository(db_session).get_by_schedule_and_time(
-        schedule_id=schedule.id, scheduled_for=RESUMED
+        schedule_id=schedule.id, scheduled_for=expected
     )
     assert replacement is not None and replacement.status == "pending"
-    assert replacement.attempt_count == 0 and replacement.next_attempt_at == RESUMED
+    assert replacement.attempt_count == 0 and replacement.next_attempt_at == expected
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(
+                OperationLog.schedule_id == schedule.id,
+                OperationLog.action == "resumed",
+            )
+        )
+    ).one()
+    assert operation.changes["next_run_recalculated"] is True
 
 
 async def test_pause_cancelled_pristine_draft_notification_is_safely_replanned(
@@ -394,9 +421,36 @@ async def test_resume_contentless_with_future_occurrence_returns_draft(
     db_session: AsyncSession,
 ) -> None:
     schedule, _ = await add_recurring(db_session, status="paused", content=None)
+    held = ScheduleRun(
+        schedule_id=schedule.id,
+        scheduled_for=datetime(2026, 8, 19, 0, 0, tzinfo=UTC),
+        status="pending",
+        attempt_count=0,
+        next_attempt_at=datetime(2026, 8, 19, 0, 0, tzinfo=UTC),
+        updated_at=NOW,
+    )
+    db_session.add(held)
+    await db_session.flush()
     result = await resume(db_session, schedule)
+    assert result.held_run_reused is True
     assert result.status is ScheduleStatus.DRAFT
     assert schedule.status == "draft" and schedule.next_run_at == result.next_run_at
+
+
+async def test_resume_without_held_run_creates_regular_run(db_session: AsyncSession) -> None:
+    schedule, _ = await add_recurring(db_session, status="paused")
+    result = await resume(db_session, schedule)
+    assert result.held_run_reused is False
+    assert result.next_run_at is not None
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(
+                OperationLog.schedule_id == schedule.id,
+                OperationLog.action == "resumed",
+            )
+        )
+    ).one()
+    assert operation.changes["next_run_recalculated"] is True
 
 
 @pytest.mark.parametrize("content", ["body", None])
@@ -493,6 +547,40 @@ async def test_transaction_rollback_restores_pause(test_engine: AsyncEngine) -> 
                 select(func.count())
                 .select_from(OperationLog)
                 .where(OperationLog.schedule_id == schedule_id)
+            )
+            == 0
+        )
+    await _clean(test_engine, schedule_id)
+
+
+async def test_transaction_rollback_restores_resume(test_engine: AsyncEngine) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with factory() as seed, seed.begin():
+        schedule, _ = await add_recurring(seed, guild_id=18_903)
+        await pause(seed, schedule)
+        schedule_id = schedule.id
+        run_id = (
+            await seed.scalars(select(ScheduleRun.id).where(ScheduleRun.schedule_id == schedule_id))
+        ).one()
+    with pytest.raises(RuntimeError, match="force rollback"):
+        async with factory() as session, session.begin():
+            persisted = await session.get(Schedule, schedule_id)
+            result = await resume(session, persisted)
+            assert result.held_run_reused is True
+            raise RuntimeError("force rollback")
+    async with factory() as verify:
+        persisted = await verify.get(Schedule, schedule_id)
+        persisted_run = await verify.get(ScheduleRun, run_id)
+        assert persisted.status == "paused" and persisted.next_run_at is None
+        assert persisted_run.status == "pending"
+        assert (
+            await verify.scalar(
+                select(func.count())
+                .select_from(OperationLog)
+                .where(
+                    OperationLog.schedule_id == schedule_id,
+                    OperationLog.action == "resumed",
+                )
             )
             == 0
         )

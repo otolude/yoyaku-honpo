@@ -75,8 +75,13 @@
 | [x] 再接続時のloop二重起動防止 | runtime冪等性の確認 | 固定Clock、モック、隔離Bot環境 | 同時および連続して`on_ready`を呼び、続けてcloseを2回実行 | Startup Recoveryは1回で、投稿、通知、maintenanceの各`loop.start()`も1回。重複Taskなし。close時に3 loopとstartup Taskを回収し、二重closeも安全 | 2026-08-22 | Oto | 固定Clock＋Fake Gateway／モック＋専用PostgreSQLによる隔離受入。追加テスト7 passed、0 failed、0 skipped。重点テスト35 passed、0 failed、0 skipped。PostgreSQL込み全pytest 822 passed、0 failed、0 skipped。実時間sleep・実Discord API通信なし。証跡コミット`0cf300d82413aece0355e526babd1395f101d853`。安全性と再現性のため実Discordで再接続競合を意図的に発生させていない | Bot接続なし。Taskとloopをテスト内で回収 |
 | [x] 別環境セットアップ | 再現性の確認 | 新しいWSL2/Linux環境 | READMEを先頭から実施 | PostgreSQL、Migration、テスト、Bot起動が再現 | 2026-08-22 | Oto | 使い捨てworktree＋専用Compose project＋tmpfs PostgreSQLによる隔離受入。基準コミット`da4f52a1d72a1de48ad79d99cbceeef5b6540629`からdetached worktreeと新規CPython 3.14.4仮想環境を作成し、`.[dev]`導入とpip checkに成功。`.env`はpermission 600、Git ignore・非追跡で、非実在Discord設定とダミーtokenのみ使用。専用Compose project`discord_bot_phase1_setup_20260822`のPostgreSQL 18.4をhost port 56432、tmpfs、専用Volumeなしで起動し、health、upgrade head、current／heads `8e5b2f1c4a90 (head)`、Alembic checkを確認。downgrade、stamp、手動DDLなし。通常pytest 579 passed／243 expected skipped、PostgreSQL統合243 passed／0 failed／0 skipped、全pytest 822 passed／0 failed／0 skipped、Bot未接続境界32 passed、Ruff check・format check・git diff check成功、追跡差分なし、終了時6業務テーブル0件。`python -m discord_ai_reminder_bot`は実行せず、package import、設定読込、Engine／Session／Bot構築、tokenの`bot.run()`境界での展開、Schema revision確認まで実施し、実Discordへのログイン・同期・送信なし | 専用postgresをstop・rmし、専用network、detached worktree、一時override、一時ルートを削除。専用Volume作成なし、`down -v`未使用、port 56432解放、専用project資源残存なし。元リポジトリ、開発用postgres、開発DB、postgres_data Volumeは事前・事後で不変 |
 | [x] list選択詳細・操作期限 | 選択・詳細・戻る・認可・timeout確認 | 複数利用者と予約 | 選択、一覧へ戻る、本人以外操作、最後の操作から15分待機 | 最新詳細を表示し、本人以外を拒否する。通常時は15分案内を表示し、timeout後は一覧内容・フィルター・ページ・操作部品を残したまま全部品がdisabledとなり、`/post list`再実行案内を表示する | 2026-08-29 | Oto | 実Discordで最後の操作から15分経過後も一覧内容、選択中の種類、ページ番号、全操作部品が表示され、全部品がdisabledとなることと再実行案内を確認。新しい`/post list`の再実行成功と、Botターミナルに関連する異常ログがないことを確認 | なし |
+| [x] list予約種類フィルター | 状態・ページ・詳細との連携確認 | 単発・毎日・毎週と0件になる条件を用意 | `/post list status:一時停止中`から各種類・すべてを選び、ページ移動、詳細、一覧へ戻るを操作 | 状態条件を維持し、種類変更で1ページへ戻り、件数・default・詳細候補が更新され、0件でも種類変更できる | 2026-08-29 | Oto | 実Discordの`/post list`で「すべて／単発／毎日／毎週」を選択でき、種類切り替え後は該当する予約だけが表示され、選択中の種類が一覧表示へ反映されることを確認 | なし |
+| [x] 短縮終了日 | daily・weekly・editの入力と表示確認 | 検証用定期予約 | `明日`、`8/30`、完全日付と不正入力を試す | 完全日付で表示・保存され、半角違反と形式不正を個別案内 | 2026-08-29 | Oto | 実Discordで定期予約の終了日に「明日」と「8/30」を入力でき、作成結果では完全な`YYYY-MM-DD`形式に変換して表示されることを確認 | 検証予約を削除 |
+| [x] listページング表示 | 全件数・総ページ数と境界ボタンの確認 | 複数ページの予約 | `/post list`で先頭・中間・最終ページを移動 | 件数とページが正しく、前後ボタンのdisabledが境界に一致 | 2026-08-29 | Oto | 実Discordで全件数・現在ページ・総ページ数、1ページ最大10件、先頭・最終ページの前後ボタン制御、ページ往復時の重複・欠落なし、フィルター条件維持、異常ログなしを確認 | なし |
+| [x] list更新追従 | status、NULL順、ページ補正確認 | pausedを含む予約 | status絞り込み中に予約数を変更して移動 | pausedは既存NULL後方順、消滅ページは末尾へ補正 | 2026-08-29 | Oto | 実Discordで一覧表示後に別コマンドで対象予約を一時停止し、既存一覧の再操作で最新の「⏸️ 一時停止中」へ更新され古い「有効」が残らないこと、一時停止中が日時あり予約より後方に表示されること、`/post show`との状態一致、種類フィルターの継続操作、異常ログなしを確認 | 検証予約を削除 |
+| [x] 定期予約のpause保持と同日救済 | 実Discord上のephemeral View・Modal・表示確認 | 検証用guild、未来および当日到来済みの毎日・毎週予約 | pause後に時刻前再開、時刻後の4選択、timeout、本人以外の操作を確認 | 保持run再利用、同日だけの救済、paused中の無送信、統一状態表示、基本時刻への復帰 | 2026-08-29 | Oto | 実Discordで投稿時刻前のpause・resumeによる未来runと次回日時の保持、pause・resume成功Embed末尾の注意表示、paused中の無送信、投稿時刻後の4選択肢、キャンセル時のpaused維持、時刻指定・今すぐ投稿の各1回投稿と翌回基本時刻への復帰、次回から再開時の当日分見送り、二重投稿・異常ログなしを確認 | 検証予約と投稿を削除 |
 
-確認済み: **58件**
+確認済み: **63件**
 
 ## 3. 未確認項目
 
@@ -84,12 +89,7 @@
 
 | 状態・項目 | 目的 | 前提 | 操作 | 期待結果 | 実施日 | 実施者 | 証跡 | 後片付け |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [ ] 定期予約のpause保持と同日救済 | 実Discord上のephemeral View・Modal・表示確認 | 検証用guild、未来および当日到来済みの毎日・毎週予約 | pause後に時刻前再開、時刻後の4選択、timeout、本人以外の操作を確認 | 保持run再利用、同日だけの救済、paused中の無送信、統一状態表示、基本時刻への復帰 | 未実施 | 未定 | 自動テストとは別に実Discordで確認する | 検証予約と投稿を削除 |
-| [ ] listページング表示 | 全件数・総ページ数と境界ボタンの確認 | 複数ページの予約 | `/post list`で先頭・中間・最終ページを移動 | 件数とページが正しく、前後ボタンのdisabledが境界に一致 | 未実施 | 未定 | 自動テストとは別に実Discordで確認する | なし |
-| [ ] list予約種類フィルター | 状態・ページ・詳細との連携確認 | 単発・毎日・毎週と0件になる条件を用意 | `/post list status:一時停止中`から各種類・すべてを選び、ページ移動、詳細、一覧へ戻るを操作 | 状態条件を維持し、種類変更で1ページへ戻り、件数・default・詳細候補が更新され、0件でも種類変更できる | 未実施 | 未定 | 実Discord未確認 | なし |
-| [ ] list更新追従 | status、NULL順、ページ補正確認 | pausedを含む予約 | status絞り込み中に予約数を変更して移動 | pausedは既存NULL後方順、消滅ページは末尾へ補正 | 未実施 | 未定 | 自動テストとは別に実Discordで確認する | 検証予約を削除 |
-| [ ] 短縮終了日 | daily・weekly・editの入力と表示確認 | 検証用定期予約 | `明日`、`8/30`、完全日付と不正入力を試す | 完全日付で表示・保存され、半角違反と形式不正を個別案内 | 未実施 | 未定 | 自動テストとは別に実Discordで確認する | 検証予約を削除 |
-未確認: **5件**
+未確認: **0件**
 
 ## 4. 判定記録
 

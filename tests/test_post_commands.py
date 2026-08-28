@@ -890,6 +890,9 @@ async def test_pause_resume_defer_commit_and_use_interaction_identity(
         schedule_type=ScheduleType.DAILY,
         previous_status=ScheduleStatus.ACTIVE,
         pending_runs_skipped=1,
+        local_time=time(12),
+        weekday=None,
+        end_date=None,
     )
     service.resume.return_value = ResumedSchedule(
         public_id=public_id,
@@ -901,6 +904,7 @@ async def test_pause_resume_defer_commit_and_use_interaction_identity(
         weekday=None,
         end_date=None,
         content="body",
+        held_run_reused=True,
     )
     service.preview_resume.return_value = ResumePreview(public_id, None, False, False)
     monkeypatch.setattr(
@@ -922,6 +926,12 @@ async def test_pause_resume_defer_commit_and_use_interaction_identity(
     assert kwargs["ephemeral"] is True
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert kwargs["embed"].title == ("予約を再開しました" if resume else "予約を一時停止しました")
+    if resume:
+        fields = {field.name: field.value for field in kwargs["embed"].fields}
+        assert fields["⚠️ 再開について"].startswith(
+            "一時停止前に保持していた投稿回を引き続き使用します。"
+        )
+        assert "再開結果" not in fields
 
 
 def test_pause_resume_commands_only_accept_required_public_id() -> None:

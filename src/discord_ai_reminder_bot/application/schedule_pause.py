@@ -61,6 +61,9 @@ class PausedSchedule:
     schedule_type: ScheduleType
     previous_status: ScheduleStatus
     pending_runs_skipped: int
+    local_time: time
+    weekday: int | None
+    end_date: date | None
     held_run_at: datetime | None = None
 
 
@@ -75,6 +78,7 @@ class ResumedSchedule:
     weekday: int | None
     end_date: date | None
     content: str | None
+    held_run_reused: bool
     resume_mode: ResumeMode = ResumeMode.NEXT_REGULAR
     missed_scheduled_for: datetime | None = None
     replacement_scheduled_for: datetime | None = None
@@ -167,6 +171,9 @@ class SchedulePauseService:
             schedule_type=ScheduleType(schedule.schedule_type),
             previous_status=ScheduleStatus.ACTIVE,
             pending_runs_skipped=pending_count,
+            local_time=schedule.local_time,
+            weekday=schedule.weekday,
+            end_date=schedule.end_date,
             held_run_at=held.scheduled_for if held else None,
         )
 
@@ -243,7 +250,9 @@ class SchedulePauseService:
             next_at = held.scheduled_for
             created_run = held
             missed = None
+            held_run_reused = True
         else:
+            held_run_reused = False
             missed = held.scheduled_for if held else None
             if mode in {ResumeMode.IMMEDIATE_ONCE, ResumeMode.RESCHEDULED_ONCE}:
                 replacement_at = resumed_at if mode is ResumeMode.IMMEDIATE_ONCE else replacement_at
@@ -337,7 +346,7 @@ class SchedulePauseService:
             at=resumed_at,
             changes={
                 "status": {"from": "paused", "to": target.value},
-                "next_run_recalculated": next_at is not None,
+                "next_run_recalculated": next_at is not None and not held_run_reused,
                 "resume_mode": mode.value,
                 "missed_scheduled_for": missed.isoformat() if missed else None,
                 "replacement_scheduled_for": (
@@ -368,6 +377,7 @@ class SchedulePauseService:
             weekday=schedule.weekday,
             end_date=schedule.end_date,
             content=schedule.content,
+            held_run_reused=held_run_reused,
             resume_mode=mode,
             missed_scheduled_for=missed,
             replacement_scheduled_for=(

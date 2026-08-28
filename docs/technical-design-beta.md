@@ -540,13 +540,15 @@ outboxには`scheduled_at`、`next_attempt_at`、`attempt_count`、claim・lease
 
 - 編集後は、編集完了時刻を基準に次回日時を再計算する。
 - 次回投稿の5分前を過ぎている場合は編集を拒否する。
-- 未来の健全な通常初回runは停止中も保持し、予定時刻前の再開では同じrun IDを再利用する。
+- 未来の健全な通常初回runは停止中も保持し、予定時刻前の再開では同じrun IDを再利用する。Application Serviceはtransaction内の再検証結果を不変DTOの`held_run_reused`でBot層へ渡し、`true`の場合だけ成功Embedで保持していた投稿回を引き続き使用し、次回投稿日時が変更されていないことを明示する。
 - 到来後は本人限定の非永続Viewで、次回から再開、同日分の即時処理、同日分の5分以上先への時刻指定、キャンセルを選ぶ。数日前の回と終了日超過後は救済しない。
 - 次回が存在せず本文がある場合は `ended` へ遷移する。
 - 次回が存在せず本文がない `paused` は `ended` へ遷移せず、本文を設定して終了処理するか削除する。本文なしの `draft` も自動的に `ended` へ変更せず、利用者または管理者が確認して削除する。
 - 本文なしの定期 `draft` で現在回を `skipped` にした場合も、次回が存在すれば `draft` を維持して未来の次回実行を1件だけ生成する。次回が存在しなければ、DB制約上必要な既存の `next_run_at`、状態、versionを変更せず、確認・削除対象として残す。
 
 一時停止と再開はそれぞれ `/post pause public_id:<canonical UUIDv7>`、`/post resume public_id:<canonical UUIDv7>` とし、理由、confirm、確認Viewなしで即時実行する。ローカル入力検証後にephemeralでdeferし、Botコマンドが所有するトランザクションをcommitした後に成功Embedをfollowupする。
+
+pause／resume成功EmbedのPresenterは通常の予約情報を状態・種別から予約IDまで先に構成し、その後に処理結果と利用上の注意を原則1つの警告フィールドへまとめる。pauseは保持runの有無に応じて再開時の説明を切り替えつつ、全成功表示で停止中はDiscordへ投稿されないことを明示する。resumeは`held_run_reused`、resume mode、draft／endedの状態から正確な案内を組み立て、旧来の独立した再開結果フィールドを重複表示しない。
 
 一時停止対象は処理・確定待ちでない`active`の毎日・毎週予約だけとする。runをID昇順でロック後にScheduleをロックする。未来、初回、attempt 0、`next_attempt_at = scheduled_for`、claim/leaseなし、DeliveryAttemptなしでScheduleと整合するrunを最大1件保持する。それ以外のpendingは`skipped`、`next_attempt_at = NULL`、`finished_at = updated_at = paused_at`、`result_code = 'schedule_paused'`とする。Scheduleは`paused`、`next_run_at = NULL`、`version + 1`とする。
 

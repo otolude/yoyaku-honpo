@@ -217,25 +217,30 @@ def deleted_schedule_embed(schedule: DeletedSchedule) -> discord.Embed:
 
 def paused_schedule_embed(schedule: PausedSchedule) -> discord.Embed:
     embed = _embed(title="予約を一時停止しました", status=ScheduleStatus.PAUSED)
-    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
-    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "現在の状態", status_text(ScheduleStatus.PAUSED), inline=True)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
-    _field(
-        embed,
-        "一時停止について",
-        "一時停止中は投稿されません。\n本文と繰り返し設定は保持されています。",
-        inline=False,
-    )
     if schedule.held_run_at is not None:
         _field(embed, "🗓️ 次回投稿", datetime_text(schedule.held_run_at), inline=False)
-        _field(
-            embed,
-            "再開について",
-            "投稿時刻より前に再開すれば、予定どおり投稿されます。",
-            inline=False,
-        )
-    _field(embed, "補足", f"停止前の状態：{status_text(schedule.previous_status)}", inline=False)
+    _field(embed, "基本投稿時刻", local_time_text(schedule.local_time), inline=True)
+    if schedule.schedule_type is ScheduleType.WEEKLY:
+        _field(embed, "曜日", weekday_text(schedule.weekday), inline=True)
+    _field(
+        embed,
+        "終了日",
+        schedule.end_date.isoformat() if schedule.end_date else "なし",
+        inline=True,
+    )
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    pause_notes = [
+        "一時停止中はDiscordへ投稿されません。",
+        "本文と繰り返し設定は保持されています。",
+    ]
+    if schedule.held_run_at is not None:
+        pause_notes.append("投稿時刻より前に再開すれば、保持している投稿回を予定どおり使用します。")
+    else:
+        pause_notes.append("保持している投稿回はありません。再開時に次の投稿予定を決定します。")
+    _field(embed, "⚠️ 一時停止について", "\n".join(pause_notes), inline=False)
     return _validated(embed)
 
 
@@ -244,47 +249,52 @@ def resumed_schedule_embed(schedule: ResumedSchedule) -> discord.Embed:
         embed = _embed(title="予約の終了を確定しました", status=schedule.status)
     else:
         embed = _embed(title="予約を再開しました", status=schedule.status)
-    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
-    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "現在の状態", status_text(schedule.status), inline=True)
+    _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
     if schedule.next_run_at is not None:
         _field(embed, "🗓️ 次回投稿", datetime_text(schedule.next_run_at), inline=False)
-    _field(embed, "補足", f"再開前の状態：{status_text(ScheduleStatus.PAUSED)}", inline=False)
-    if schedule.missed_scheduled_for is not None:
-        label = (
-            "見送り済み"
-            if schedule.resume_mode.value == "next_regular"
-            else "投稿対象を置き換えました"
-        )
-        _field(embed, "本日分", label, inline=False)
-    if schedule.replacement_scheduled_for is not None:
-        _field(embed, "今回の投稿", datetime_text(schedule.replacement_scheduled_for), inline=False)
-    if schedule.next_regular_at is not None and schedule.replacement_scheduled_for is not None:
-        _field(embed, "次回の通常投稿", datetime_text(schedule.next_regular_at), inline=False)
+    _field(embed, "基本投稿時刻", local_time_text(schedule.local_time), inline=True)
     if schedule.schedule_type is ScheduleType.WEEKLY:
         _field(embed, "曜日", weekday_text(schedule.weekday), inline=True)
-    _field(embed, "投稿時刻", local_time_text(schedule.local_time), inline=True)
     _field(
         embed,
         "終了日",
         schedule.end_date.isoformat() if schedule.end_date else "なし",
         inline=True,
     )
+    _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    resume_notes: list[str] = []
+    if schedule.held_run_reused:
+        resume_notes.append(
+            "一時停止前に保持していた投稿回を引き続き使用します。\n"
+            "次回投稿日時は変更されていません。"
+        )
+    if schedule.missed_scheduled_for is not None:
+        if schedule.resume_mode.value == "next_regular":
+            resume_notes.append("到来済みの投稿回は見送り、次回の通常投稿から再開しました。")
+        elif schedule.resume_mode.value == "immediate_once":
+            resume_notes.append(
+                "到来済みの投稿回を見送り、今回分を今すぐ投稿する予定で再開しました。"
+            )
+        else:
+            resume_notes.append(
+                "到来済みの投稿回を見送り、今回分を指定した時刻に投稿する予定で再開しました。"
+            )
+    if schedule.replacement_scheduled_for is not None:
+        resume_notes.append(f"今回の投稿：{datetime_text(schedule.replacement_scheduled_for)}")
+    if schedule.next_regular_at is not None and schedule.replacement_scheduled_for is not None:
+        resume_notes.append(f"次回の通常投稿：{datetime_text(schedule.next_regular_at)}")
     if schedule.status is ScheduleStatus.DRAFT:
-        _field(
-            embed,
-            "下書きについて",
+        resume_notes.append(
             "本文がないため下書きとして再開しました。本文を設定するまで投稿されません。",
-            inline=False,
         )
     elif schedule.status is ScheduleStatus.ENDED:
-        _field(
-            embed,
-            "終了結果",
+        resume_notes.append(
             "終了日内に次の投稿予定がないため、予約は終了済みになりました。",
-            inline=False,
         )
+    if resume_notes:
+        _field(embed, "⚠️ 再開について", "\n".join(resume_notes), inline=False)
     return _validated(embed)
 
 

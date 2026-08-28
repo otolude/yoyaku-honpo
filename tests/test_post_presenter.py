@@ -12,7 +12,11 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     ScheduleDeletionView,
 )
 from discord_ai_reminder_bot.application.schedule_editing import EditedSchedule
-from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
+from discord_ai_reminder_bot.application.schedule_pause import (
+    PausedSchedule,
+    ResumedSchedule,
+    ResumeMode,
+)
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
 from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_LIMIT,
@@ -66,7 +70,8 @@ def all_text(embed) -> str:
     )
 
 
-def test_pause_embed_explains_preservation_and_skipped_occurrence() -> None:
+@pytest.mark.parametrize("held_run_at", [None, NOW])
+def test_pause_embed_puts_state_accurate_warning_last(held_run_at: datetime | None) -> None:
     embed = paused_schedule_embed(
         PausedSchedule(
             public_id=uuid.uuid7(),
@@ -74,14 +79,22 @@ def test_pause_embed_explains_preservation_and_skipped_occurrence() -> None:
             schedule_type=ScheduleType.DAILY,
             previous_status=ScheduleStatus.ACTIVE,
             pending_runs_skipped=1,
+            local_time=time(9),
+            weekday=None,
+            end_date=date(2026, 8, 31),
+            held_run_at=held_run_at,
         )
     )
     text = all_text(embed)
     assert embed.title == "予約を一時停止しました"
-    assert "一時停止中は投稿されません" in text
+    assert "一時停止中はDiscordへ投稿されません" in text
     assert "本文と繰り返し設定は保持" in text
     assert "現在の状態" in text
     assert "⏸️ 一時停止中" in text
+    assert embed.fields[-1].name == "⚠️ 一時停止について"
+    assert embed.fields[-2].name == "🆔 予約ID"
+    assert ("保持している投稿回を予定どおり使用" in text) is (held_run_at is not None)
+    assert ("保持している投稿回はありません" in text) is (held_run_at is None)
 
 
 def test_edit_embed_shows_changes_and_safe_state_notes() -> None:
@@ -135,10 +148,82 @@ def test_resume_embed_draft_and_ended_messages(
             weekday=2,
             end_date=date(2026, 8, 31),
             content=None if status is ScheduleStatus.DRAFT else "body",
+            held_run_reused=False,
         )
     )
     assert embed.title == title
     assert message in all_text(embed)
+
+
+@pytest.mark.parametrize("schedule_type", [ScheduleType.DAILY, ScheduleType.WEEKLY])
+@pytest.mark.parametrize("status", [ScheduleStatus.ACTIVE, ScheduleStatus.DRAFT])
+@pytest.mark.parametrize("held_run_reused", [False, True])
+def test_resume_embed_only_explains_held_occurrence_when_reused(
+    schedule_type: ScheduleType, status: ScheduleStatus, held_run_reused: bool
+) -> None:
+    embed = resumed_schedule_embed(
+        ResumedSchedule(
+            public_id=uuid.uuid7(),
+            channel_id=400,
+            schedule_type=schedule_type,
+            status=status,
+            next_run_at=NOW,
+            local_time=time(9),
+            weekday=2 if schedule_type is ScheduleType.WEEKLY else None,
+            end_date=date(2026, 8, 31),
+            content="body" if status is ScheduleStatus.ACTIVE else None,
+            held_run_reused=held_run_reused,
+        )
+    )
+    fields = {field.name: field.value for field in embed.fields}
+    if held_run_reused:
+        assert fields["⚠️ 再開について"].startswith(
+            "一時停止前に保持していた投稿回を引き続き使用します。\n"
+            "次回投稿日時は変更されていません。"
+        )
+    else:
+        assert "再開結果" not in fields
+    assert "再開結果" not in fields
+    assert ("本文を設定するまで投稿されません" in all_text(embed)) is (
+        status is ScheduleStatus.DRAFT
+    )
+    if held_run_reused or status is ScheduleStatus.DRAFT:
+        assert embed.fields[-1].name == "⚠️ 再開について"
+    assert ("曜日" in fields) is (schedule_type is ScheduleType.WEEKLY)
+    assert len(embed.fields) <= EMBED_FIELD_LIMIT and len(embed) <= EMBED_TOTAL_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        (ResumeMode.NEXT_REGULAR, "次回の通常投稿から再開しました"),
+        (ResumeMode.IMMEDIATE_ONCE, "今回分を今すぐ投稿する予定で再開しました"),
+        (ResumeMode.RESCHEDULED_ONCE, "今回分を指定した時刻に投稿する予定で再開しました"),
+    ],
+)
+def test_resume_missed_occurrence_guidance_is_last(mode: ResumeMode, message: str) -> None:
+    replacement = NOW if mode is not ResumeMode.NEXT_REGULAR else None
+    embed = resumed_schedule_embed(
+        ResumedSchedule(
+            public_id=uuid.uuid7(),
+            channel_id=400,
+            schedule_type=ScheduleType.DAILY,
+            status=ScheduleStatus.ACTIVE,
+            next_run_at=NOW,
+            local_time=time(9),
+            weekday=None,
+            end_date=None,
+            content="body",
+            held_run_reused=False,
+            resume_mode=mode,
+            missed_scheduled_for=NOW,
+            replacement_scheduled_for=replacement,
+            next_regular_at=NOW if replacement is not None else None,
+        )
+    )
+    assert embed.fields[-1].name == "⚠️ 再開について"
+    assert message in embed.fields[-1].value
+    assert embed.fields[-2].name == "🆔 予約ID"
 
 
 @pytest.mark.parametrize("status", list(ScheduleStatus))
