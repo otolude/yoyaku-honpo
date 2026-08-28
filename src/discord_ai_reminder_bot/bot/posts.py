@@ -54,6 +54,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_schedule_embed,
     deleted_schedule_embed,
     edited_schedule_embed,
+    expired_schedule_list_embed,
     once_schedule_confirmation_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
@@ -201,8 +202,9 @@ class ScheduleListView(discord.ui.View):
         status: ScheduleStatus | None,
         schedule_type: ScheduleType | None,
         page: SchedulePage,
+        embed: discord.Embed,
     ) -> None:
-        super().__init__(timeout=120.0)
+        super().__init__(timeout=900.0)
         self.commands = commands
         self.initial_interaction = interaction
         self.actor_user_id = actor_user_id
@@ -210,6 +212,7 @@ class ScheduleListView(discord.ui.View):
         self.status = status
         self.schedule_type = schedule_type
         self.page = page.page
+        self.current_embed = embed
         self.action_lock = asyncio.Lock()
         self.finished = False
         self.closed = False
@@ -714,6 +717,7 @@ class PostCommands(app_commands.Group):
                 status=parsed_status,
                 schedule_type=None,
                 page=result,
+                embed=embed,
             )
         except Exception:  # noqa: BLE001 - presentation failures remain sanitized
             self._logger.error("schedule_presentation_failed")
@@ -1439,6 +1443,7 @@ class PostCommands(app_commands.Group):
                     view=view,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+                view.current_embed = embed
             except Exception:  # noqa: BLE001 - no private query/Discord details
                 self._logger.error("schedule_list_navigation_failed")
                 await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
@@ -1487,6 +1492,7 @@ class PostCommands(app_commands.Group):
                     view=view,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+                view.current_embed = embed
             except Exception:  # noqa: BLE001 - no private query/Discord details
                 self._logger.error("schedule_list_type_filter_failed")
                 await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
@@ -1525,6 +1531,7 @@ class PostCommands(app_commands.Group):
                     view=view,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+                view.current_embed = embed
             except InvalidScheduleQueryError:
                 await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             except Exception:  # noqa: BLE001 - no private query/Discord details
@@ -1536,14 +1543,21 @@ class PostCommands(app_commands.Group):
             if view.finished or view.closed:
                 return
             view.finished = True
-            view.stop()
-            self._list_views.discard(view)
+            for item in view.children:
+                if isinstance(item, discord.ui.Button | discord.ui.Select):
+                    item.disabled = True
+            expired_embed = expired_schedule_list_embed(view.current_embed)
             try:
                 await view.initial_interaction.edit_original_response(
-                    view=None, allowed_mentions=discord.AllowedMentions.none()
+                    embed=expired_embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception:  # noqa: BLE001 - Discord details remain private
                 self._logger.error("schedule_list_timeout_response_failed")
+            finally:
+                view.stop()
+                self._list_views.discard(view)
 
     async def close_list_views(self) -> None:
         views = tuple(self._list_views)

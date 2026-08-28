@@ -19,6 +19,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_NAME_LIMIT,
     EMBED_FIELD_VALUE_LIMIT,
     EMBED_TOTAL_LIMIT,
+    LIST_OPERATION_GUIDANCE,
     STATUS_COLOURS,
     STATUS_LABELS,
     created_recurring_schedule_embed,
@@ -210,7 +211,9 @@ def test_list_ten_items_stays_within_all_embed_limits_and_order() -> None:
     schedules = [view(content=f"本文{i}") for i in range(10)]
     embed = schedule_list_embed(schedules, page=3, status_filter=ScheduleStatus.ACTIVE)
     assert embed.title == "予約一覧"
-    assert embed.description == "ページ 3｜状態：有効｜種類：すべて｜日本時間（JST）"
+    assert embed.description == (
+        f"ページ 3｜状態：有効｜種類：すべて｜日本時間（JST）\n{LIST_OPERATION_GUIDANCE}"
+    )
     assert len(embed.fields) == 10 <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT
     assert all(len(field.name) <= EMBED_FIELD_NAME_LIMIT for field in embed.fields)
@@ -232,7 +235,8 @@ def test_list_header_contains_total_count_and_total_pages() -> None:
         total_pages=2,
     )
     assert embed.description == (
-        "1 / 2ページ｜全12件\n状態：一時停止中｜種類：すべて｜日本時間（JST）"
+        f"1 / 2ページ｜全12件\n状態：一時停止中｜種類：すべて｜日本時間（JST）\n"
+        f"{LIST_OPERATION_GUIDANCE}"
     )
 
 
@@ -246,7 +250,8 @@ def test_list_header_contains_schedule_type_filter() -> None:
         total_pages=1,
     )
     assert embed.description == (
-        "1 / 1ページ｜全0件\n状態：一時停止中｜種類：毎日｜日本時間（JST）"
+        f"1 / 1ページ｜全0件\n状態：一時停止中｜種類：毎日｜日本時間（JST）\n"
+        f"{LIST_OPERATION_GUIDANCE}"
     )
 
 
@@ -335,7 +340,9 @@ def test_empty_list_is_an_embed() -> None:
     embed = schedule_list_embed([], page=99, status_filter=ScheduleStatus.DELETED)
     assert len(embed.fields) == 1
     assert "表示できる予約はありません" in embed.fields[0].value
-    assert embed.description == "ページ 99｜状態：削除済み｜種類：すべて｜日本時間（JST）"
+    assert embed.description == (
+        f"ページ 99｜状態：削除済み｜種類：すべて｜日本時間（JST）\n{LIST_OPERATION_GUIDANCE}"
+    )
 
 
 def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_claims() -> None:

@@ -27,6 +27,10 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ScheduleStateChangeUnavailable,
 )
 from discord_ai_reminder_bot.application.schedule_queries import SchedulePage, ScheduleView
+from discord_ai_reminder_bot.bot.post_presenter import (
+    LIST_EXPIRED_GUIDANCE,
+    LIST_OPERATION_GUIDANCE,
+)
 from discord_ai_reminder_bot.bot.posts import (
     CREATE_CANCELLED_MESSAGE,
     CREATE_DATETIME_DESCRIPTION,
@@ -540,6 +544,8 @@ async def test_creator_list_responds_ephemerally_without_mentions() -> None:
     kwargs = value.response.send_message.await_args.kwargs
     assert kwargs["ephemeral"] is True
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert LIST_OPERATION_GUIDANCE in kwargs["embed"].description
+    assert kwargs["view"].timeout == 900.0
 
 
 @pytest.mark.asyncio
@@ -672,12 +678,18 @@ async def test_empty_type_filter_keeps_filter_available_and_disables_paging() ->
 
 
 @pytest.mark.asyncio
-async def test_list_view_rejects_other_user_and_timeout_removes_view() -> None:
+async def test_list_view_rejects_other_user_and_timeout_disables_retained_view() -> None:
     queries = AsyncMock()
-    queries.get_schedule_page.return_value = SchedulePage((view(),), 1, 1)
-    group = commands(queries)
+    queries.get_schedule_page.side_effect = [
+        SchedulePage(tuple(view() for _ in range(10)), 2, 24),
+        SchedulePage((view(),), 1, 1),
+    ]
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    group = commands(queries, session=session)
     original = interaction()
-    await group.list_command.callback(group, original, None, 1)
+    await group.list_command.callback(group, original, None, 2)
     list_view = original.response.send_message.await_args.kwargs["view"]
 
     other = interaction()
@@ -685,12 +697,48 @@ async def test_list_view_rejects_other_user_and_timeout_removes_view() -> None:
     assert await list_view.interaction_check(other) is False
     assert other.response.send_message.await_args.kwargs["ephemeral"] is True
 
+    await group._filter_list_type(list_view, interaction(), ScheduleType.WEEKLY)
+    displayed = list_view.current_embed.to_dict()
+    queries.reset_mock()
     await group._expire_list(list_view)
     assert list_view.finished is True
+    assert list_view.is_finished()
     assert list_view not in group._list_views
+    assert all(item.disabled for item in list_view.children)
+    queries.get_schedule_page.assert_not_awaited()
+    session.__aenter__.assert_not_awaited()
     kwargs = original.edit_original_response.await_args.kwargs
-    assert kwargs["view"] is None
+    assert kwargs["view"] is list_view
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    expired = kwargs["embed"]
+    assert LIST_EXPIRED_GUIDANCE in expired.description
+    assert "1 / 1ページ｜全1件" in expired.description
+    assert "種類：毎週" in expired.description
+    assert expired.fields == list_view.current_embed.fields
+    assert list_view.current_embed.to_dict() == displayed
+
+
+@pytest.mark.asyncio
+async def test_list_timeout_edit_failure_is_sanitized_and_stops_view(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "token=discord-secret-value"
+    queries = AsyncMock()
+    queries.get_schedule_page.return_value = SchedulePage((view(),), 1, 1)
+    group = commands(queries)
+    original = interaction()
+    original.edit_original_response.side_effect = RuntimeError(secret)
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+
+    with caplog.at_level(logging.ERROR):
+        await list_view.on_timeout()
+
+    assert list_view.is_finished()
+    assert list_view not in group._list_views
+    assert "schedule_list_timeout_response_failed" in caplog.text
+    assert secret not in caplog.text
+    assert "RuntimeError" not in caplog.text
 
 
 @pytest.mark.asyncio

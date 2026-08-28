@@ -66,6 +66,8 @@ STATUS_COLOURS = {
 WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
 SELECT_LABEL_LIMIT = 100
 SELECT_VALUE_LIMIT = 100
+LIST_OPERATION_GUIDANCE = "操作可能時間：最後の操作から15分"
+LIST_EXPIRED_GUIDANCE = "操作期限が切れました。最新の一覧は /post list を再実行してください。"
 
 
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
@@ -309,9 +311,13 @@ def schedule_list_embed(
         title="予約一覧",
         description=(
             f"{page} / {total_pages}ページ｜全{total_count}件\n"
-            f"状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）"
+            f"状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）\n"
+            f"{LIST_OPERATION_GUIDANCE}"
             if total_count is not None and total_pages is not None
-            else f"ページ {page}｜状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）"
+            else (
+                f"ページ {page}｜状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）\n"
+                f"{LIST_OPERATION_GUIDANCE}"
+            )
         ),
         colour=0x5865F2,
     )
@@ -334,6 +340,14 @@ def schedule_list_embed(
         value = "\n".join(lines)
         _field(embed, name, value, inline=False)
     return _validated(embed)
+
+
+def expired_schedule_list_embed(embed: discord.Embed) -> discord.Embed:
+    """Return the currently displayed embed with fixed expiry guidance appended."""
+    expired = embed.copy()
+    description = expired.description or ""
+    expired.description = f"{description}\n{LIST_EXPIRED_GUIDANCE}".lstrip()
+    return _validated(expired)
 
 
 def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
