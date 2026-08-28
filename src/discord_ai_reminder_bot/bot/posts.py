@@ -145,15 +145,47 @@ class ScheduleListSelect(discord.ui.Select):
             for item in page.schedules
         ]
         super().__init__(
-            placeholder="詳細を表示する予約を選択",
+            placeholder="詳細を見る予約を選択",
             min_values=1,
             max_values=1,
             options=options,
             custom_id="post_list_select",
+            row=2,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await self.view.commands._show_list_selection(self.view, interaction, self.values[0])
+
+
+class ScheduleTypeFilterSelect(discord.ui.Select):
+    def __init__(self, owner: ScheduleListView) -> None:
+        choices = (
+            ("すべて", "all", None),
+            ("単発", ScheduleType.ONCE.value, ScheduleType.ONCE),
+            ("毎日", ScheduleType.DAILY.value, ScheduleType.DAILY),
+            ("毎週", ScheduleType.WEEKLY.value, ScheduleType.WEEKLY),
+        )
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=value,
+                default=owner.schedule_type is schedule_type,
+            )
+            for label, value, schedule_type in choices
+        ]
+        super().__init__(
+            placeholder="予約種類で絞り込む",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="post_list_schedule_type_filter",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        value = self.values[0]
+        schedule_type = None if value == "all" else ScheduleType(value)
+        await self.view.commands._filter_list_type(self.view, interaction, schedule_type)
 
 
 class ScheduleListView(discord.ui.View):
@@ -167,6 +199,7 @@ class ScheduleListView(discord.ui.View):
         actor_user_id: int,
         administrator: bool,
         status: ScheduleStatus | None,
+        schedule_type: ScheduleType | None,
         page: SchedulePage,
     ) -> None:
         super().__init__(timeout=120.0)
@@ -175,6 +208,7 @@ class ScheduleListView(discord.ui.View):
         self.actor_user_id = actor_user_id
         self.administrator = administrator
         self.status = status
+        self.schedule_type = schedule_type
         self.page = page.page
         self.action_lock = asyncio.Lock()
         self.finished = False
@@ -198,6 +232,7 @@ class ScheduleListView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             disabled=page.page <= 1,
             custom_id="post_list_previous",
+            row=0,
         )
         previous.callback = self._previous
         following = discord.ui.Button(
@@ -205,10 +240,12 @@ class ScheduleListView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             disabled=page.page >= page.total_pages,
             custom_id="post_list_next",
+            row=0,
         )
         following.callback = self._next
         self.add_item(previous)
         self.add_item(following)
+        self.add_item(ScheduleTypeFilterSelect(self))
         if page.schedules:
             self.add_item(ScheduleListSelect(self, page))
 
@@ -650,6 +687,7 @@ class PostCommands(app_commands.Group):
                 administrator=actor.administrator,
                 status=parsed_status,
                 page=page,
+                schedule_type=None,
                 clamp=False,
             )
         except InvalidScheduleQueryError:
@@ -664,6 +702,7 @@ class PostCommands(app_commands.Group):
                 result.schedules,
                 page=result.page,
                 status_filter=parsed_status,
+                schedule_type_filter=None,
                 total_count=result.total_count,
                 total_pages=result.total_pages,
             )
@@ -673,6 +712,7 @@ class PostCommands(app_commands.Group):
                 actor_user_id=actor.user_id,
                 administrator=actor.administrator,
                 status=parsed_status,
+                schedule_type=None,
                 page=result,
             )
         except Exception:  # noqa: BLE001 - presentation failures remain sanitized
@@ -1381,12 +1421,14 @@ class PostCommands(app_commands.Group):
                     administrator=actor.administrator,
                     status=view.status,
                     page=max(1, page),
+                    schedule_type=view.schedule_type,
                     clamp=True,
                 )
                 embed = schedule_list_embed(
                     result.schedules,
                     page=result.page,
                     status_filter=view.status,
+                    schedule_type_filter=view.schedule_type,
                     total_count=result.total_count,
                     total_pages=result.total_pages,
                 )
@@ -1399,6 +1441,54 @@ class PostCommands(app_commands.Group):
                 )
             except Exception:  # noqa: BLE001 - no private query/Discord details
                 self._logger.error("schedule_list_navigation_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+
+    async def _filter_list_type(
+        self,
+        view: ScheduleListView,
+        interaction: discord.Interaction,
+        schedule_type: ScheduleType | None,
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                return
+            actor = authorized_actor(
+                interaction,
+                configured_guild_id=self._configured_guild_id,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            if actor is None or actor.user_id != view.actor_user_id:
+                await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+                return
+            try:
+                result = await self._queries.get_schedule_page(
+                    guild_id=self._configured_guild_id,
+                    requester_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    status=view.status,
+                    page=1,
+                    schedule_type=schedule_type,
+                    clamp=True,
+                )
+                view.schedule_type = schedule_type
+                embed = schedule_list_embed(
+                    result.schedules,
+                    page=result.page,
+                    status_filter=view.status,
+                    schedule_type_filter=schedule_type,
+                    total_count=result.total_count,
+                    total_pages=result.total_pages,
+                )
+                view._render_controls(result)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - no private query/Discord details
+                self._logger.error("schedule_list_type_filter_failed")
                 await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
 
     async def _show_list_selection(

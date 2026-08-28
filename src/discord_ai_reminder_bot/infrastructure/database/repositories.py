@@ -397,6 +397,7 @@ class ScheduleRepository:
         guild_id: int,
         creator_user_id: int,
         status: ScheduleStatus | None = None,
+        schedule_type: ScheduleType | None = None,
         limit: int = 10,
         offset: int = 0,
         exclude_deleted: bool = False,
@@ -408,6 +409,7 @@ class ScheduleRepository:
         return await self._list(
             statement,
             status=status,
+            schedule_type=schedule_type,
             limit=limit,
             offset=offset,
             exclude_deleted=exclude_deleted,
@@ -418,6 +420,7 @@ class ScheduleRepository:
         *,
         guild_id: int,
         status: ScheduleStatus | None = None,
+        schedule_type: ScheduleType | None = None,
         limit: int = 10,
         offset: int = 0,
         exclude_deleted: bool = False,
@@ -426,6 +429,7 @@ class ScheduleRepository:
         return await self._list(
             statement,
             status=status,
+            schedule_type=schedule_type,
             limit=limit,
             offset=offset,
             exclude_deleted=exclude_deleted,
@@ -437,31 +441,50 @@ class ScheduleRepository:
         guild_id: int,
         creator_user_id: int,
         status: ScheduleStatus | None = None,
+        schedule_type: ScheduleType | None = None,
         exclude_deleted: bool = False,
     ) -> int:
         statement = select(func.count(Schedule.id)).where(
             Schedule.guild_id == guild_id,
             Schedule.creator_user_id == creator_user_id,
         )
-        return await self._count(statement, status=status, exclude_deleted=exclude_deleted)
+        return await self._count(
+            statement,
+            status=status,
+            schedule_type=schedule_type,
+            exclude_deleted=exclude_deleted,
+        )
 
     async def count_by_guild(
         self,
         *,
         guild_id: int,
         status: ScheduleStatus | None = None,
+        schedule_type: ScheduleType | None = None,
         exclude_deleted: bool = False,
     ) -> int:
         statement = select(func.count(Schedule.id)).where(Schedule.guild_id == guild_id)
-        return await self._count(statement, status=status, exclude_deleted=exclude_deleted)
+        return await self._count(
+            statement,
+            status=status,
+            schedule_type=schedule_type,
+            exclude_deleted=exclude_deleted,
+        )
 
     async def _count(
-        self, statement, *, status: ScheduleStatus | None, exclude_deleted: bool
+        self,
+        statement,
+        *,
+        status: ScheduleStatus | None,
+        schedule_type: ScheduleType | None,
+        exclude_deleted: bool,
     ) -> int:
         if status is not None:
             statement = statement.where(Schedule.status == status.value)
         elif exclude_deleted:
             statement = statement.where(Schedule.status != ScheduleStatus.DELETED.value)
+        if schedule_type is not None:
+            statement = statement.where(Schedule.schedule_type == schedule_type.value)
         return int((await self._session.scalar(statement)) or 0)
 
     async def _list(
@@ -469,6 +492,7 @@ class ScheduleRepository:
         statement,
         *,
         status: ScheduleStatus | None,
+        schedule_type: ScheduleType | None,
         limit: int,
         offset: int,
         exclude_deleted: bool,
@@ -479,6 +503,8 @@ class ScheduleRepository:
             statement = statement.where(Schedule.status == status.value)
         elif exclude_deleted:
             statement = statement.where(Schedule.status != ScheduleStatus.DELETED.value)
+        if schedule_type is not None:
+            statement = statement.where(Schedule.schedule_type == schedule_type.value)
         statement = statement.order_by(Schedule.next_run_at.asc().nulls_last(), Schedule.id.asc())
         result = await self._session.execute(statement.offset(offset).limit(limit))
         return list(result.scalars())

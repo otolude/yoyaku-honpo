@@ -297,16 +297,21 @@ def schedule_list_embed(
     *,
     page: int,
     status_filter: ScheduleStatus | None,
+    schedule_type_filter: ScheduleType | None = None,
     total_count: int | None = None,
     total_pages: int | None = None,
 ) -> discord.Embed:
     filter_label = STATUS_LABELS[status_filter] if status_filter is not None else "すべて"
+    type_filter_label = (
+        TYPE_LABELS[schedule_type_filter] if schedule_type_filter is not None else "すべて"
+    )
     embed = discord.Embed(
         title="予約一覧",
         description=(
-            f"{page} / {total_pages}ページ｜全{total_count}件\n表示：{filter_label}｜日本時間（JST）"
+            f"{page} / {total_pages}ページ｜全{total_count}件\n"
+            f"状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）"
             if total_count is not None and total_pages is not None
-            else f"ページ {page}｜表示：{filter_label}｜日本時間（JST）"
+            else f"ページ {page}｜状態：{filter_label}｜種類：{type_filter_label}｜日本時間（JST）"
         ),
         colour=0x5865F2,
     )

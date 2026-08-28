@@ -534,6 +534,7 @@ async def test_creator_list_responds_ephemerally_without_mentions() -> None:
         administrator=False,
         status=None,
         page=1,
+        schedule_type=None,
         clamp=False,
     )
     kwargs = value.response.send_message.await_args.kwargs
@@ -555,6 +556,7 @@ async def test_admin_list_passes_administrator_and_deleted_filter() -> None:
         administrator=True,
         status=ScheduleStatus.DELETED,
         page=2,
+        schedule_type=None,
         clamp=False,
     )
     embed = value.response.send_message.await_args.kwargs["embed"]
@@ -574,7 +576,8 @@ async def test_list_view_navigation_refreshes_and_clamps_latest_page() -> None:
     list_view = original.response.send_message.await_args.kwargs["view"]
     assert [item.label for item in list_view.children[:2]] == ["前へ", "次へ"]
     assert all(not item.disabled for item in list_view.children[:2])
-    assert len(list_view.children[2].options) == 10
+    assert len(list_view.children[2].options) == 4
+    assert len(list_view.children[3].options) == 10
 
     clicked = interaction()
     await group._move_list_page(list_view, clicked, 3)
@@ -607,6 +610,65 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
     back = interaction()
     await group._move_list_page(list_view, back, 1)
     assert back.response.edit_message.await_args.kwargs["embed"].title == "予約一覧"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schedule_type", "value", "label"),
+    [
+        (None, "all", "すべて"),
+        (ScheduleType.ONCE, "once", "単発"),
+        (ScheduleType.DAILY, "daily", "毎日"),
+        (ScheduleType.WEEKLY, "weekly", "毎週"),
+    ],
+)
+async def test_list_type_filter_resets_page_and_marks_default(
+    schedule_type: ScheduleType | None, value: str, label: str
+) -> None:
+    queries = AsyncMock()
+    selected = view()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((selected,), 2, 11),
+        SchedulePage((selected,), 1, 1),
+    ]
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 2)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+
+    clicked = interaction()
+    await group._filter_list_type(list_view, clicked, schedule_type)
+
+    assert queries.get_schedule_page.await_args.kwargs == {
+        "guild_id": GUILD_ID,
+        "requester_user_id": USER_ID,
+        "administrator": False,
+        "status": None,
+        "page": 1,
+        "schedule_type": schedule_type,
+        "clamp": True,
+    }
+    type_select = list_view.children[2]
+    defaults = [option for option in type_select.options if option.default]
+    assert [(option.value, option.label) for option in defaults] == [(value, label)]
+    assert f"種類：{label}" in clicked.response.edit_message.await_args.kwargs["embed"].description
+
+
+@pytest.mark.asyncio
+async def test_empty_type_filter_keeps_filter_available_and_disables_paging() -> None:
+    queries = AsyncMock()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((view(),), 1, 1),
+        SchedulePage((), 1, 0),
+    ]
+    group = commands(queries)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    await group._filter_list_type(list_view, interaction(), ScheduleType.WEEKLY)
+    assert len(list_view.children) == 3
+    assert list_view.children[0].disabled and list_view.children[1].disabled
+    assert list_view.children[2].custom_id == "post_list_schedule_type_filter"
 
 
 @pytest.mark.asyncio

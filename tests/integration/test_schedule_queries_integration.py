@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -9,7 +9,7 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     ScheduleQueryService,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus
+from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule
 
 pytestmark = pytest.mark.asyncio
@@ -25,6 +25,7 @@ def make_schedule(
     creator_user_id: int = CREATOR_ID,
     guild_id: int = GUILD_ID,
     status: ScheduleStatus = ScheduleStatus.ACTIVE,
+    schedule_type: ScheduleType = ScheduleType.ONCE,
     next_run_at: datetime | None = NOW,
 ) -> Schedule:
     terminal = status is ScheduleStatus.DELETED
@@ -33,10 +34,12 @@ def make_schedule(
         guild_id=guild_id,
         channel_id=8_300,
         creator_user_id=creator_user_id,
-        schedule_type="once",
+        schedule_type=schedule_type.value,
         status=status.value,
         content="safe integration content",
         next_run_at=None if terminal else next_run_at,
+        local_time=time(12, 0) if schedule_type is not ScheduleType.ONCE else None,
+        weekday=0 if schedule_type is ScheduleType.WEEKLY else None,
         version=1,
         deleted_at=NOW if terminal else None,
         terminal_at=NOW if terminal else None,
@@ -143,6 +146,35 @@ async def test_real_postgres_empty_and_maximum_page_are_safe(db_session: AsyncSe
             )
             == []
         )
+
+
+@pytest.mark.parametrize(
+    "schedule_type", [ScheduleType.ONCE, ScheduleType.DAILY, ScheduleType.WEEKLY]
+)
+async def test_real_postgres_schedule_type_filter_count_and_boundaries(
+    db_session: AsyncSession, schedule_type: ScheduleType
+) -> None:
+    matching = make_schedule(schedule_type=schedule_type)
+    other_type = ScheduleType.DAILY if schedule_type is ScheduleType.ONCE else ScheduleType.ONCE
+    db_session.add_all(
+        [
+            matching,
+            make_schedule(schedule_type=other_type),
+            make_schedule(schedule_type=schedule_type, creator_user_id=OTHER_CREATOR_ID),
+            make_schedule(schedule_type=schedule_type, guild_id=OTHER_GUILD_ID),
+        ]
+    )
+    await db_session.flush()
+    page = await service_for(db_session).get_schedule_page(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=False,
+        status=ScheduleStatus.ACTIVE,
+        schedule_type=schedule_type,
+        page=1,
+    )
+    assert page.total_count == 1
+    assert [item.public_id for item in page.schedules] == [matching.public_id]
 
 
 async def test_real_postgres_show_deleted_owner_admin_and_guild_boundary(

@@ -72,6 +72,7 @@ class ScheduleQueryService:
         administrator: bool,
         status: ScheduleStatus | None,
         page: int,
+        schedule_type: ScheduleType | None = None,
     ) -> list[ScheduleView]:
         _validate_query_ids(guild_id=guild_id, requester_user_id=requester_user_id)
         if isinstance(page, bool) or not 1 <= page <= MAX_PAGE_NUMBER:
@@ -82,6 +83,7 @@ class ScheduleQueryService:
             arguments = {
                 "guild_id": guild_id,
                 "status": status,
+                "schedule_type": schedule_type,
                 "limit": SCHEDULES_PER_PAGE,
                 "offset": offset,
                 "exclude_deleted": status is None,
@@ -103,6 +105,7 @@ class ScheduleQueryService:
         administrator: bool,
         status: ScheduleStatus | None,
         page: int,
+        schedule_type: ScheduleType | None = None,
         clamp: bool = False,
     ) -> SchedulePage:
         _validate_query_ids(guild_id=guild_id, requester_user_id=requester_user_id)
@@ -110,7 +113,12 @@ class ScheduleQueryService:
             raise InvalidScheduleQueryError("invalid page")
         async with self._session_factory() as session:
             repository = ScheduleRepository(session)
-            common = {"guild_id": guild_id, "status": status, "exclude_deleted": status is None}
+            common = {
+                "guild_id": guild_id,
+                "status": status,
+                "schedule_type": schedule_type,
+                "exclude_deleted": status is None,
+            }
             if administrator:
                 total = await repository.count_by_guild(**common)
             else:

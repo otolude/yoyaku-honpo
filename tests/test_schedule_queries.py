@@ -12,7 +12,7 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     ScheduleQueryService,
     parse_public_id,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus
+from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.infrastructure.database.exceptions import RepositoryNotFoundError
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule
 
@@ -59,6 +59,7 @@ async def test_creator_list_is_scoped_and_uses_stable_page_offset(
         requester_user_id=20,
         administrator=False,
         status=None,
+        schedule_type=None,
         page=3,
     )
 
@@ -67,6 +68,7 @@ async def test_creator_list_is_scoped_and_uses_stable_page_offset(
         guild_id=10,
         creator_user_id=20,
         status=None,
+        schedule_type=None,
         limit=10,
         offset=20,
         exclude_deleted=True,
@@ -91,11 +93,13 @@ async def test_administrator_list_can_include_explicit_deleted_status(
         requester_user_id=99,
         administrator=True,
         status=ScheduleStatus.DELETED,
+        schedule_type=None,
         page=1,
     )
     repository.list_by_guild.assert_awaited_once_with(
         guild_id=10,
         status=ScheduleStatus.DELETED,
+        schedule_type=None,
         limit=10,
         offset=0,
         exclude_deleted=False,
@@ -116,6 +120,7 @@ async def test_page_counts_with_same_creator_filter_and_clamps(monkeypatch) -> N
         requester_user_id=20,
         administrator=False,
         status=ScheduleStatus.PAUSED,
+        schedule_type=None,
         page=99,
         clamp=True,
     )
@@ -124,16 +129,46 @@ async def test_page_counts_with_same_creator_filter_and_clamps(monkeypatch) -> N
         guild_id=10,
         creator_user_id=20,
         status=ScheduleStatus.PAUSED,
+        schedule_type=None,
         exclude_deleted=False,
     )
     repository.list_by_creator.assert_awaited_once_with(
         guild_id=10,
         creator_user_id=20,
         status=ScheduleStatus.PAUSED,
+        schedule_type=None,
         exclude_deleted=False,
         limit=10,
         offset=20,
     )
+
+
+@pytest.mark.asyncio
+async def test_schedule_type_is_identical_for_count_and_page(monkeypatch) -> None:
+    repository = AsyncMock()
+    repository.count_by_guild.return_value = 11
+    repository.list_by_guild.return_value = [schedule()]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_queries.ScheduleRepository",
+        lambda unused: repository,
+    )
+    result = await ScheduleQueryService(lambda: FakeSession()).get_schedule_page(  # type: ignore[arg-type]
+        guild_id=10,
+        requester_user_id=20,
+        administrator=True,
+        status=ScheduleStatus.PAUSED,
+        schedule_type=ScheduleType.DAILY,
+        page=2,
+    )
+    assert (result.total_count, result.total_pages) == (11, 2)
+    common = {
+        "guild_id": 10,
+        "status": ScheduleStatus.PAUSED,
+        "schedule_type": ScheduleType.DAILY,
+        "exclude_deleted": False,
+    }
+    repository.count_by_guild.assert_awaited_once_with(**common)
+    repository.list_by_guild.assert_awaited_once_with(**common, limit=10, offset=10)
 
 
 @pytest.mark.parametrize("page", [0, -1, MAX_PAGE_NUMBER + 1, True])

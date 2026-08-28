@@ -102,7 +102,7 @@ Bot層はSQLAlchemyモデルを直接操作せず、次回日時や状態遷移�
 
 `/post create`、`/post list`、`/post show` の成功表示はBot層の共通presenterで1つのDiscord Embedへ変換する。タイトル256文字、description 4,096文字、Field名256文字、Field値1,024文字、Field数25、Embed合計6,000文字を上限とし、利用者入力由来の本文はメンションとMarkdownを無効化する。予約IDは省略せずインラインコードで表示し、状態は日本語名とアイコンを色に加えて示す。
 
-予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、同一のguild・作成者/管理者・status条件でCOUNTと1ページ10件を取得する。不変DTOだけをBotへ返し、`next_run_at ASC NULLS LAST, id ASC`を維持する。本人限定・120秒の非永続Viewは前後ボタンと最大10件のUUIDv7選択肢を持ち、詳細は既存Presenterを再利用する。各操作は短い新規read Sessionと再認可で最新状態を取得し、Session、transaction、row lockを待機中に保持しない。`asyncio.Lock`と終了状態で多重操作を直列化し、timeoutとBot closeでViewを除去・停止してwaitを回収する。ボタン操作時だけ消滅した末尾ページを補正し、コマンドで明示した巨大pageの安全な空結果は維持する。状態未指定時は `deleted` を除外し、明示指定時だけ含める。
+予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、同一のguild・作成者/管理者・status・任意schedule_type条件でCOUNTと1ページ10件を取得する。不変DTOだけをBotへ返し、`next_run_at ASC NULLS LAST, id ASC`を維持する。本人限定・120秒の非永続Viewは前後ボタン、固定値`all/once/daily/weekly`の種類Select、最大10件のUUIDv7詳細Selectを別custom_id・別Action Rowで持ち、詳細は既存Presenterを再利用する。種類変更ではpageを1へ戻し、空結果でも種類Selectを残す。ページ移動と詳細からの復帰ではstatus・schedule_type・pageを維持する。各操作は短い新規read Sessionと再認可で最新状態を取得し、Session、transaction、row lockを待機中に保持しない。`asyncio.Lock`と終了状態でSelectを含む多重操作を直列化し、timeoutとBot closeでViewを除去・停止してwaitを回収する。操作時は消滅した末尾ページを補正し、コマンドで明示した巨大pageの安全な空結果は維持する。状態未指定時は `deleted` を除外し、明示指定時だけ含める。
 
 ### 4.2 アプリケーション層
 
