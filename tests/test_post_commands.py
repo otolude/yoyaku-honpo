@@ -5,7 +5,7 @@ import inspect
 import logging
 import uuid
 from dataclasses import replace
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -22,6 +22,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeletedSchedule,
     DeleteReasonRequired,
     ScheduleDeletionUnavailable,
+    ScheduleDeletionVersionConflict,
     ScheduleDeletionView,
 )
 from discord_ai_reminder_bot.application.schedule_editing import (
@@ -32,8 +33,10 @@ from discord_ai_reminder_bot.application.schedule_editing import (
 from discord_ai_reminder_bot.application.schedule_pause import (
     PausedSchedule,
     ResumedSchedule,
+    ResumeMode,
     ResumePreview,
     ScheduleStateChangeUnavailable,
+    ScheduleVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_queries import (
     ScheduleActionAvailability,
@@ -46,7 +49,10 @@ from discord_ai_reminder_bot.application.schedule_queries import (
 from discord_ai_reminder_bot.bot.post_presenter import LIST_OPERATION_GUIDANCE
 from discord_ai_reminder_bot.bot.post_views import (
     DETAIL_BACK_CUSTOM_ID,
+    DETAIL_DELETE_CUSTOM_ID,
     DETAIL_EDIT_CUSTOM_ID,
+    DETAIL_PAUSE_CUSTOM_ID,
+    DETAIL_RESUME_CUSTOM_ID,
     ScheduleListOrigin,
 )
 from discord_ai_reminder_bot.bot.posts import (
@@ -62,6 +68,8 @@ from discord_ai_reminder_bot.bot.posts import (
     DETAIL_CONFLICT_MESSAGE,
     DETAIL_EDIT_CHANNEL_MESSAGE,
     DETAIL_EDIT_NO_CHANGES_MESSAGE,
+    DETAIL_PAUSED_MESSAGE,
+    DETAIL_RESUMED_MESSAGE,
     EDIT_NO_CHANGES_MESSAGE,
     EDIT_REQUEST_REQUIRED_MESSAGE,
     END_DATE_DESCRIPTION,
@@ -70,6 +78,7 @@ from discord_ai_reminder_bot.bot.posts import (
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
+    RESUME_TIME_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
     InteractionActor,
     PostCommands,
@@ -2290,6 +2299,444 @@ async def test_detail_delete_cancel_timeout_and_races_are_read_only_and_recovera
     await group.close_confirmation_views()
     await group.close_confirmation_views()
     assert not group._delete_views and not group._detail_views
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("from_list", [False, True], ids=["direct-show", "list-detail"])
+async def test_detail_pause_callback_refreshes_paused_detail_and_preserves_origin(
+    monkeypatch: pytest.MonkeyPatch, from_list: bool
+) -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE,
+        local_time=time(9),
+        version=4,
+    )
+    active = detail_with_actions(selected, pause=True)
+    paused_schedule = replace(selected, status=ScheduleStatus.PAUSED, next_run_at=None, version=5)
+    paused = detail_with_actions(paused_schedule, resume=True)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = paused
+    service = AsyncMock()
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
+    )
+    group = commands(queries)
+    origin = (
+        ScheduleListOrigin(status=ScheduleStatus.ACTIVE, schedule_type=ScheduleType.DAILY, page=3)
+        if from_list
+        else None
+    )
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=active,
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=origin,
+    )
+    group._detail_views.add(parent)
+    clicked = interaction()
+    pause_button = next(
+        item for item in parent.children if item.custom_id == DETAIL_PAUSE_CUSTOM_ID
+    )
+
+    await pause_button.callback(clicked)
+    await pause_button.callback(interaction())
+
+    service.pause.assert_awaited_once()
+    assert service.pause.await_args.kwargs["expected_version"] == 4
+    assert service.pause.await_args.kwargs["paused_at"] == NOW
+    arguments = clicked.edit_original_response.await_args.kwargs
+    assert arguments["content"] == DETAIL_PAUSED_MESSAGE
+    assert arguments["allowed_mentions"].to_dict() == {"parse": []}
+    refreshed = arguments["view"]
+    assert refreshed.context.expected_version == 5
+    assert refreshed.context.list_origin == origin
+    custom_ids = {item.custom_id for item in refreshed.children}
+    assert DETAIL_RESUME_CUSTOM_ID in custom_ids and DETAIL_DELETE_CUSTOM_ID in custom_ids
+    if from_list:
+        assert DETAIL_BACK_CUSTOM_ID in custom_ids
+        assert refreshed.context.list_origin == origin
+    else:
+        assert DETAIL_BACK_CUSTOM_ID not in custom_ids
+    embed_text = " ".join(
+        [arguments["embed"].title, arguments["embed"].description or ""]
+        + [f"{field.name} {field.value}" for field in arguments["embed"].fields]
+    )
+    assert "⏸️ 一時停止中" in embed_text
+    assert "一時停止中は投稿されません" in embed_text
+    assert arguments["embed"].fields[-1].name == "⚠️ 一時停止について"
+    assert parent.is_finished() and refreshed.timeout is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "replacement_at"),
+    [
+        (ResumeMode.NEXT_REGULAR, None),
+        (ResumeMode.IMMEDIATE_ONCE, None),
+        (ResumeMode.RESCHEDULED_ONCE, NOW + timedelta(hours=1)),
+    ],
+)
+async def test_detail_overdue_resume_choices_use_expected_version_and_refresh_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: ResumeMode,
+    replacement_at: datetime | None,
+) -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.WEEKLY,
+        status=ScheduleStatus.PAUSED,
+        next_run_at=None,
+        local_time=time(9),
+        weekday=2,
+        end_date=date(2026, 8, 31),
+        version=7,
+    )
+    paused = detail_with_actions(selected, resume=True)
+    resumed_schedule = replace(selected, status=ScheduleStatus.ACTIVE, next_run_at=NOW, version=8)
+    resumed = detail_with_actions(resumed_schedule, pause=True)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = resumed
+    service = AsyncMock()
+    service.preview_resume.return_value = ResumePreview(selected.public_id, NOW, True, True)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
+    )
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=paused,
+        embed=discord.Embed(title="予約詳細"),
+    )
+    group._detail_views.add(parent)
+    opened = interaction()
+
+    await group._resume_from_detail(parent, opened)
+
+    choice = opened.response.edit_message.await_args.kwargs["view"]
+    assert parent.is_finished() and choice in group._resume_views
+    assert choice.detail_context.expected_version == 7
+    assert opened.response.edit_message.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
+    submitted = interaction()
+    await group._finish_resume_choice(choice, submitted, mode, replacement_at)
+    service.resume.assert_awaited_once()
+    arguments = service.resume.await_args.kwargs
+    assert arguments["expected_version"] == 7
+    assert arguments["mode"] is mode and arguments["replacement_at"] == replacement_at
+    assert arguments["resumed_at"] == NOW
+    refreshed_kwargs = submitted.edit_original_response.await_args.kwargs
+    assert refreshed_kwargs["content"] == DETAIL_RESUMED_MESSAGE
+    assert refreshed_kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    refreshed = refreshed_kwargs["view"]
+    assert refreshed.context.expected_version == 8
+    assert refreshed.context.local_time == time(9)
+    assert refreshed.context.weekday == 2
+    assert refreshed.context.end_date == date(2026, 8, 31)
+    assert choice.is_finished() and refreshed in group._detail_views
+
+
+@pytest.mark.asyncio
+async def test_detail_pause_resume_delete_conflicts_refresh_latest_safe_views(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    base = replace(
+        view(), public_id=public_id, schedule_type=ScheduleType.DAILY, local_time=time(9), version=3
+    )
+    active = detail_with_actions(base, pause=True)
+    paused_schedule = replace(base, status=ScheduleStatus.PAUSED, next_run_at=None, version=4)
+    paused = detail_with_actions(paused_schedule, resume=True)
+    deleted_schedule = replace(base, status=ScheduleStatus.DELETED, next_run_at=None, version=5)
+    deleted = detail_with_actions(deleted_schedule, delete=False)
+    queries = AsyncMock()
+    queries.get_schedule_detail.side_effect = [paused, active, deleted]
+    pause_service = AsyncMock()
+    pause_service.pause.side_effect = ScheduleVersionConflict
+    pause_service.resume.side_effect = ScheduleVersionConflict
+    delete_service = AsyncMock()
+    delete_service.delete.side_effect = ScheduleDeletionVersionConflict
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: pause_service
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: delete_service
+    )
+    group = commands(queries)
+
+    pause_parent = group._build_detail_view(
+        interaction=interaction(), actor_user_id=USER_ID, detail=active, embed=discord.Embed()
+    )
+    pause_click = interaction()
+    await group._pause_from_detail(pause_parent, pause_click)
+    assert (
+        pause_click.edit_original_response.await_args.kwargs["content"] == DETAIL_CONFLICT_MESSAGE
+    )
+    assert DETAIL_RESUME_CUSTOM_ID in {
+        item.custom_id
+        for item in pause_click.edit_original_response.await_args.kwargs["view"].children
+    }
+
+    resume_choice = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=replace(
+            pause_parent.context,
+            actions=replace(paused.actions, observed_version=pause_parent.context.expected_version),
+        ),
+    )
+    resume_click = interaction()
+    await group._finish_resume_choice(resume_choice, resume_click, ResumeMode.NEXT_REGULAR)
+    assert (
+        resume_click.edit_original_response.await_args.kwargs["content"] == DETAIL_CONFLICT_MESSAGE
+    )
+    assert DETAIL_PAUSE_CUSTOM_ID in {
+        item.custom_id
+        for item in resume_click.edit_original_response.await_args.kwargs["view"].children
+    }
+
+    deletion = ScheduleDeletionConfirmView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(public_id),
+        reason="creator_deleted",
+        actor_user_id=USER_ID,
+        detail_context=pause_parent.context,
+    )
+    delete_click = interaction()
+    await group._confirm_deletion(deletion, delete_click)
+    delete_kwargs = delete_click.edit_original_response.await_args.kwargs
+    assert delete_kwargs["content"] == DETAIL_CONFLICT_MESSAGE
+    assert DETAIL_DELETE_CUSTOM_ID not in {
+        item.custom_id for item in delete_kwargs["view"].children if not item.disabled
+    }
+    assert pause_service.pause.await_args.kwargs["expected_version"] == 3
+    assert pause_service.resume.await_args.kwargs["expected_version"] == 3
+    assert delete_service.delete.await_args.kwargs["expected_version"] == 3
+    for value in (pause_click, resume_click, delete_click):
+        assert value.edit_original_response.await_args.kwargs["allowed_mentions"].to_dict() == {
+            "parse": []
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "event_name"),
+    [
+        ("pause", "schedule_detail_pause_failed"),
+        ("resume", "schedule_resume_failed"),
+        ("delete", "schedule_delete_failed"),
+    ],
+)
+async def test_detail_state_operation_failures_expose_only_fixed_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    operation: str,
+    event_name: str,
+) -> None:
+    secret = (
+        "token_test_private postgresql+psycopg://user:password@development/private "
+        "worker=12345678 traceback-sentinel"
+    )
+    public_id = uuid.uuid7()
+    selected = replace(
+        view(content="visible preview " + "x" * 1000 + secret),
+        public_id=public_id,
+        schedule_type=ScheduleType.DAILY,
+        local_time=time(9),
+        version=71,
+    )
+    pause_service = AsyncMock()
+    delete_service = AsyncMock()
+    pause_service.pause.side_effect = RuntimeError(secret)
+    pause_service.resume.side_effect = RuntimeError(secret)
+    delete_service.delete.side_effect = RuntimeError(secret)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: pause_service
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: delete_service
+    )
+    group = commands(AsyncMock())
+    clicked = interaction()
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        if operation == "pause":
+            parent = group._build_detail_view(
+                interaction=interaction(),
+                actor_user_id=USER_ID,
+                detail=detail_with_actions(selected, pause=True),
+                embed=discord.Embed(),
+            )
+            await group._pause_from_detail(parent, clicked)
+            sender = clicked.response.send_message
+        elif operation == "resume":
+            context = group._build_detail_view(
+                interaction=interaction(),
+                actor_user_id=USER_ID,
+                detail=detail_with_actions(
+                    replace(selected, status=ScheduleStatus.PAUSED, next_run_at=None), resume=True
+                ),
+                embed=discord.Embed(),
+            ).context
+            choice = ResumeChoiceView(
+                commands=group,
+                interaction=interaction(),
+                public_id=str(public_id),
+                actor_user_id=USER_ID,
+                rescue_allowed=True,
+                detail_context=context,
+            )
+            await group._finish_resume_choice(choice, clicked, ResumeMode.NEXT_REGULAR)
+            sender = clicked.edit_original_response
+        else:
+            parent = group._build_detail_view(
+                interaction=interaction(),
+                actor_user_id=USER_ID,
+                detail=detail_with_actions(selected),
+                embed=discord.Embed(),
+            )
+            confirmation = ScheduleDeletionConfirmView(
+                commands=group,
+                interaction=interaction(),
+                public_id=str(public_id),
+                reason="reason-canary-private",
+                actor_user_id=USER_ID,
+                detail_context=parent.context,
+            )
+            await group._confirm_deletion(confirmation, clicked)
+            sender = clicked.edit_original_response
+
+    assert (
+        sender.await_args.kwargs.get(
+            "content", sender.await_args.args[0] if sender.await_args.args else None
+        )
+        == INTERNAL_ERROR_MESSAGE
+    )
+    assert sender.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert [record.message for record in caplog.records if record.name == "test.posts"] == [
+        event_name
+    ]
+    assert secret not in caplog.text
+    assert "reason-canary-private" not in caplog.text
+    assert clicked.followup.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_time_modal_enforces_five_minutes_and_midnight_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.PAUSED,
+        next_run_at=None,
+        local_time=time(9),
+        version=5,
+    )
+    paused = detail_with_actions(selected, resume=True)
+    resumed = detail_with_actions(
+        replace(selected, status=ScheduleStatus.ACTIVE, next_run_at=NOW, version=6), pause=True
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = resumed
+    service = AsyncMock()
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.SchedulePauseService", lambda unused: service
+    )
+    group = commands(queries)
+    context = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=paused,
+        embed=discord.Embed(),
+    ).context
+
+    too_soon = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=context,
+    )
+    rejected = interaction()
+    await group._submit_resume_time(too_soon, rejected, "12:04")
+    assert rejected.response.send_message.await_args.args == (RESUME_TIME_MESSAGE,)
+    service.resume.assert_not_awaited()
+
+    valid = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=context,
+    )
+    accepted = interaction()
+    await group._submit_resume_time(valid, accepted, "12:05")
+    assert service.resume.await_args.kwargs["replacement_at"] == NOW + timedelta(minutes=5)
+    assert service.resume.await_args.kwargs["mode"] is ResumeMode.RESCHEDULED_ONCE
+    assert service.resume.await_args.kwargs["expected_version"] == 5
+
+    group._clock = FixedClock(datetime(2026, 8, 18, 14, 56, tzinfo=UTC))
+    near_midnight = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=context,
+    )
+    assert near_midnight.time_button.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_detail_state_refresh_presenter_failure_logs_only_fixed_event(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "presenter traceback token_test_private postgresql://private"
+    selected = replace(view(), schedule_type=ScheduleType.DAILY, local_time=time(9), version=12)
+    latest = detail_with_actions(
+        replace(selected, status=ScheduleStatus.PAUSED, next_run_at=None, version=13),
+        resume=True,
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = latest
+    group = commands(queries)
+    source = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail_with_actions(selected, pause=True),
+        embed=discord.Embed(),
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.schedule_detail_embed",
+        MagicMock(side_effect=RuntimeError(secret)),
+    )
+    clicked = interaction()
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await group._refresh_detail(
+            source,
+            clicked,
+            InteractionActor(user_id=USER_ID, administrator=False),
+            DETAIL_PAUSED_MESSAGE,
+        )
+
+    clicked.edit_original_response.assert_not_awaited()
+    assert [record.message for record in caplog.records if record.name == "test.posts"] == [
+        "schedule_detail_refresh_response_failed"
+    ]
+    assert secret not in caplog.text
+    assert source.is_finished()
 
 
 @pytest.mark.asyncio

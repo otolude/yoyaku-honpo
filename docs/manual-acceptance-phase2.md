@@ -4,7 +4,7 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 37件／未確認 10件（合計47件）
+- 集計: 確認済み 41件／未確認 6件（合計47件）
 
 ## 実Discord確認記録
 
@@ -94,6 +94,19 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 「状態競合」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_selection_is_revalidated_after_separate_session_state_change`で、edit／pause／resume／deleteの候補取得後に別Sessionで状態とversionを変更し、選択済みcanonical UUIDをFake Interactionで実行して、最新DB状態による固定拒否、DB・OperationLog非変更を確認した。「情報境界」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_dto_and_choices_exclude_body_internal_id_and_other_guild_canaries`、`tests/integration/test_schedule_queries_integration.py::test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order`、`tests/test_post_commands.py::test_autocomplete_returns_full_uuid_and_admin_scope`、`tests/test_post_commands.py::test_autocomplete_failure_is_empty_and_logs_only_fixed_event`、`tests/test_post_commands.py::test_autocomplete_presenter_failure_is_empty_and_logs_only_fixed_event`、`tests/test_post_presenter.py::test_autocomplete_choice_is_bounded_safe_and_omits_paused_datetime`で、最大25件・100文字、canonical public UUID value、本文・秘密・内部ID・別guild情報を持たないDTO／候補／応答／固定イベントログ境界を確認した。
 
+### 2026-08-30 詳細状態操作群隔離受入
+
+- 実施者: Oto
+- 証跡種別: Fake Interaction／固定Clock／実ViewStore／専用PostgreSQLによる隔離受入
+
+「詳細から一時停止」は`tests/test_post_commands.py::test_detail_pause_callback_refreshes_paused_detail_and_preserves_origin`で、直接show／一覧由来Contextから固定custom_idのcallbackを通し、expected_version付きService呼出しを1回に直列化して、固定成功通知、最新paused詳細、再開・削除、一覧origin、注意事項、`AllowedMentions.none()`、長寿命親Viewへの所有権移譲を確認した。`tests/integration/test_schedule_pause_integration.py::test_pause_preserves_future_initial_and_skips_retry`、`tests/integration/test_schedule_pause_integration.py::test_pause_skips_due_initial_run`、`tests/integration/test_schedule_pause_integration.py::test_processing_claimed_and_sending_reject_pause`、`tests/integration/test_schedule_pause_integration.py::test_double_pause_and_double_resume_add_no_extra_log`、`tests/integration/test_schedule_pause_integration.py::test_transaction_rollback_restores_pause`で、daily／weeklyの未来pristine run保持、retry・到来済みrun・DeliveryAttempt境界、ログ、二重操作、lock・rollback規則を専用PostgreSQLで確認した。
+
+「詳細から再開4択」は`tests/test_post_commands.py::test_detail_overdue_resume_choices_use_expected_version_and_refresh_owner`、`tests/test_post_commands.py::test_resume_time_modal_enforces_five_minutes_and_midnight_boundary`、`tests/test_post_commands.py::test_closed_resume_time_modal_can_be_reopened_without_retiring_parent`、`tests/test_post_commands.py::test_detail_resume_cancel_timeout_and_races_are_read_only_and_recoverable`で、Detailから有限timeoutのResumeChoiceへの所有権移譲、3確定modeとcancel、expected_version、操作時認可、時刻Modal、5分境界、23時台境界、×相当後の再オープン、最新Detail復帰、DB資源非保持を確認した。`tests/integration/test_schedule_pause_integration.py::test_overdue_resume_next_regular_skips_hold_and_creates_regular`、`tests/integration/test_schedule_pause_integration.py::test_same_day_overdue_resume_creates_exception_run`、`tests/integration/test_schedule_pause_integration.py::test_resume_without_occurrence_ends_only_contentful`、`tests/integration/test_schedule_pause_integration.py::test_concurrent_resume_creates_one_run`、`tests/integration/test_schedule_pause_integration.py::test_transaction_rollback_restores_resume`で、保持run見送り、通常runと今回限りの例外run、救済不可・終了日、基本時刻・曜日・終了日不変、重複防止、OperationLog／NotificationLog規則を確認した。`tests/test_post_presenter.py::test_resume_missed_occurrence_guidance_is_last`で各modeの最新表示を確認した。
+
+「詳細操作競合」は`tests/test_post_commands.py::test_detail_pause_resume_delete_conflicts_refresh_latest_safe_views`で、pause／resume／deleteの古いexpected_versionをBot callbackから渡し、固定競合案内とcommit後の最新状態に合うViewへ更新する接続を確認した。`tests/integration/test_schedule_pause_integration.py::test_pause_expected_version_conflict_changes_nothing`、`tests/integration/test_schedule_deletion_integration.py::test_delete_expected_version_conflict_changes_nothing`、`tests/integration/test_schedule_pause_integration.py::test_processing_claimed_and_sending_reject_pause`、`tests/integration/test_schedule_deletion_integration.py::test_real_postgres_processing_claimed_or_sending_is_unchanged`、`tests/integration/test_schedule_pause_integration.py::test_concurrent_resume_creates_one_run`、pause／resume／deleteのrollback node群で、snapshot取得後とlock後の再検証、状態・run・attempt競合、二重・別transaction競合、DB・run・ログ非重複を確認した。`tests/test_post_commands.py::test_detail_rejects_other_user_dm_wrong_guild_and_permission_loss`とServiceのowner／guild境界nodeで、別利用者・別guild・権限喪失も固定案内で拒否する。
+
+「詳細操作情報境界」は`tests/test_post_commands.py::test_detail_state_operation_failures_expose_only_fixed_boundary`と`tests/test_post_commands.py::test_detail_state_refresh_presenter_failure_logs_only_fixed_event`でpause／resume／deleteのDB失敗と共通Presenter失敗にcanaryを与え、固定応答、固定イベント名、例外全文・本文・理由・token・DATABASE_URL・worker情報の通常ログ非表示、`AllowedMentions.none()`を確認した。`tests/test_post_commands.py::test_detail_custom_id_is_fixed_and_close_collects_view`、`tests/test_post_commands.py::test_detail_pause_callback_refreshes_paused_detail_and_preserves_origin`、`tests/test_post_commands.py::test_detail_overdue_resume_choices_use_expected_version_and_refresh_owner`、`tests/test_post_commands.py::test_list_and_detail_real_view_store_dispatch_without_timeout_and_close_cleanly`、`tests/test_post_presenter.py::test_detail_never_displays_internal_version`、`tests/test_post_presenter.py::test_show_two_thousand_markup_characters_stays_within_limits`、`tests/test_interactions.py::test_initial_and_followup_responses_are_ephemeral_with_mentions_disabled`で、fixed custom_id、DTO、本文・内部ID・version・reason code・別guild情報、Embed上限、ephemeral、実ViewStore境界を確認した。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
@@ -124,15 +137,15 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 一覧・詳細View長寿命化 | 15分経過後もList／DetailのButton・Selectが有効でcallbackへdispatchされ、最新認可・状態・version・run・attemptを再検証する。Bot再起動後の古い画面は復元せず、`/post list`／`/post show`再実行で復帰する |
 | [ ] | 詳細情報境界 | version、内部DB ID、操作可否の内部理由、秘密情報が詳細Embed・応答・通常ログに表示されない |
 | [x] | 状態別詳細ボタン | 現在のSchedule状態、種別、run、attemptから操作可否をread-onlyで決定し、edit、pause、resume、deleteを状態マトリクスに従って表示する。processing、claimed、sending、unknown、不整合では安全側で操作不可とし、操作時に最新状態と認可を再検証する。fixed custom_idを使用し、予約IDやversion等を含めない |
-| [ ] | 詳細から一時停止 | `/post show`と一覧詳細の両方で一時停止でき、成功通知、paused詳細、注意事項へ更新される |
+| [x] | 詳細から一時停止 | `/post show`と一覧詳細の両方で一時停止でき、成功通知、paused詳細、注意事項へ更新される |
 | [x] | 詳細から即時再開 | 保持投稿時刻前に再開でき、成功通知と最新active／draft詳細へ更新される |
-| [ ] | 詳細から再開4択 | 保持投稿時刻後に4択が表示され、各選択肢が既存再開規則どおり動作する |
+| [x] | 詳細から再開4択 | 保持投稿時刻後に4択が表示され、各選択肢が既存再開規則どおり動作する |
 | [x] | 再開cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`ResumeChoice`はcancelでDB更新せずpausedを維持して最新Detail Viewへ戻る。timeoutでもDB更新せずpausedを維持し、ResumeChoiceを操作不能にして親詳細を再取得する方法を案内する。待機中にSession、transaction、row lockを保持せず、Bot close時にViewとwait Taskを回収する |
 | [x] | 詳細から作成者削除 | 作成者は理由入力なしで確認へ進み、成功後にdeleted詳細と固定通知が表示される |
 | [ ] | 管理者の他人削除理由 | 管理者が他人の予約を削除すると1～500文字の理由Modalが先に表示され、空白だけを拒否する |
 | [x] | 削除cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`DeleteConfirm`はcancelでDB更新・削除・OperationLog生成を行わず最新Detail Viewへ戻る。timeoutでは削除せず、待機中にSession、transaction、row lockを保持しない。Bot close時にViewとwait Taskを回収する |
-| [ ] | 詳細操作競合 | 古い詳細からの操作が固定の競合案内で拒否され、最新詳細とボタンへ更新される |
-| [ ] | 詳細操作情報境界 | custom_id、Embed、応答、通常ログに予約本文、version、内部ID、理由、秘密情報、例外全文が出ない |
+| [x] | 詳細操作競合 | 古い詳細からの操作が固定の競合案内で拒否され、最新詳細とボタンへ更新される |
+| [x] | 詳細操作情報境界 | custom_id、Embed、応答、通常ログに予約本文、version、内部ID、理由、秘密情報、例外全文が出ない |
 | [x] | 詳細編集ボタン | 編集可能時だけ有効で、操作不能時は先頭位置にdisabled表示される |
 | [x] | 単発編集Modal | 投稿先、完全なJST投稿日時、本文の現在値が表示され、一度に編集できる |
 | [x] | 毎日編集Modal | 投稿先、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
