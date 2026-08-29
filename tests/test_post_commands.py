@@ -3,12 +3,15 @@ from __future__ import annotations
 import inspect
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 from discord import app_commands
+from discord.app_commands.namespace import ResolveKey
+from discord.ui.view import ViewStore
 
 from discord_ai_reminder_bot.application.schedule_creation import (
     CreatedOnceSchedule,
@@ -19,6 +22,11 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeleteReasonRequired,
     ScheduleDeletionUnavailable,
     ScheduleDeletionView,
+)
+from discord_ai_reminder_bot.application.schedule_editing import (
+    EditedSchedule,
+    ScheduleEditNoChanges,
+    ScheduleEditVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_pause import (
     PausedSchedule,
@@ -41,6 +49,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
 )
 from discord_ai_reminder_bot.bot.post_views import (
     DETAIL_BACK_CUSTOM_ID,
+    DETAIL_EDIT_CUSTOM_ID,
     ScheduleListOrigin,
 )
 from discord_ai_reminder_bot.bot.posts import (
@@ -53,14 +62,19 @@ from discord_ai_reminder_bot.bot.posts import (
     DELETE_EXPIRED_MESSAGE,
     DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
+    DETAIL_CONFLICT_MESSAGE,
+    DETAIL_EDIT_CHANNEL_MESSAGE,
+    DETAIL_EDIT_NO_CHANGES_MESSAGE,
     END_DATE_DESCRIPTION,
     FULLWIDTH_DATETIME_INPUT_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
+    InteractionActor,
     PostCommands,
     ResumeChoiceView,
+    ScheduleEditModal,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -161,6 +175,29 @@ def commands(queries: AsyncMock, *, session: MagicMock | None = None) -> PostCom
         configured_guild_id=GUILD_ID,
         allowed_role_ids=(ROLE_ID,),
         logger=logging.getLogger("test.posts"),
+    )
+
+
+def cached_text_channel(guild: MagicMock, channel_id: int = 400) -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = channel_id
+    channel.guild = guild
+    permissions = MagicMock(spec=discord.Permissions)
+    permissions.view_channel = permissions.send_messages = True
+    channel.permissions_for.return_value = permissions
+    return channel
+
+
+def app_command_channel(channel_id: int = 400) -> app_commands.AppCommandChannel:
+    return app_commands.AppCommandChannel(
+        state=MagicMock(),
+        guild_id=GUILD_ID,
+        data={
+            "id": str(channel_id),
+            "type": discord.ChannelType.text.value,
+            "name": "submitted",
+            "permissions": "0",
+        },
     )
 
 
@@ -795,7 +832,7 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
     await group._show_list_selection(list_view, clicked, str(selected.public_id))
     detail_view = clicked.response.edit_message.await_args.kwargs["view"]
     assert clicked.response.edit_message.await_args.kwargs["embed"].title == "予約詳細"
-    assert [item.label for item in detail_view.children] == ["削除", "一覧へ戻る"]
+    assert [item.label for item in detail_view.children] == ["編集", "削除", "一覧へ戻る"]
     assert detail_view.context.expected_version == selected.version
     assert list_view.is_finished()
     assert list_view not in group._list_views
@@ -812,10 +849,10 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
 @pytest.mark.parametrize(
     ("pause", "resume", "delete", "labels", "delete_disabled"),
     [
-        (True, False, True, ["一時停止", "削除"], False),
-        (False, True, True, ["再開", "削除"], False),
-        (False, False, True, ["削除"], False),
-        (False, False, False, ["削除"], True),
+        (True, False, True, ["編集", "一時停止", "削除"], False),
+        (False, True, True, ["編集", "再開", "削除"], False),
+        (False, False, True, ["編集", "削除"], False),
+        (False, False, False, ["編集", "削除"], True),
     ],
 )
 def test_detail_action_buttons_follow_read_only_availability(
@@ -835,7 +872,811 @@ def test_detail_action_buttons_follow_read_only_availability(
     )
     assert [item.label for item in detail_view.children] == labels
     assert detail_view.children[-1].disabled is delete_disabled
-    assert all("edit" not in str(item.custom_id) for item in detail_view.children)
+    assert all(str(selected.public_id) not in str(item.custom_id) for item in detail_view.children)
+    assert detail_view.children[0].disabled is True
+
+
+@pytest.mark.parametrize(
+    ("schedule_type", "top_labels"),
+    [
+        (ScheduleType.ONCE, ["投稿先", "投稿日時", "本文"]),
+        (ScheduleType.DAILY, ["投稿先", "投稿時刻", "終了日", "本文"]),
+        (ScheduleType.WEEKLY, ["投稿先", "曜日", "投稿時刻", "終了日", "本文"]),
+    ],
+)
+def test_detail_edit_modal_has_type_specific_v2_labels_and_defaults(
+    schedule_type: ScheduleType, top_labels: list[str]
+) -> None:
+    selected = replace(
+        view(),
+        schedule_type=schedule_type,
+        local_time=time(10, 30) if schedule_type is not ScheduleType.ONCE else None,
+        weekday=2 if schedule_type is ScheduleType.WEEKLY else None,
+        end_date=date(2026, 9, 1) if schedule_type is not ScheduleType.ONCE else None,
+    )
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = selected.channel_id
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=channel)
+    assert modal.timeout == 900.0
+    assert len(modal.children) == len(top_labels) <= 5
+    assert [item.text for item in modal.children] == top_labels
+    assert all(isinstance(item, discord.ui.Label) for item in modal.children)
+    assert modal.channel.channel_types == [discord.ChannelType.text]
+    assert modal.channel.min_values == 0 and modal.channel.required is False
+    assert modal.content.default == "本文" and modal.content.max_length == 2_000
+    if schedule_type is ScheduleType.ONCE:
+        assert modal.scheduled_at.default == "2026-08-20 19:30"
+    else:
+        assert modal.local_time.default == "10:30"
+        assert modal.end_date.default == "2026-09-01"
+    if schedule_type is ScheduleType.WEEKLY:
+        assert [option.default for option in modal.weekday.options] == [
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+        ]
+
+
+@pytest.mark.asyncio
+async def test_detail_edit_modal_submits_multiple_fields_and_clear_flags_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.WEEKLY,
+        local_time=time(10, 30),
+        weekday=2,
+        end_date=date(2026, 9, 1),
+    )
+    refreshed_schedule = replace(
+        selected,
+        channel_id=401,
+        content=None,
+        local_time=time(11),
+        weekday=4,
+        end_date=None,
+        version=2,
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(refreshed_schedule)
+    group = commands(queries)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(None, None, 2),
+    )
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 401
+    channel.guild = MagicMock(spec=discord.Guild)
+    channel.guild.id = GUILD_ID
+    permissions = MagicMock(spec=discord.Permissions)
+    permissions.view_channel = permissions.send_messages = True
+    channel.permissions_for.return_value = permissions
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    modal.channel._values = [channel]
+    modal.local_time._value = "11:00"
+    modal.weekday._values = ["4"]
+    modal.end_date._value = ""
+    modal.content._value = " \n"
+    service = AsyncMock()
+    service.edit.return_value = EditedSchedule(
+        public_id=selected.public_id,
+        channel_id=401,
+        schedule_type=ScheduleType.WEEKLY,
+        status=ScheduleStatus.DRAFT,
+        content=None,
+        next_run_at=selected.next_run_at,
+        local_time=time(11),
+        weekday=4,
+        end_date=None,
+        changed_fields=("channel_id", "content", "local_time", "weekday", "end_date"),
+        pending_runs_skipped=1,
+        run_replaced=True,
+        retry_pending_preserved=False,
+        previous_status=ScheduleStatus.ACTIVE,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+    submitted = interaction()
+    submitted.guild.get_channel.return_value = channel
+    submitted.guild.me = MagicMock(spec=discord.Member)
+
+    await group._submit_detail_edit(modal, submitted)
+
+    values = service.edit.await_args.kwargs["values"]
+    assert values.channel_id == 401 and values.local_time == time(11)
+    assert values.weekday == 4 and values.weekday_supplied is True
+    assert values.clear_content is True and values.content is None
+    assert values.clear_end_date is True and values.end_date_supplied is False
+    service.edit.assert_awaited_once()
+    submitted.response.defer.assert_awaited_once_with()
+    assert submitted.edit_original_response.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
+    assert group._detail_views.pop().context.list_origin == ScheduleListOrigin(None, None, 2)
+
+
+@pytest.mark.asyncio
+async def test_detail_refresh_retires_old_view_before_registering_replacement() -> None:
+    selected = view()
+    refreshed_schedule = replace(selected, content="更新後", version=2)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(refreshed_schedule)
+    group = commands(queries)
+    original = interaction()
+    old_view = group._build_detail_view(
+        interaction=original,
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    group._detail_views.add(old_view)
+    store = ViewStore(MagicMock())
+    message_id = 42
+    store.add_view(old_view, message_id)
+    submitted = interaction()
+
+    async def register_replacement(**kwargs: object) -> None:
+        replacement = kwargs["view"]
+        assert old_view.is_finished()
+        store.add_view(replacement, message_id)  # type: ignore[arg-type]
+
+    submitted.edit_original_response.side_effect = register_replacement
+
+    await group._refresh_detail(
+        old_view,
+        submitted,
+        InteractionActor(user_id=USER_ID, administrator=False),
+        "予約を編集しました。",
+    )
+
+    assert old_view not in group._detail_views
+    replacement = group._detail_views.pop()
+    assert replacement is not old_view
+    assert replacement.is_finished() is False
+    assert replacement.timeout == 900.0
+    dispatch_item = store._views[message_id][
+        (discord.ComponentType.button.value, DETAIL_EDIT_CUSTOM_ID)
+    ]
+    assert dispatch_item.view is replacement
+    replacement.stop()
+
+
+@pytest.mark.asyncio
+async def test_second_edit_opens_modal_and_no_op_refreshes_same_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(
+        view(),
+        content="更新後",
+        version=2,
+        schedule_type=ScheduleType.DAILY,
+        local_time=time(19, 30),
+        end_date=date(2026, 8, 30),
+    )
+    cleared = replace(selected, content=None, end_date=None, version=3)
+    queries = AsyncMock()
+    queries.get_schedule_detail.side_effect = [
+        detail(selected),
+        detail(selected),
+        detail(cleared),
+    ]
+    group = commands(queries)
+    origin = ScheduleListOrigin(ScheduleStatus.ACTIVE, ScheduleType.DAILY, 2)
+    old_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(replace(selected, content="更新前", version=1)),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=origin,
+    )
+    group._detail_views.add(old_view)
+    first_submit = interaction()
+    await group._refresh_detail(
+        old_view,
+        first_submit,
+        InteractionActor(user_id=USER_ID, administrator=False),
+        "予約を編集しました。",
+    )
+    refreshed = next(iter(group._detail_views))
+
+    clicked = interaction()
+    clicked.guild.get_channel.return_value = cached_text_channel(clicked.guild)
+    edit_button = next(
+        item for item in refreshed.children if item.custom_id == DETAIL_EDIT_CUSTOM_ID
+    )
+    await edit_button.callback(clicked)
+
+    modal = clicked.response.send_modal.await_args.args[0]
+    assert modal.detail_view is refreshed
+    modal.channel._handle_submit(interaction(), {"values": []}, {})
+    modal.local_time._value = "19:30"
+    modal.end_date._value = "2026-08-30"
+    modal.content._value = "更新後"
+    service = AsyncMock()
+    service.edit.side_effect = [
+        ScheduleEditNoChanges,
+        EditedSchedule(
+            public_id=selected.public_id,
+            channel_id=selected.channel_id,
+            schedule_type=ScheduleType.DAILY,
+            status=ScheduleStatus.DRAFT,
+            content=None,
+            next_run_at=selected.next_run_at,
+            local_time=selected.local_time,
+            weekday=None,
+            end_date=None,
+            changed_fields=("content", "end_date"),
+            pending_runs_skipped=1,
+            run_replaced=True,
+            retry_pending_preserved=False,
+            previous_status=ScheduleStatus.ACTIVE,
+        ),
+    ]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+    second_submit = interaction()
+    second_submit.guild.get_channel.return_value = cached_text_channel(second_submit.guild)
+
+    await modal.on_submit(second_submit)
+
+    assert second_submit.edit_original_response.await_args.kwargs["content"] == (
+        DETAIL_EDIT_NO_CHANGES_MESSAGE
+    )
+    assert refreshed.is_finished()
+    latest = next(iter(group._detail_views))
+    assert latest is not refreshed and not latest.is_finished()
+    assert latest.context.expected_version == 2
+    assert latest.context.public_id == selected.public_id
+    assert latest.context.actor_user_id == USER_ID
+    assert latest.context.list_origin == origin
+
+    third_click = interaction()
+    third_click.guild.get_channel.return_value = cached_text_channel(third_click.guild)
+    edit_button = next(item for item in latest.children if item.custom_id == DETAIL_EDIT_CUSTOM_ID)
+    await edit_button.callback(third_click)
+    clear_modal = third_click.response.send_modal.await_args.args[0]
+    clear_modal.channel._handle_submit(interaction(), {"values": []}, {})
+    clear_modal.local_time._value = "19:30"
+    clear_modal.end_date._value = ""
+    clear_modal.content._value = ""
+    clear_submit = interaction()
+    clear_submit.guild.get_channel.return_value = cached_text_channel(clear_submit.guild)
+
+    await clear_modal.on_submit(clear_submit)
+
+    assert service.edit.await_args.kwargs["expected_version"] == 2
+    assert service.edit.await_args.kwargs["values"].clear_content is True
+    assert service.edit.await_args.kwargs["values"].clear_end_date is True
+    newest = next(iter(group._detail_views))
+    assert newest.context.expected_version == 3
+    assert newest.context.content is None and newest.context.end_date is None
+    assert newest.context.list_origin == origin
+    assert second_submit.response.defer.await_args.kwargs == {}
+    assert clear_submit.response.defer.await_args.kwargs == {}
+    await group.close_confirmation_views()
+
+
+def test_detail_edit_modal_refreshes_v2_label_components_with_untouched_defaults() -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.WEEKLY,
+        local_time=time(13, 40),
+        weekday=2,
+        end_date=date(2026, 8, 30),
+    )
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    default_channel = cached_text_channel(interaction().guild)
+    modal = ScheduleEditModal(
+        commands=group, detail_view=detail_view, default_channel=default_channel
+    )
+    resolved_channel = app_command_channel()
+    assert [item.id for item in modal.channel.default_values] == [400]
+
+    modal._refresh(
+        interaction(),
+        [
+            {
+                "type": 18,
+                "component": {
+                    "type": 8,
+                    "custom_id": "post_detail_edit_channel",
+                    "values": ["400"],
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 3,
+                    "custom_id": "post_detail_edit_weekday",
+                    "values": ["2"],
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_local_time",
+                    "value": "13:40",
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_end_date",
+                    "value": "2026-08-30",
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_content",
+                    "value": "",
+                },
+            },
+        ],
+        {ResolveKey(id="400", type=discord.AppCommandOptionType.channel.value): (resolved_channel)},
+    )
+
+    assert all(isinstance(item, discord.ui.Label) for item in modal.children)
+    assert modal.channel.values == [resolved_channel]
+    assert isinstance(modal.channel.values[0], app_commands.AppCommandChannel)
+    assert modal.weekday.values == ["2"]
+    assert modal.local_time.value == "13:40"
+    assert modal.end_date.value == "2026-08-30"
+    assert modal.content.value == ""
+    modal.channel._handle_submit(interaction(), {"values": []}, {})
+    assert modal.channel.values == []
+
+
+@pytest.mark.parametrize(
+    "selected_id",
+    [401, 400],
+    ids=["changed", "untouched-default"],
+)
+def test_detail_edit_channel_resolves_app_command_channel_through_guild_cache(
+    selected_id: int,
+) -> None:
+    value = interaction()
+    cached = cached_text_channel(value.guild, selected_id)
+    value.guild.get_channel.return_value = cached
+    group = commands(AsyncMock())
+    submitted = app_command_channel(selected_id)
+
+    assert group._detail_edit_channel_id(value, submitted, current_channel_id=400) == selected_id
+    value.guild.get_channel.assert_called_with(selected_id)
+    cached.permissions_for.assert_called_once_with(value.guild.me)
+    assert not hasattr(value.guild, "fetch_channel") or not value.guild.fetch_channel.called
+
+
+def test_detail_edit_channel_optional_empty_keeps_current_channel() -> None:
+    value = interaction()
+    cached = cached_text_channel(value.guild)
+    value.guild.get_channel.return_value = cached
+    group = commands(AsyncMock())
+
+    assert group._detail_edit_channel_id(value, None, current_channel_id=400) == 400
+    value.guild.get_channel.assert_called_with(400)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    ["cache-miss", "other-guild", "thread", "dm", "category", "voice", "permissions", "member"],
+)
+async def test_detail_edit_channel_failures_use_destination_message_before_transaction(
+    failure: str,
+) -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    queries = AsyncMock()
+    session = MagicMock()
+    group = commands(queries, session=session)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    modal.channel._handle_submit(
+        interaction(),
+        {"values": ["400"]},
+        {
+            ResolveKey(id="400", type=discord.AppCommandOptionType.channel.value): (
+                app_command_channel()
+            )
+        },
+    )
+    submitted = interaction()
+    cached: object | None = cached_text_channel(submitted.guild)
+    if failure == "cache-miss":
+        cached = None
+    elif failure == "other-guild":
+        cached = cached_text_channel(MagicMock(spec=discord.Guild))
+        cached.guild.id = GUILD_ID + 1
+    elif failure == "thread":
+        cached = MagicMock(spec=discord.Thread)
+    elif failure == "dm":
+        cached = MagicMock(spec=discord.DMChannel)
+    elif failure == "category":
+        cached = MagicMock(spec=discord.CategoryChannel)
+    elif failure == "voice":
+        cached = MagicMock(spec=discord.VoiceChannel)
+    elif failure == "permissions":
+        cached = cached_text_channel(submitted.guild)
+        cached.permissions_for.return_value.view_channel = False
+    elif failure == "member":
+        submitted.guild.me = None
+    submitted.guild.get_channel.return_value = cached
+
+    await group._submit_detail_edit(modal, submitted)
+
+    assert submitted.response.send_message.await_args.args == (DETAIL_EDIT_CHANNEL_MESSAGE,)
+    assert submitted.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert submitted.response.send_message.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", [object(), True, 0, -1, 9_223_372_036_854_775_808])
+async def test_detail_edit_component_or_channel_id_corruption_is_internal_error(
+    bad_value: object,
+) -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    if isinstance(bad_value, int):
+        bad_channel = MagicMock(spec=app_commands.AppCommandChannel)
+        bad_channel.id = bad_value
+        submitted_value = bad_channel
+    else:
+        submitted_value = bad_value
+    modal.channel._handle_submit(
+        interaction(),
+        {"values": ["bad"]},
+        {ResolveKey(id="bad", type=discord.AppCommandOptionType.channel.value): submitted_value},
+    )
+    submitted = interaction()
+
+    await group._submit_detail_edit(modal, submitted)
+
+    assert submitted.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_detail_edit_channel_missing_id_is_internal_error() -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    bad_channel = MagicMock(spec=app_commands.AppCommandChannel)
+    del bad_channel.id
+    modal.channel._handle_submit(
+        interaction(),
+        {"values": ["bad"]},
+        {ResolveKey(id="bad", type=discord.AppCommandOptionType.channel.value): bad_channel},
+    )
+    submitted = interaction()
+
+    await group._submit_detail_edit(modal, submitted)
+
+    assert submitted.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_detail_edit_multiple_channels_is_input_error_before_transaction() -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    modal.channel._handle_submit(
+        interaction(),
+        {"values": ["400", "401"]},
+        {
+            ResolveKey(id="400", type=discord.AppCommandOptionType.channel.value): (
+                app_command_channel()
+            ),
+            ResolveKey(id="401", type=discord.AppCommandOptionType.channel.value): (
+                app_command_channel(401)
+            ),
+        },
+    )
+    submitted = interaction()
+
+    await group._submit_detail_edit(modal, submitted)
+
+    assert submitted.response.send_message.await_args.args == ("入力内容を確認してください。",)
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("local_time_value", "end_date_value", "content_value", "expected_time", "expected_end"),
+    [
+        ("13:40", "2026-08-30", "本文", time(13, 40), date(2026, 8, 30)),
+        ("14:20", "明後日", "変更本文", time(14, 20), date(2026, 8, 20)),
+        ("13:40", "", "", time(13, 40), None),
+    ],
+    ids=["untouched", "changed-and-relative", "clear-optional-fields"],
+)
+async def test_daily_detail_edit_v2_submit_reaches_service_with_all_field_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    local_time_value: str,
+    end_date_value: str,
+    content_value: str,
+    expected_time: time,
+    expected_end: date | None,
+) -> None:
+    selected = replace(
+        view(content="本文"),
+        schedule_type=ScheduleType.DAILY,
+        local_time=time(13, 40),
+        end_date=date(2026, 8, 30),
+    )
+    refreshed = replace(selected, version=2)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(refreshed)
+    group = commands(queries)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    submitted_channel = app_command_channel(401)
+    modal._refresh(
+        interaction(),
+        [
+            {
+                "type": 18,
+                "component": {
+                    "type": 8,
+                    "custom_id": "post_detail_edit_channel",
+                    "values": ["401"],
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_local_time",
+                    "value": local_time_value,
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_end_date",
+                    "value": end_date_value,
+                },
+            },
+            {
+                "type": 18,
+                "component": {
+                    "type": 4,
+                    "custom_id": "post_detail_edit_content",
+                    "value": content_value,
+                },
+            },
+        ],
+        {
+            ResolveKey(id="401", type=discord.AppCommandOptionType.channel.value): (
+                submitted_channel
+            )
+        },
+    )
+    submitted = interaction()
+    cached = cached_text_channel(submitted.guild, 401)
+    submitted.guild.get_channel.return_value = cached
+    service = AsyncMock()
+    service.edit.return_value = EditedSchedule(
+        public_id=selected.public_id,
+        channel_id=401,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE if content_value else ScheduleStatus.DRAFT,
+        content=content_value or None,
+        next_run_at=selected.next_run_at,
+        local_time=expected_time,
+        weekday=None,
+        end_date=expected_end,
+        changed_fields=("channel_id",),
+        pending_runs_skipped=0,
+        run_replaced=False,
+        retry_pending_preserved=False,
+        previous_status=ScheduleStatus.ACTIVE,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await modal.on_submit(submitted)
+
+    values = service.edit.await_args.kwargs["values"]
+    assert values.channel_id == 401
+    assert values.local_time == expected_time
+    assert values.end_date == expected_end
+    assert values.end_date_supplied is bool(end_date_value)
+    assert values.clear_end_date is not bool(end_date_value)
+    assert values.content == (content_value or None)
+    assert values.clear_content is not bool(content_value)
+    assert service.edit.await_args.kwargs["expected_version"] == selected.version
+
+
+@pytest.mark.asyncio
+async def test_daily_detail_edit_complete_noop_uses_no_changes_response_not_input_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(
+        view(content="本文"),
+        schedule_type=ScheduleType.DAILY,
+        local_time=time(13, 40),
+        end_date=date(2026, 8, 30),
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(selected)
+    group = commands(queries)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    modal.channel._handle_submit(
+        interaction(),
+        {"values": ["400"]},
+        {
+            ResolveKey(id="400", type=discord.AppCommandOptionType.channel.value): (
+                app_command_channel()
+            )
+        },
+    )
+    modal.local_time._value = "13:40"
+    modal.end_date._value = "2026-08-30"
+    modal.content._value = "本文"
+    submitted = interaction()
+    submitted.guild.get_channel.return_value = cached_text_channel(submitted.guild)
+    service = AsyncMock()
+    service.edit.side_effect = ScheduleEditNoChanges
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await modal.on_submit(submitted)
+
+    assert submitted.edit_original_response.await_args.kwargs["content"] == (
+        DETAIL_EDIT_NO_CHANGES_MESSAGE
+    )
+    submitted.response.send_message.assert_not_awaited()
+    assert detail_view.finished is True
+
+
+@pytest.mark.asyncio
+async def test_detail_edit_expected_version_conflict_still_refreshes_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(replace(selected, version=2))
+    group = commands(queries)
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    modal.channel._handle_submit(interaction(), {"values": []}, {})
+    modal.local_time._value = "14:00"
+    modal.end_date._value = ""
+    modal.content._value = "本文"
+    submitted = interaction()
+    submitted.guild.get_channel.return_value = cached_text_channel(submitted.guild)
+    service = AsyncMock()
+    service.edit.side_effect = ScheduleEditVersionConflict
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await modal.on_submit(submitted)
+
+    assert submitted.edit_original_response.await_args.kwargs["content"] == DETAIL_CONFLICT_MESSAGE
+    assert service.edit.await_args.kwargs["expected_version"] == selected.version
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("done", [False, True], ids=["initial-response", "followup"])
+async def test_detail_edit_modal_on_error_is_sanitized_and_preserves_parent(
+    caplog: pytest.LogCaptureFixture, done: bool
+) -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.DAILY, local_time=time(13, 40), end_date=None
+    )
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
+    detail_view.edit_modal_active = True
+    group._edit_modals.add(modal)
+    submitted = interaction(done=done)
+    secret = "secret-component-value"
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await modal.on_error(submitted, RuntimeError(secret))
+
+    sender = submitted.followup.send if done else submitted.response.send_message
+    assert sender.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    assert sender.await_args.kwargs["ephemeral"] is True
+    assert sender.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert detail_view.finished is False and detail_view.closed is False
+    assert detail_view.edit_modal_active is False
+    assert modal not in group._edit_modals and modal.is_finished()
+    records = [record for record in caplog.records if record.name == "test.posts"]
+    assert [record.message for record in records] == ["schedule_detail_edit_modal_error"]
+    assert records[0].exc_info is None
+    assert secret not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -858,7 +1699,7 @@ async def test_direct_show_builds_detail_context_and_delete_button() -> None:
     kwargs = value.response.send_message.await_args.kwargs
     assert kwargs["embed"].title == "予約詳細"
     built = kwargs["view"]
-    assert [item.label for item in built.children] == ["削除"]
+    assert [item.label for item in built.children] == ["編集", "削除"]
     assert built.context.public_id == selected.public_id
     assert built.context.expected_version == selected.version
     assert built.timeout == 900.0

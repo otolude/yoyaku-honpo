@@ -46,6 +46,10 @@ class ScheduleEditUnavailable(Exception):
     """The target is absent, unauthorized, conflicting, or not editable."""
 
 
+class ScheduleEditVersionConflict(ScheduleEditUnavailable):
+    """The displayed schedule version is no longer current."""
+
+
 class ScheduleEditNoChanges(Exception):
     """The request produces no persistent change."""
 
@@ -131,17 +135,19 @@ class ScheduleEditingService:
         values: EditValues,
         edited_at: datetime,
         configured_guild_id: int | None = None,
+        expected_version: int | None = None,
     ) -> EditedSchedule:
         edited_at = require_utc(edited_at)
         if not values.has_request():
             raise InvalidScheduleEditOptions
         unlocked = await self._find(guild_id=guild_id, public_id=public_id)
         snapshot = _snapshot(unlocked)
+        _validate_expected_version(snapshot.version, expected_version)
         runs = await self._runs.list_for_edit(schedule_id=snapshot.schedule_id, lock=True)
         in_flight_attempts = await self._attempts.list_in_flight_for_runs(
             run_ids=[run.id for run in runs]
         )
-        schedule = await self._lock_and_revalidate(snapshot)
+        schedule = await self._lock_and_revalidate(snapshot, expected_version=expected_version)
         self._authorize(schedule, actor_user_id=actor_user_id, administrator=administrator)
         schedule_type = ScheduleType(schedule.schedule_type)
         status = ScheduleStatus(schedule.status)
@@ -344,11 +350,14 @@ class ScheduleEditingService:
         except (RepositoryNotFoundError, ValueError) as error:
             raise ScheduleEditUnavailable from error
 
-    async def _lock_and_revalidate(self, snapshot: _Snapshot) -> Schedule:
+    async def _lock_and_revalidate(
+        self, snapshot: _Snapshot, *, expected_version: int | None = None
+    ) -> Schedule:
         try:
             schedule = await self._schedules.lock_by_id_for_deletion(snapshot.schedule_id)
         except RepositoryNotFoundError as error:
             raise ScheduleEditUnavailable from error
+        _validate_expected_version(schedule.version, expected_version)
         if (
             schedule.public_id != snapshot.public_id
             or schedule.guild_id != snapshot.guild_id
@@ -450,3 +459,12 @@ def _snapshot(schedule: Schedule) -> _Snapshot:
         version=schedule.version,
         next_run_at=schedule.next_run_at,
     )
+
+
+def _validate_expected_version(actual: int, expected: int | None) -> None:
+    if expected is None:
+        return
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+        raise ValueError("expected_version must be a positive integer")
+    if actual != expected:
+        raise ScheduleEditVersionConflict

@@ -13,6 +13,7 @@ from discord_ai_reminder_bot.application.schedule_editing import (
     ScheduleEditingService,
     ScheduleEditNoChanges,
     ScheduleEditUnavailable,
+    ScheduleEditVersionConflict,
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
@@ -81,6 +82,72 @@ async def edit(session: AsyncSession, schedule: Schedule, values: EditValues, *,
         values=values,
         edited_at=now,
     )
+
+
+async def test_edit_expected_version_conflict_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    schedule, run = await add_schedule(db_session)
+    with pytest.raises(ScheduleEditVersionConflict):
+        await ScheduleEditingService(db_session).edit(
+            guild_id=GUILD_ID,
+            public_id=str(schedule.public_id),
+            actor_user_id=CREATOR_ID,
+            administrator=False,
+            values=EditValues(content="new"),
+            edited_at=NOW,
+            expected_version=schedule.version + 1,
+        )
+    assert schedule.version == 1 and schedule.content == "body"
+    assert run is not None and run.status == "pending"
+    assert await db_session.scalar(select(func.count(OperationLog.id))) == 0
+
+
+async def test_consecutive_edits_use_latest_version_and_noop_does_not_increment(
+    db_session: AsyncSession,
+) -> None:
+    schedule, _ = await add_schedule(
+        db_session,
+        schedule_type="daily",
+        local_time=time(10),
+        end_date=date(2026, 8, 30),
+    )
+    service = ScheduleEditingService(db_session)
+
+    await service.edit(
+        guild_id=GUILD_ID,
+        public_id=str(schedule.public_id),
+        actor_user_id=CREATOR_ID,
+        administrator=False,
+        values=EditValues(content="updated"),
+        edited_at=NOW,
+        expected_version=1,
+    )
+    assert schedule.version == 2
+
+    with pytest.raises(ScheduleEditNoChanges):
+        await service.edit(
+            guild_id=GUILD_ID,
+            public_id=str(schedule.public_id),
+            actor_user_id=CREATOR_ID,
+            administrator=False,
+            values=EditValues(content="updated"),
+            edited_at=NOW,
+            expected_version=2,
+        )
+    assert schedule.version == 2
+
+    await service.edit(
+        guild_id=GUILD_ID,
+        public_id=str(schedule.public_id),
+        actor_user_id=CREATOR_ID,
+        administrator=False,
+        values=EditValues(clear_content=True, clear_end_date=True),
+        edited_at=NOW,
+        expected_version=2,
+    )
+    assert schedule.version == 3
+    assert schedule.content is None and schedule.end_date is None
 
 
 async def test_once_content_channel_and_time_edit_replaces_run_and_audits(

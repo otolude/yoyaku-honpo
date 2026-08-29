@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from typing import TYPE_CHECKING
 
 import discord
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from discord_ai_reminder_bot.bot.posts import PostCommands
 
 DETAIL_BACK_CUSTOM_ID = "post_detail_back"
+DETAIL_EDIT_CUSTOM_ID = "post_detail_edit"
 DETAIL_PAUSE_CUSTOM_ID = "post_detail_pause"
 DETAIL_RESUME_CUSTOM_ID = "post_detail_resume"
 DETAIL_DELETE_CUSTOM_ID = "post_detail_delete"
@@ -39,6 +41,13 @@ class ScheduleDetailContext:
     actor_user_id: int
     creator_user_id: int
     actions: ScheduleActionAvailability
+    schedule_type: ScheduleType
+    channel_id: int
+    content: str | None
+    next_run_at: datetime | None
+    local_time: time | None
+    weekday: int | None
+    end_date: date | None
     list_origin: ScheduleListOrigin | None = None
 
     def __post_init__(self) -> None:
@@ -71,6 +80,16 @@ class ScheduleDetailView(discord.ui.View):
         self.finished = False
         self.closed = False
         self.timed_out = False
+        self.edit_modal_active = False
+        edit = discord.ui.Button(
+            label="編集",
+            emoji="✏️",
+            style=discord.ButtonStyle.primary,
+            custom_id=DETAIL_EDIT_CUSTOM_ID,
+            disabled=not context.actions.can_edit,
+        )
+        edit.callback = self._edit
+        self.add_item(edit)
         if context.actions.can_pause:
             button = discord.ui.Button(
                 label="一時停止",
@@ -116,6 +135,9 @@ class ScheduleDetailView(discord.ui.View):
 
     async def _pause(self, interaction: discord.Interaction) -> None:
         await self.commands._pause_from_detail(self, interaction)
+
+    async def _edit(self, interaction: discord.Interaction) -> None:
+        await self.commands._edit_from_detail(self, interaction)
 
     async def _resume(self, interaction: discord.Interaction) -> None:
         await self.commands._resume_from_detail(self, interaction)

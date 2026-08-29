@@ -988,7 +988,8 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 - pause／resume／deleteはoptional `expected_version`を受け、slash commandは未指定、詳細操作は表示時versionを指定する。
 - 更新Serviceは既存のrun ID順lock、attempt確認、Schedule lock、snapshot再検証を維持し、commit／rollbackを所有しない。
 - Discord表示はcommitとSession終了後に最新`ScheduleDetail`を取得して更新し、表示失敗をDB rollbackへ結び付けない。
-- 編集ボタン、編集Modal、Components v2は第3段階の対象とする。
+- 第3段階の編集は`Label`配下の`ChannelSelect`、`StringSelect`、`TextInput`で種別別Modalを構成する。単発3、毎日4、毎週5トップレベル部品とし、1回のsubmitを1回の`ScheduleEditingService.edit`と1 transactionへ変換する。
+- 空本文は`clear_content`、空終了日は`clear_end_date`へ排他的に変換する。詳細表示時versionを`expected_version`としてsnapshot取得時とSchedule lock後に検証し、no-opと競合はいずれもOperationLogを作らず最新詳細へ戻す。
 
 ### 23.3 AI文章作成
 

@@ -25,11 +25,13 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     ScheduleDeletionVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_editing import (
+    EditedSchedule,
     EditValues,
     InvalidScheduleEditOptions,
     ScheduleEditingService,
     ScheduleEditNoChanges,
     ScheduleEditUnavailable,
+    ScheduleEditVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_pause import (
     ResumeMode,
@@ -99,6 +101,10 @@ from discord_ai_reminder_bot.domain.schedule_deletion import (
 
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
 INVALID_INPUT_MESSAGE = "入力内容を確認してください。"
+DETAIL_EDIT_CHANNEL_MESSAGE = (
+    "投稿先を確認してください。Botが閲覧・送信できる同じサーバーのテキストチャンネルを"
+    "選択してください。"
+)
 DATETIME_INPUT_MESSAGE = "投稿日時を確認してください。例：今日21:00、8/25 19:30、2027-08-25 19:30"
 FULLWIDTH_DATETIME_INPUT_MESSAGE = (
     "投稿日時の数字と記号は半角で入力してください。例：今日21:00、8/25 19:30"
@@ -117,6 +123,8 @@ DELETE_EXPIRED_MESSAGE = (
 STATE_CHANGE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、この操作を実行できません。"
 EDIT_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、編集できません。"
 EDIT_NO_CHANGES_MESSAGE = "実際に変更される項目がありません。"
+DETAIL_EDIT_NO_CHANGES_MESSAGE = "変更内容がありません。"
+DETAIL_EDITED_MESSAGE = "予約を編集しました。"
 EDIT_TYPE_OPTIONS_MESSAGE = (
     "予約種別に使用できない編集項目があります。予約種別を変更する場合は、現在の予約を削除し、"
     "希望する種別で新しく作成してください。"
@@ -145,11 +153,162 @@ FULLWIDTH_END_DATE_INPUT_MESSAGE = (
     "終了日の数字と記号は半角で入力してください。例：8/30、2026-08-30"
 )
 
+_EDIT_FIELD_LABELS = {
+    "channel_id": "投稿先",
+    "content": "本文",
+    "scheduled_at": "投稿日時",
+    "local_time": "投稿時刻",
+    "weekday": "曜日",
+    "end_date": "終了日",
+}
+
+
+def _safe_changed_fields(fields: tuple[str, ...]) -> str:
+    return "、".join(_EDIT_FIELD_LABELS[item] for item in fields if item in _EDIT_FIELD_LABELS)
+
+
+def _detail_edit_success_message(edited: EditedSchedule) -> str:
+    lines = [DETAIL_EDITED_MESSAGE, "変更した項目: " + _safe_changed_fields(edited.changed_fields)]
+    if edited.status is ScheduleStatus.PAUSED:
+        lines.append("一時停止を維持しています。再開するまで投稿されません。")
+    if edited.previous_status is ScheduleStatus.ACTIVE and edited.status is ScheduleStatus.DRAFT:
+        lines.append("本文削除により下書きになりました。")
+    if edited.previous_status is ScheduleStatus.DRAFT and edited.status is ScheduleStatus.ACTIVE:
+        lines.append("本文設定により有効になりました。")
+    if edited.status is ScheduleStatus.ENDED:
+        lines.append("終了日内に次回投稿がないため終了済みになりました。")
+    if edited.run_replaced:
+        lines.append("変更前の実行予定を見送り、新しい次回投稿を作成しました。")
+    if edited.retry_pending_preserved:
+        lines.append("次回試行は変更後の内容を使用します。")
+    return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class InteractionActor:
     user_id: int
     administrator: bool
+
+
+class DetailEditChannelError(Exception):
+    """The selected destination is unavailable or unsafe to use."""
+
+
+class DetailEditModalStateError(Exception):
+    """The submitted modal component state does not match the expected structure."""
+
+
+class ScheduleEditModal(discord.ui.Modal):
+    """Type-specific editor retaining only detached detail values."""
+
+    def __init__(
+        self,
+        *,
+        commands: PostCommands,
+        detail_view: ScheduleDetailView,
+        default_channel: discord.TextChannel | None,
+    ) -> None:
+        titles = {
+            ScheduleType.ONCE: "単発予約を編集",
+            ScheduleType.DAILY: "毎日予約を編集",
+            ScheduleType.WEEKLY: "毎週予約を編集",
+        }
+        super().__init__(
+            title=titles[detail_view.context.schedule_type],
+            timeout=900.0,
+            custom_id="post_detail_edit_modal",
+        )
+        self.commands = commands
+        self.detail_view = detail_view
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+        self.closed = False
+        defaults = [default_channel] if default_channel is not None else []
+        self.channel = discord.ui.ChannelSelect(
+            custom_id="post_detail_edit_channel",
+            channel_types=[discord.ChannelType.text],
+            min_values=0,
+            max_values=1,
+            required=False,
+            default_values=defaults,
+        )
+        self.add_item(discord.ui.Label(text="投稿先", component=self.channel))
+        context = detail_view.context
+        if context.schedule_type is ScheduleType.ONCE:
+            assert context.next_run_at is not None
+            self.scheduled_at = discord.ui.TextInput(
+                custom_id="post_detail_edit_scheduled_at",
+                default=context.next_run_at.astimezone(TOKYO).strftime("%Y-%m-%d %H:%M"),
+                min_length=16,
+                max_length=16,
+            )
+            self.add_item(discord.ui.Label(text="投稿日時", component=self.scheduled_at))
+        else:
+            assert context.local_time is not None
+            self.local_time = discord.ui.TextInput(
+                custom_id="post_detail_edit_local_time",
+                default=context.local_time.strftime("%H:%M"),
+                min_length=5,
+                max_length=5,
+            )
+            if context.schedule_type is ScheduleType.WEEKLY:
+                self.weekday = discord.ui.Select(
+                    custom_id="post_detail_edit_weekday",
+                    min_values=1,
+                    max_values=1,
+                    required=True,
+                    options=[
+                        discord.SelectOption(
+                            label=label, value=str(value), default=value == context.weekday
+                        )
+                        for value, label in enumerate(WEEKDAY_LABELS)
+                    ],
+                )
+                self.add_item(discord.ui.Label(text="曜日", component=self.weekday))
+            self.add_item(discord.ui.Label(text="投稿時刻", component=self.local_time))
+            self.end_date = discord.ui.TextInput(
+                custom_id="post_detail_edit_end_date",
+                default=context.end_date.isoformat() if context.end_date else "",
+                required=False,
+                max_length=10,
+            )
+            self.add_item(discord.ui.Label(text="終了日", component=self.end_date))
+        self.content = discord.ui.TextInput(
+            custom_id="post_detail_edit_content",
+            style=discord.TextStyle.paragraph,
+            default=context.content or "",
+            required=False,
+            max_length=2_000,
+        )
+        self.add_item(discord.ui.Label(text="本文", component=self.content))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        async with self.action_lock:
+            if self.finished or self.closed:
+                return
+            self.finished = True
+            try:
+                await self.commands._submit_detail_edit(self, interaction)
+            finally:
+                self._release()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
+        self.commands._logger.error("schedule_detail_edit_modal_error")
+        try:
+            await respond_ephemeral(
+                interaction, INTERNAL_ERROR_MESSAGE, logger=self.commands._logger
+            )
+        finally:
+            self._release()
+
+    async def on_timeout(self) -> None:
+        self._release()
+
+    def _release(self) -> None:
+        self.closed = True
+        self.detail_view.edit_modal_active = False
+        self.commands._edit_modals.discard(self)
+        self.stop()
 
 
 class ScheduleListSelect(discord.ui.Select):
@@ -608,6 +767,7 @@ class PostCommands(app_commands.Group):
         self._resume_views: set[ResumeChoiceView] = set()
         self._resume_modals: set[ResumeTimeModal] = set()
         self._delete_reason_modals: set[DeleteReasonModal] = set()
+        self._edit_modals: set[ScheduleEditModal] = set()
         self._list_views: set[ScheduleListView] = set()
         self._detail_views: set[ScheduleDetailView] = set()
 
@@ -1784,6 +1944,13 @@ class PostCommands(app_commands.Group):
             actor_user_id=actor_user_id,
             creator_user_id=detail.schedule.creator_user_id,
             actions=detail.actions,
+            schedule_type=detail.schedule.schedule_type,
+            channel_id=detail.schedule.channel_id,
+            content=detail.schedule.content,
+            next_run_at=detail.schedule.next_run_at,
+            local_time=detail.schedule.local_time,
+            weekday=detail.schedule.weekday,
+            end_date=detail.schedule.end_date,
             list_origin=list_origin,
         )
         return ScheduleDetailView(
@@ -1940,6 +2107,153 @@ class PostCommands(app_commands.Group):
             return
         await self._continue_detail_delete(view, interaction, None)
 
+    async def _edit_from_detail(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if (
+                view.finished
+                or view.closed
+                or not view.context.actions.can_edit
+                or view.edit_modal_active
+            ):
+                await respond_ephemeral(interaction, EDIT_UNAVAILABLE_MESSAGE, logger=self._logger)
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            guild = interaction.guild
+            candidate = guild.get_channel(view.context.channel_id) if guild is not None else None
+            default_channel = candidate if isinstance(candidate, discord.TextChannel) else None
+            modal = ScheduleEditModal(
+                commands=self, detail_view=view, default_channel=default_channel
+            )
+            view.edit_modal_active = True
+            self._edit_modals.add(modal)
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:  # noqa: BLE001
+                modal._release()
+                self._logger.error("schedule_detail_edit_modal_response_failed")
+
+    async def _submit_detail_edit(
+        self, modal: ScheduleEditModal, interaction: discord.Interaction
+    ) -> None:
+        view = modal.detail_view
+        try:
+            actor = authorized_actor(
+                interaction,
+                configured_guild_id=self._configured_guild_id,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            if actor is None or actor.user_id != view.context.actor_user_id:
+                await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+                return
+            selected = list(modal.channel.values)
+            if len(selected) > 1:
+                raise ValueError("too many channels")
+            channel_id = self._detail_edit_channel_id(
+                interaction,
+                selected[0] if selected else None,
+                current_channel_id=view.context.channel_id,
+            )
+            now = self._clock.now()
+            context = view.context
+            content_value = modal.content.value
+            if not isinstance(content_value, str):
+                raise DetailEditModalStateError
+            clear_content = not content_value.strip()
+            content = None if clear_content else validate_create_content(content_value)
+            values_kwargs: dict[str, object] = {
+                "channel_id": channel_id,
+                "content": content,
+                "clear_content": clear_content,
+            }
+            if context.schedule_type is ScheduleType.ONCE:
+                scheduled_at_value = modal.scheduled_at.value
+                if not isinstance(scheduled_at_value, str):
+                    raise DetailEditModalStateError
+                values_kwargs["scheduled_at"] = parse_once_scheduled_at(scheduled_at_value, now=now)
+            else:
+                local_time_value = modal.local_time.value
+                end_date_value = modal.end_date.value
+                if not isinstance(local_time_value, str) or not isinstance(end_date_value, str):
+                    raise DetailEditModalStateError
+                values_kwargs["local_time"] = parse_local_time(local_time_value)
+                end_value = end_date_value.strip()
+                values_kwargs.update(
+                    end_date=parse_end_date(end_value, now=now) if end_value else None,
+                    end_date_supplied=bool(end_value),
+                    clear_end_date=not end_value,
+                )
+                if context.schedule_type is ScheduleType.WEEKLY:
+                    if len(modal.weekday.values) != 1:
+                        raise ValueError("weekday is required")
+                    values_kwargs.update(
+                        weekday=int(modal.weekday.values[0]), weekday_supplied=True
+                    )
+            values = EditValues(**values_kwargs)
+        except FullwidthEndDateError:
+            await respond_ephemeral(
+                interaction, FULLWIDTH_END_DATE_INPUT_MESSAGE, logger=self._logger
+            )
+            return
+        except InvalidEndDateFormatError:
+            await respond_ephemeral(interaction, END_DATE_INPUT_MESSAGE, logger=self._logger)
+            return
+        except DetailEditChannelError:
+            await respond_ephemeral(interaction, DETAIL_EDIT_CHANNEL_MESSAGE, logger=self._logger)
+            return
+        except InvalidDateTimeError, InvalidScheduleContentError, ValueError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        except Exception:  # noqa: BLE001 - component internals and Discord details stay private
+            self._logger.error("schedule_detail_edit_modal_error")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        try:
+            # A modal submitted from a detail message must defer as a message update.
+            # ``ephemeral=True`` creates a separate modal-response message, leaving the
+            # displayed detail message owned by the retired view.
+            await interaction.response.defer()
+        except Exception:  # noqa: BLE001
+            self._logger.error("schedule_detail_edit_defer_failed")
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                edited = await ScheduleEditingService(session).edit(
+                    guild_id=self._configured_guild_id,
+                    public_id=str(view.context.public_id),
+                    actor_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    values=values,
+                    edited_at=now,
+                    configured_guild_id=self._configured_guild_id,
+                    expected_version=view.context.expected_version,
+                )
+        except ScheduleEditVersionConflict:
+            await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+            return
+        except ScheduleEditNoChanges:
+            await self._refresh_detail(view, interaction, actor, DETAIL_EDIT_NO_CHANGES_MESSAGE)
+            return
+        except InvalidScheduleEditOptions:
+            await respond_ephemeral(interaction, EDIT_TYPE_OPTIONS_MESSAGE, logger=self._logger)
+            return
+        except ScheduleEditUnavailable:
+            await self._refresh_detail(view, interaction, actor, EDIT_UNAVAILABLE_MESSAGE)
+            return
+        except Exception:  # noqa: BLE001
+            self._logger.error("schedule_detail_edit_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await self._refresh_detail(
+            view,
+            interaction,
+            actor,
+            _detail_edit_success_message(edited),
+        )
+
     async def _continue_detail_delete(
         self, view: ScheduleDetailView, interaction: discord.Interaction, reason: str | None
     ) -> None:
@@ -2017,6 +2331,16 @@ class PostCommands(app_commands.Group):
         self._detail_views.discard(detail)
         self._resume_views.add(resume)
 
+    def _retire_detail_source(
+        self, source: ScheduleDetailView | ResumeChoiceView | ScheduleDeletionConfirmView
+    ) -> None:
+        """Release the old message ownership before Discord registers its replacement."""
+        source.finished = source.closed = True
+        source.stop()
+        self._detail_views.discard(source)  # type: ignore[arg-type]
+        self._resume_views.discard(source)  # type: ignore[arg-type]
+        self._delete_views.discard(source)  # type: ignore[arg-type]
+
     async def _refresh_detail(
         self,
         source: ScheduleDetailView | ResumeChoiceView | ScheduleDeletionConfirmView,
@@ -2055,23 +2379,18 @@ class PostCommands(app_commands.Group):
                 "view": refreshed,
                 "allowed_mentions": discord.AllowedMentions.none(),
             }
+            # discord.py keys component dispatch by message ID and fixed custom IDs.
+            # Stopping the old view after registering the replacement would remove
+            # the replacement's dispatch entries as well.
+            self._retire_detail_source(source)
             if response_edit:
                 await interaction.response.edit_message(**arguments)
             else:
                 await interaction.edit_original_response(**arguments)
         except Exception:  # noqa: BLE001
             self._logger.error("schedule_detail_refresh_response_failed")
-            source.finished = source.closed = True
-            source.stop()
-            self._detail_views.discard(source)  # type: ignore[arg-type]
-            self._resume_views.discard(source)  # type: ignore[arg-type]
-            self._delete_views.discard(source)  # type: ignore[arg-type]
+            self._retire_detail_source(source)
             return
-        source.finished = source.closed = True
-        source.stop()
-        self._detail_views.discard(source)  # type: ignore[arg-type]
-        self._resume_views.discard(source)  # type: ignore[arg-type]
-        self._delete_views.discard(source)  # type: ignore[arg-type]
         self._detail_views.add(refreshed)
 
     async def _detail_interaction_allowed(
@@ -2252,6 +2571,12 @@ class PostCommands(app_commands.Group):
         for modal in delete_reason_modals:
             modal.closed = True
             modal.stop()
+        edit_modals = tuple(self._edit_modals)
+        self._edit_modals.clear()
+        for modal in edit_modals:
+            modal.closed = True
+            modal.detail_view.edit_modal_active = False
+            modal.stop()
         await self.close_delete_views()
         await self.close_list_views()
         await self.close_detail_views()
@@ -2265,6 +2590,8 @@ class PostCommands(app_commands.Group):
             await asyncio.gather(
                 *(modal.wait() for modal in delete_reason_modals), return_exceptions=True
             )
+        if edit_modals:
+            await asyncio.gather(*(modal.wait() for modal in edit_modals), return_exceptions=True)
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(
@@ -2438,6 +2765,34 @@ class PostCommands(app_commands.Group):
         if not permissions.view_channel or not permissions.send_messages:
             raise ValueError("missing channel permission")
         return channel.id
+
+    def _detail_edit_channel_id(
+        self,
+        interaction: discord.Interaction,
+        selected: object | None,
+        *,
+        current_channel_id: int,
+    ) -> int:
+        if selected is None:
+            channel_id = current_channel_id
+        else:
+            if not isinstance(selected, (app_commands.AppCommandChannel, discord.TextChannel)):
+                raise DetailEditModalStateError
+            channel_id = getattr(selected, "id", None)
+        if (
+            isinstance(channel_id, bool)
+            or not isinstance(channel_id, int)
+            or not 1 <= channel_id <= 9_223_372_036_854_775_807
+        ):
+            raise DetailEditModalStateError
+        guild = interaction.guild
+        if guild is None or guild.id != self._configured_guild_id:
+            raise DetailEditChannelError
+        channel = guild.get_channel(channel_id)
+        try:
+            return self._validated_channel(interaction, channel, require_current=True)
+        except ValueError as error:
+            raise DetailEditChannelError from error
 
     async def _respond_embed(
         self, interaction: discord.Interaction, factory: Callable[[], discord.Embed]
