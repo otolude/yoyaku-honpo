@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from discord_ai_reminder_bot.bot.posts import PostCommands
 
 DETAIL_BACK_CUSTOM_ID = "post_detail_back"
+DETAIL_PAUSE_CUSTOM_ID = "post_detail_pause"
+DETAIL_RESUME_CUSTOM_ID = "post_detail_resume"
+DETAIL_DELETE_CUSTOM_ID = "post_detail_delete"
 
 
 @dataclass(frozen=True)
@@ -34,13 +37,14 @@ class ScheduleDetailContext:
     public_id: uuid.UUID
     expected_version: int
     actor_user_id: int
+    creator_user_id: int
     actions: ScheduleActionAvailability
     list_origin: ScheduleListOrigin | None = None
 
     def __post_init__(self) -> None:
         if self.public_id.version != 7 or str(self.public_id) != str(self.public_id).lower():
             raise ValueError("detail context requires canonical UUIDv7")
-        for value in (self.expected_version, self.actor_user_id):
+        for value in (self.expected_version, self.actor_user_id, self.creator_user_id):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError("detail context identifiers must be positive")
         if self.actions.observed_version != self.expected_version:
@@ -67,6 +71,33 @@ class ScheduleDetailView(discord.ui.View):
         self.finished = False
         self.closed = False
         self.timed_out = False
+        if context.actions.can_pause:
+            button = discord.ui.Button(
+                label="一時停止",
+                emoji="⏸️",
+                style=discord.ButtonStyle.secondary,
+                custom_id=DETAIL_PAUSE_CUSTOM_ID,
+            )
+            button.callback = self._pause
+            self.add_item(button)
+        if context.actions.can_resume:
+            button = discord.ui.Button(
+                label="再開",
+                emoji="▶️",
+                style=discord.ButtonStyle.success,
+                custom_id=DETAIL_RESUME_CUSTOM_ID,
+            )
+            button.callback = self._resume
+            self.add_item(button)
+        delete = discord.ui.Button(
+            label="削除",
+            emoji="🗑️",
+            style=discord.ButtonStyle.danger,
+            custom_id=DETAIL_DELETE_CUSTOM_ID,
+            disabled=not context.actions.can_delete,
+        )
+        self.add_item(delete)
+        delete.callback = self._delete
         if context.list_origin is not None:
             button = discord.ui.Button(
                 label="一覧へ戻る",
@@ -82,6 +113,15 @@ class ScheduleDetailView(discord.ui.View):
 
     async def _back(self, interaction: discord.Interaction) -> None:
         await self.commands._return_to_list(self, interaction)
+
+    async def _pause(self, interaction: discord.Interaction) -> None:
+        await self.commands._pause_from_detail(self, interaction)
+
+    async def _resume(self, interaction: discord.Interaction) -> None:
+        await self.commands._resume_from_detail(self, interaction)
+
+    async def _delete(self, interaction: discord.Interaction) -> None:
+        await self.commands._delete_from_detail(self, interaction)
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         return await self.commands._detail_interaction_allowed(self, interaction)

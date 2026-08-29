@@ -397,6 +397,13 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     )
     _add_detail_content(embed, schedule.content)
     _field(embed, "🆔 予約ID", public_id_text(schedule.public_id), inline=False)
+    if schedule.status is ScheduleStatus.PAUSED:
+        _field(
+            embed,
+            "⚠️ 一時停止について",
+            "一時停止中は投稿されません。保持された投稿回がある場合は、再開時の規則に従います。",
+            inline=False,
+        )
     return _validated(embed)
 
 

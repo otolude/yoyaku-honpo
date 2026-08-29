@@ -974,7 +974,7 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 
 `ScheduleQueryService.get_schedule_detail`はSchedule表示値と正のversion、操作可否観測を1つのread-only SELECTで取得し、Session終了後も利用できる不変`ScheduleDetail`へ変換する。相関subqueryでcurrent run件数・pending件数・pristine違反・processing・claimed/sending/unknown attemptを数え、状態・種別・`now + 5分`と組み合わせて4操作の表示用可否を保守的に算出する。SELECT FOR UPDATE、flush、commit、明示rollback、ORMのBot層返却は行わない。
 
-`ScheduleDetailView`はcanonical UUIDv7、観測version、操作者ID、可否DTOと、一覧由来の場合だけstatus・schedule_type・pageを保持する。Session、transaction、内部DB ID、本文、guild IDは保持せず、custom IDは固定値だけを使う。第1段階で描画する部品は一覧由来の「一覧へ戻る」だけで、直接showでは空Viewを送らない。
+`ScheduleDetailView`はcanonical UUIDv7、観測version、操作者ID、可否DTOと、一覧由来の場合だけstatus・schedule_type・pageを保持する。Session、transaction、内部DB ID、本文、guild IDは保持せず、custom IDは固定値だけを使う。第2段階では可否DTOに応じた一時停止・再開・削除と、一覧由来の「一覧へ戻る」を描画する。
 
 一覧から詳細へ移るときは同じephemeralメッセージを編集し、旧`ScheduleListView`をstopしてregistryから除去してから新しい詳細Viewを登録する。戻るときは予約所有境界と最新一覧を短いread Sessionで再確認し、保存したfilter・type・pageを使ってclamp付きで新しい一覧Viewへ移管する。両Viewを同時にregistryへ残さない。
 
@@ -982,22 +982,30 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 
 検索は固定語彙、17～20桁のchannel ID、canonical UUID形式の前方一致に限定する。完全UUIDはUUIDv7を検証する。日時、channel名、本文、曖昧・自然言語検索は行わない。
 
-### 23.1 AI文章作成
+### 23.2 予約詳細の状態操作
+
+- `Detail → ResumeChoice → Detail`と`Detail → DeleteConfirm → Detail`では、遷移元をstopしてregistry所有権を一つだけ移譲する。
+- pause／resume／deleteはoptional `expected_version`を受け、slash commandは未指定、詳細操作は表示時versionを指定する。
+- 更新Serviceは既存のrun ID順lock、attempt確認、Schedule lock、snapshot再検証を維持し、commit／rollbackを所有しない。
+- Discord表示はcommitとSession終了後に最新`ScheduleDetail`を取得して更新し、表示失敗をDB rollbackへ結び付けない。
+- 編集ボタン、編集Modal、Components v2は第3段階の対象とする。
+
+### 23.3 AI文章作成
 
 AIプロバイダーを `infrastructure/ai/` に置き、アプリケーション層の文章生成ユースケースからインターフェース越しに呼ぶ。Discordコマンドや予約RepositoryからAI SDKを直接呼ばない。生成結果は利用者が確認してから予約本文へ反映する。
 
-### 23.2 文体反映
+### 23.4 文体反映
 
 文体設定と本人が登録した例文を予約本文から分離したテーブルへ保存する。AIへ送る情報を組み立てる処理はアプリケーション層へ置き、削除・保存期間・同意を管理できるようにする。
 
-### 23.3 PAY.JPサブスクリプション
+### 23.5 PAY.JPサブスクリプション
 
 PAY.JP顧客ID、契約ID、契約状態を専用テーブルへ保存する。カード情報は保存しない。Webhook受信用Webプロセスを追加し、Discord Botと同じアプリケーションサービス・Repositoryを再利用する。Webhookの重複受信に備えてイベントIDを一意に保存する。
 
-### 23.4 複数サーバー対応
+### 23.6 複数サーバー対応
 
 Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数の単一サーバー設定を `guild_settings` テーブルへ移し、許可ロール、運営者チャンネル、タイムゾーン、契約をサーバー単位で管理する。すべてのRepository検索に `guild_id` 条件を含め、サーバー間のデータ参照を防ぐ。
 
-### 23.5 プロセス分離
+### 23.7 プロセス分離
 
 負荷が増えた場合、Bot、予約ワーカー、Webhook APIを別プロセスへ分離する。PostgreSQLの処理権取得をすでに採用しているため、Phase 1の予約データと排他方式を維持したままワーカー数を増やせる。Celeryなどの追加は、DBポーリングで運用上の限界が確認された場合に改めて判断する。

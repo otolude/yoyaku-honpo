@@ -130,6 +130,22 @@ def detail(schedule: ScheduleView) -> ScheduleDetail:
     )
 
 
+def detail_with_actions(
+    schedule: ScheduleView, *, pause: bool = False, resume: bool = False, delete: bool = True
+) -> ScheduleDetail:
+    return ScheduleDetail(
+        schedule=schedule,
+        actions=ScheduleActionAvailability(
+            can_edit=False,
+            can_pause=pause,
+            can_resume=resume,
+            can_delete=delete,
+            reason_code=ScheduleActionReason.AVAILABLE,
+            observed_version=schedule.version,
+        ),
+    )
+
+
 def commands(queries: AsyncMock, *, session: MagicMock | None = None) -> PostCommands:
     session = session or MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
@@ -779,7 +795,7 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
     await group._show_list_selection(list_view, clicked, str(selected.public_id))
     detail_view = clicked.response.edit_message.await_args.kwargs["view"]
     assert clicked.response.edit_message.await_args.kwargs["embed"].title == "予約詳細"
-    assert [item.label for item in detail_view.children] == ["一覧へ戻る"]
+    assert [item.label for item in detail_view.children] == ["削除", "一覧へ戻る"]
     assert detail_view.context.expected_version == selected.version
     assert list_view.is_finished()
     assert list_view not in group._list_views
@@ -793,8 +809,37 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
     assert back.response.edit_message.await_args.kwargs["view"] in group._list_views
 
 
+@pytest.mark.parametrize(
+    ("pause", "resume", "delete", "labels", "delete_disabled"),
+    [
+        (True, False, True, ["一時停止", "削除"], False),
+        (False, True, True, ["再開", "削除"], False),
+        (False, False, True, ["削除"], False),
+        (False, False, False, ["削除"], True),
+    ],
+)
+def test_detail_action_buttons_follow_read_only_availability(
+    pause: bool,
+    resume: bool,
+    delete: bool,
+    labels: list[str],
+    delete_disabled: bool,
+) -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail_with_actions(selected, pause=pause, resume=resume, delete=delete),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    assert [item.label for item in detail_view.children] == labels
+    assert detail_view.children[-1].disabled is delete_disabled
+    assert all("edit" not in str(item.custom_id) for item in detail_view.children)
+
+
 @pytest.mark.asyncio
-async def test_direct_show_builds_detail_context_but_sends_no_empty_view() -> None:
+async def test_direct_show_builds_detail_context_and_delete_button() -> None:
     selected = view()
     queries = AsyncMock()
     queries.get_schedule_detail.return_value = detail(selected)
@@ -812,18 +857,12 @@ async def test_direct_show_builds_detail_context_but_sends_no_empty_view() -> No
     )
     kwargs = value.response.send_message.await_args.kwargs
     assert kwargs["embed"].title == "予約詳細"
-    assert "view" not in kwargs
-    built = group._build_detail_view(
-        interaction=value,
-        actor_user_id=USER_ID,
-        detail=detail(selected),
-        embed=kwargs["embed"],
-    )
-    assert not built.has_components
+    built = kwargs["view"]
+    assert [item.label for item in built.children] == ["削除"]
     assert built.context.public_id == selected.public_id
     assert built.context.expected_version == selected.version
     assert built.timeout == 900.0
-    assert not group._detail_views
+    assert built in group._detail_views
 
 
 @pytest.mark.asyncio
@@ -886,7 +925,8 @@ async def test_detail_timeout_keeps_disabled_back_without_database_access() -> N
 
     assert detail_view.finished and detail_view.timed_out and detail_view.is_finished()
     assert detail_view.children[0].disabled
-    assert detail_view.children[0].custom_id == DETAIL_BACK_CUSTOM_ID
+    assert all(item.disabled for item in detail_view.children)
+    assert detail_view.children[-1].custom_id == DETAIL_BACK_CUSTOM_ID
     assert detail_view not in group._detail_views
     queries.get_schedule_detail.assert_not_awaited()
     queries.get_schedule_page.assert_not_awaited()
@@ -997,8 +1037,8 @@ async def test_detail_custom_id_is_fixed_and_close_collects_view() -> None:
         list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
     )
     group._detail_views.add(detail_view)
-    custom_id = detail_view.children[0].custom_id
-    assert custom_id == DETAIL_BACK_CUSTOM_ID
+    custom_ids = [item.custom_id for item in detail_view.children]
+    assert custom_ids[-1] == DETAIL_BACK_CUSTOM_ID
     for forbidden in (
         str(selected.public_id),
         str(GUILD_ID),
@@ -1006,7 +1046,7 @@ async def test_detail_custom_id_is_fixed_and_close_collects_view() -> None:
         str(selected.version),
         selected.content,
     ):
-        assert forbidden not in custom_id
+        assert all(forbidden not in custom_id for custom_id in custom_ids)
 
     await group.close_confirmation_views()
     await group.close_confirmation_views()

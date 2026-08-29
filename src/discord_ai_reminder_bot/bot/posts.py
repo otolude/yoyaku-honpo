@@ -22,6 +22,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
+    ScheduleDeletionVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_editing import (
     EditValues,
@@ -34,6 +35,7 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ResumeMode,
     SchedulePauseService,
     ScheduleStateChangeUnavailable,
+    ScheduleVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
@@ -131,6 +133,12 @@ RESUME_TIME_MESSAGE = (
     "指定時刻は現在から5分以上先にしてください。\n"
     "別の時刻を入力するか、「今すぐ投稿」「次回から再開」を選んでください。"
 )
+DETAIL_CONFLICT_MESSAGE = "予約の状態が別の操作で変更されました。最新の内容を確認してください。"
+DETAIL_PAUSED_MESSAGE = "予約を一時停止しました。"
+DETAIL_RESUMED_MESSAGE = "予約を再開しました。"
+DETAIL_DELETED_MESSAGE = "予約を削除しました。"
+DETAIL_RESUME_CANCELLED_MESSAGE = "再開操作をキャンセルしました。"
+DETAIL_DELETE_CANCELLED_MESSAGE = "削除をキャンセルしました。"
 END_DATE_DESCRIPTION = "終了日｜例：明日、8/30、2026-08-30"
 END_DATE_INPUT_MESSAGE = "終了日を確認してください。例：明日、8/30、2026-08-30"
 FULLWIDTH_END_DATE_INPUT_MESSAGE = (
@@ -287,13 +295,15 @@ class ScheduleDeletionConfirmView(discord.ui.View):
         public_id: str,
         reason: str,
         actor_user_id: int,
+        detail_context: ScheduleDetailContext | None = None,
     ) -> None:
-        super().__init__(timeout=120.0)
+        super().__init__(timeout=900.0 if detail_context is not None else 120.0)
         self.commands = commands
         self.initial_interaction = interaction
         self.public_id = public_id
         self.reason = reason
         self.actor_user_id = actor_user_id
+        self.detail_context = detail_context
         self.action_lock = asyncio.Lock()
         self.finished = False
         self.closed = False
@@ -339,6 +349,43 @@ class ScheduleDeletionConfirmView(discord.ui.View):
 
     async def on_timeout(self) -> None:
         await self.commands._expire_deletion(self)
+
+
+class DeleteReasonModal(discord.ui.Modal, title="削除理由を入力"):
+    reason = discord.ui.TextInput(
+        label="削除理由", min_length=1, max_length=500, style=discord.TextStyle.paragraph
+    )
+
+    def __init__(self, *, commands: PostCommands, detail_view: ScheduleDetailView) -> None:
+        super().__init__(timeout=900.0, custom_id="post_detail_delete_reason")
+        self.commands = commands
+        self.detail_view = detail_view
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+        self.closed = False
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        async with self.action_lock:
+            if self.finished or self.closed:
+                return
+            self.finished = True
+            try:
+                reason = validate_delete_reason(str(self.reason.value))
+            except InvalidDeleteReasonError:
+                self.finished = False
+                await respond_ephemeral(
+                    interaction, INVALID_INPUT_MESSAGE, logger=self.commands._logger
+                )
+                return
+            await self.commands._continue_detail_delete(self.detail_view, interaction, reason)
+            self.closed = True
+            self.stop()
+            self.commands._delete_reason_modals.discard(self)
+
+    async def on_timeout(self) -> None:
+        self.closed = True
+        self.stop()
+        self.commands._delete_reason_modals.discard(self)
 
 
 class OnceScheduleConfirmView(discord.ui.View):
@@ -435,12 +482,14 @@ class ResumeChoiceView(discord.ui.View):
         public_id: str,
         actor_user_id: int,
         rescue_allowed: bool,
+        detail_context: ScheduleDetailContext | None = None,
     ) -> None:
-        super().__init__(timeout=120.0)
+        super().__init__(timeout=900.0 if detail_context is not None else 120.0)
         self.commands = commands
         self.initial_interaction = interaction
         self.public_id = public_id
         self.actor_user_id = actor_user_id
+        self.detail_context = detail_context
         self.action_lock = asyncio.Lock()
         self.finished = False
         self.closed = False
@@ -558,6 +607,7 @@ class PostCommands(app_commands.Group):
         self._create_views: set[OnceScheduleConfirmView] = set()
         self._resume_views: set[ResumeChoiceView] = set()
         self._resume_modals: set[ResumeTimeModal] = set()
+        self._delete_reason_modals: set[DeleteReasonModal] = set()
         self._list_views: set[ScheduleListView] = set()
         self._detail_views: set[ScheduleDetailView] = set()
 
@@ -780,12 +830,14 @@ class PostCommands(app_commands.Group):
             self._logger.error("schedule_presentation_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        await respond_ephemeral(
+        sent = await respond_ephemeral(
             interaction,
             embed=embed,
             view=detail_view if detail_view.has_components else None,
             logger=self._logger,
         )
+        if sent and detail_view.has_components:
+            self._detail_views.add(detail_view)
 
     @show_command.autocomplete("public_id")
     async def show_public_id_autocomplete(
@@ -1084,7 +1136,20 @@ class PostCommands(app_commands.Group):
                         configured_guild_id=self._configured_guild_id,
                         mode=mode,
                         replacement_at=replacement_at,
+                        **(
+                            {"expected_version": view.detail_context.expected_version}
+                            if view.detail_context is not None
+                            else {}
+                        ),
                     )
+            except ScheduleVersionConflict:
+                if view.detail_context is not None:
+                    await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+                else:
+                    await self._finish_resume_view(
+                        view, interaction, content=STATE_CHANGE_UNAVAILABLE_MESSAGE
+                    )
+                return
             except ScheduleStateChangeUnavailable:
                 await self._finish_resume_view(
                     view, interaction, content=STATE_CHANGE_UNAVAILABLE_MESSAGE
@@ -1094,7 +1159,12 @@ class PostCommands(app_commands.Group):
                 self._logger.error("schedule_resume_failed")
                 await self._finish_resume_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
                 return
-            await self._finish_resume_view(view, interaction, embed=resumed_schedule_embed(changed))
+            if view.detail_context is not None:
+                await self._refresh_detail(view, interaction, actor, DETAIL_RESUMED_MESSAGE)
+            else:
+                await self._finish_resume_view(
+                    view, interaction, embed=resumed_schedule_embed(changed)
+                )
 
     async def _submit_resume_time(
         self, view: ResumeChoiceView, interaction: discord.Interaction, value: str
@@ -1130,6 +1200,14 @@ class PostCommands(app_commands.Group):
         async with view.action_lock:
             if view.finished:
                 return
+            actor = await self._actor_or_respond(interaction)
+            if actor is None or actor.user_id != view.actor_user_id:
+                return
+            if view.detail_context is not None:
+                await self._refresh_detail(
+                    view, interaction, actor, DETAIL_RESUME_CANCELLED_MESSAGE, response_edit=True
+                )
+                return
             view.finished = True
             view.stop()
             self._resume_views.discard(view)
@@ -1143,6 +1221,26 @@ class PostCommands(app_commands.Group):
     async def _expire_resume_choice(self, view: ResumeChoiceView) -> None:
         async with view.action_lock:
             if view.finished:
+                return
+            if view.detail_context is not None:
+                view.finished = True
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button | discord.ui.Select):
+                        item.disabled = True
+                try:
+                    await view.initial_interaction.edit_original_response(
+                        content=(
+                            "操作期限が切れました。最新の状態は /post show または "
+                            "/post list で確認してください。"
+                        ),
+                        view=view,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except Exception:  # noqa: BLE001
+                    self._logger.error("schedule_resume_timeout_response_failed")
+                finally:
+                    view.stop()
+                    self._resume_views.discard(view)
                 return
             view.finished = True
             view.stop()
@@ -1265,7 +1363,20 @@ class PostCommands(app_commands.Group):
                         administrator=actor.administrator,
                         reason=view.reason,
                         deleted_at=self._clock.now(),
+                        **(
+                            {"expected_version": view.detail_context.expected_version}
+                            if view.detail_context is not None
+                            else {}
+                        ),
                     )
+            except ScheduleDeletionVersionConflict:
+                if view.detail_context is not None:
+                    await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+                else:
+                    await self._finish_delete_view(
+                        view, interaction, content=DELETE_UNAVAILABLE_MESSAGE
+                    )
+                return
             except DeleteReasonRequired:
                 await self._finish_delete_view(
                     view, interaction, content=DELETE_REASON_REQUIRED_MESSAGE
@@ -1286,7 +1397,10 @@ class PostCommands(app_commands.Group):
                 self._logger.error("schedule_presentation_failed")
                 await self._finish_delete_view(view, interaction, content=INTERNAL_ERROR_MESSAGE)
                 return
-            await self._finish_delete_view(view, interaction, embed=embed)
+            if view.detail_context is not None:
+                await self._refresh_detail(view, interaction, actor, DETAIL_DELETED_MESSAGE)
+            else:
+                await self._finish_delete_view(view, interaction, embed=embed)
 
     async def _confirm_once_creation(
         self, view: OnceScheduleConfirmView, interaction: discord.Interaction
@@ -1415,6 +1529,11 @@ class PostCommands(app_commands.Group):
             actor = await self._actor_or_respond(interaction)
             if actor is None or actor.user_id != view.actor_user_id:
                 return
+            if view.detail_context is not None:
+                await self._refresh_detail(
+                    view, interaction, actor, DETAIL_DELETE_CANCELLED_MESSAGE, response_edit=True
+                )
+                return
             view.finished = True
             view.stop()
             self._delete_views.discard(view)
@@ -1431,6 +1550,26 @@ class PostCommands(app_commands.Group):
     async def _expire_deletion(self, view: ScheduleDeletionConfirmView) -> None:
         async with view.action_lock:
             if view.finished:
+                return
+            if view.detail_context is not None:
+                view.finished = True
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button | discord.ui.Select):
+                        item.disabled = True
+                try:
+                    await view.initial_interaction.edit_original_response(
+                        content=(
+                            "操作期限が切れました。最新の状態は /post show または "
+                            "/post list で確認してください。"
+                        ),
+                        view=view,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except Exception:  # noqa: BLE001
+                    self._logger.error("schedule_delete_timeout_response_failed")
+                finally:
+                    view.stop()
+                    self._delete_views.discard(view)
                 return
             view.finished = True
             view.stop()
@@ -1643,6 +1782,7 @@ class PostCommands(app_commands.Group):
             public_id=detail.schedule.public_id,
             expected_version=detail.schedule.version,
             actor_user_id=actor_user_id,
+            creator_user_id=detail.schedule.creator_user_id,
             actions=detail.actions,
             list_origin=list_origin,
         )
@@ -1652,6 +1792,287 @@ class PostCommands(app_commands.Group):
             context=context,
             embed=embed,
         )
+
+    async def _pause_from_detail(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed or not view.context.actions.can_pause:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_detail_pause_defer_failed")
+                return
+            try:
+                async with self._session_factory() as session, session.begin():
+                    await SchedulePauseService(session).pause(
+                        guild_id=self._configured_guild_id,
+                        public_id=str(view.context.public_id),
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        paused_at=self._clock.now(),
+                        expected_version=view.context.expected_version,
+                    )
+            except ScheduleVersionConflict:
+                await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+                return
+            except ScheduleStateChangeUnavailable:
+                await self._refresh_detail(
+                    view, interaction, actor, STATE_CHANGE_UNAVAILABLE_MESSAGE
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_detail_pause_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            await self._refresh_detail(view, interaction, actor, DETAIL_PAUSED_MESSAGE)
+
+    async def _resume_from_detail(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed or not view.context.actions.can_resume:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            try:
+                async with self._session_factory() as session:
+                    preview = await SchedulePauseService(session).preview_resume(
+                        guild_id=self._configured_guild_id,
+                        public_id=str(view.context.public_id),
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        resumed_at=self._clock.now(),
+                        expected_version=view.context.expected_version,
+                    )
+            except ScheduleVersionConflict:
+                await self._refresh_detail(
+                    view, interaction, actor, DETAIL_CONFLICT_MESSAGE, response_edit=True
+                )
+                return
+            except ScheduleStateChangeUnavailable:
+                await self._refresh_detail(
+                    view, interaction, actor, STATE_CHANGE_UNAVAILABLE_MESSAGE, response_edit=True
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_detail_resume_preview_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            now = require_utc(self._clock.now())
+            if preview.held_run_at is not None and preview.held_run_at <= now:
+                choice = ResumeChoiceView(
+                    commands=self,
+                    interaction=view.initial_interaction,
+                    public_id=str(view.context.public_id),
+                    actor_user_id=actor.user_id,
+                    rescue_allowed=preview.rescue_allowed,
+                    detail_context=view.context,
+                )
+                embed = discord.Embed(
+                    title="予約の再開方法を選択してください",
+                    description="一時停止中に投稿時刻を過ぎました。DBはまだ更新されていません。",
+                    colour=0xE67E22,
+                )
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=embed,
+                    view=choice,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                self._transfer_detail_to_resume(view, choice)
+                return
+            try:
+                await interaction.response.defer(ephemeral=True)
+                async with self._session_factory() as session, session.begin():
+                    await SchedulePauseService(session).resume(
+                        guild_id=self._configured_guild_id,
+                        public_id=str(view.context.public_id),
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        resumed_at=self._clock.now(),
+                        configured_guild_id=self._configured_guild_id,
+                        expected_version=view.context.expected_version,
+                    )
+            except ScheduleVersionConflict:
+                await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+                return
+            except ScheduleStateChangeUnavailable:
+                await self._refresh_detail(
+                    view, interaction, actor, STATE_CHANGE_UNAVAILABLE_MESSAGE
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_detail_resume_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            await self._refresh_detail(view, interaction, actor, DETAIL_RESUMED_MESSAGE)
+
+    async def _delete_from_detail(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        if view.finished or view.closed or not view.context.actions.can_delete:
+            await respond_ephemeral(interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger)
+            return
+        actor = await self._detail_actor(view, interaction)
+        if actor is None:
+            return
+        if actor.administrator and actor.user_id != view.context.creator_user_id:
+            modal = DeleteReasonModal(commands=self, detail_view=view)
+            self._delete_reason_modals.add(modal)
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:  # noqa: BLE001
+                self._delete_reason_modals.discard(modal)
+                modal.stop()
+                self._logger.error("schedule_detail_delete_reason_response_failed")
+            return
+        await self._continue_detail_delete(view, interaction, None)
+
+    async def _continue_detail_delete(
+        self, view: ScheduleDetailView, interaction: discord.Interaction, reason: str | None
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            try:
+                async with self._session_factory() as session:
+                    preview = await ScheduleDeletionService(session).preview(
+                        guild_id=self._configured_guild_id,
+                        public_id=str(view.context.public_id),
+                        actor_user_id=actor.user_id,
+                        administrator=actor.administrator,
+                        reason=reason,
+                        expected_version=view.context.expected_version,
+                    )
+                embed = schedule_deletion_preview_embed(preview)
+            except ScheduleDeletionVersionConflict:
+                await self._refresh_detail(
+                    view, interaction, actor, DETAIL_CONFLICT_MESSAGE, response_edit=True
+                )
+                return
+            except DeleteReasonRequired, ScheduleDeletionUnavailable:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            except Exception:  # noqa: BLE001
+                self._logger.error("schedule_detail_delete_preview_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+                return
+            confirm = ScheduleDeletionConfirmView(
+                commands=self,
+                interaction=view.initial_interaction,
+                public_id=str(view.context.public_id),
+                reason=preview.reason,
+                actor_user_id=actor.user_id,
+                detail_context=view.context,
+            )
+            await interaction.response.edit_message(
+                content=None,
+                embed=embed,
+                view=confirm,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            view.finished = view.closed = True
+            view.stop()
+            self._detail_views.discard(view)
+            self._delete_views.add(confirm)
+
+    async def _detail_actor(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> InteractionActor | None:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self._configured_guild_id,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        if actor is None or actor.user_id != view.context.actor_user_id:
+            await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+            return None
+        return actor
+
+    def _transfer_detail_to_resume(
+        self, detail: ScheduleDetailView, resume: ResumeChoiceView
+    ) -> None:
+        detail.finished = detail.closed = True
+        detail.stop()
+        self._detail_views.discard(detail)
+        self._resume_views.add(resume)
+
+    async def _refresh_detail(
+        self,
+        source: ScheduleDetailView | ResumeChoiceView | ScheduleDeletionConfirmView,
+        interaction: discord.Interaction,
+        actor: InteractionActor,
+        content: str,
+        *,
+        response_edit: bool = False,
+    ) -> None:
+        context = (
+            source.context if isinstance(source, ScheduleDetailView) else source.detail_context
+        )
+        if context is None:
+            return
+        try:
+            detail = await self._queries.get_schedule_detail(
+                guild_id=self._configured_guild_id,
+                requester_user_id=actor.user_id,
+                administrator=actor.administrator,
+                public_id=str(context.public_id),
+                now=self._clock.now(),
+            )
+            if detail is None:
+                raise InvalidScheduleQueryError
+            embed = schedule_detail_embed(detail.schedule)
+            refreshed = self._build_detail_view(
+                interaction=source.initial_interaction,
+                actor_user_id=actor.user_id,
+                detail=detail,
+                embed=embed,
+                list_origin=context.list_origin,
+            )
+            arguments = {
+                "content": content,
+                "embed": embed,
+                "view": refreshed,
+                "allowed_mentions": discord.AllowedMentions.none(),
+            }
+            if response_edit:
+                await interaction.response.edit_message(**arguments)
+            else:
+                await interaction.edit_original_response(**arguments)
+        except Exception:  # noqa: BLE001
+            self._logger.error("schedule_detail_refresh_response_failed")
+            source.finished = source.closed = True
+            source.stop()
+            self._detail_views.discard(source)  # type: ignore[arg-type]
+            self._resume_views.discard(source)  # type: ignore[arg-type]
+            self._delete_views.discard(source)  # type: ignore[arg-type]
+            return
+        source.finished = source.closed = True
+        source.stop()
+        self._detail_views.discard(source)  # type: ignore[arg-type]
+        self._resume_views.discard(source)  # type: ignore[arg-type]
+        self._delete_views.discard(source)  # type: ignore[arg-type]
+        self._detail_views.add(refreshed)
 
     async def _detail_interaction_allowed(
         self, view: ScheduleDetailView, interaction: discord.Interaction
@@ -1826,6 +2247,11 @@ class PostCommands(app_commands.Group):
         for modal in resume_modals:
             modal.closed = True
             modal.stop()
+        delete_reason_modals = tuple(self._delete_reason_modals)
+        self._delete_reason_modals.clear()
+        for modal in delete_reason_modals:
+            modal.closed = True
+            modal.stop()
         await self.close_delete_views()
         await self.close_list_views()
         await self.close_detail_views()
@@ -1835,6 +2261,10 @@ class PostCommands(app_commands.Group):
             await asyncio.gather(*(view.wait() for view in resume_views), return_exceptions=True)
         if resume_modals:
             await asyncio.gather(*(modal.wait() for modal in resume_modals), return_exceptions=True)
+        if delete_reason_modals:
+            await asyncio.gather(
+                *(modal.wait() for modal in delete_reason_modals), return_exceptions=True
+            )
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(

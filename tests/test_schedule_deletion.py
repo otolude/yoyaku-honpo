@@ -9,6 +9,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
+    ScheduleDeletionVersionConflict,
 )
 from discord_ai_reminder_bot.domain.enums import DeleteKind, ScheduleStatus
 from discord_ai_reminder_bot.domain.schedule_deletion import (
@@ -95,6 +96,30 @@ async def test_admin_deleting_other_creator_requires_reason(
             administrator=True,
             reason=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_stale_expected_version_before_run_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = schedule()
+    schedules = AsyncMock()
+    schedules.get_by_public_id.return_value = value
+    runs = AsyncMock()
+    operations = AsyncMock()
+    _patch_repositories(monkeypatch, schedules, runs, operations)
+
+    with pytest.raises(ScheduleDeletionVersionConflict):
+        await ScheduleDeletionService(AsyncMock()).preview(
+            guild_id=GUILD_ID,
+            public_id=str(value.public_id),
+            actor_user_id=CREATOR_ID,
+            administrator=False,
+            reason=None,
+            expected_version=value.version - 1,
+        )
+
+    runs.list_for_deletion.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

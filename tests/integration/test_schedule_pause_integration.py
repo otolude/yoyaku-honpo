@@ -12,6 +12,7 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ResumeMode,
     SchedulePauseService,
     ScheduleStateChangeUnavailable,
+    ScheduleVersionConflict,
 )
 from discord_ai_reminder_bot.domain.enums import (
     NotificationRecipientType,
@@ -33,6 +34,27 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 8, 18, 23, 0, tzinfo=UTC)  # 2026-08-19 08:00 JST
 RESUMED = NOW + timedelta(minutes=30)
 GUILD_ID = 18_100
+
+
+async def test_pause_expected_version_conflict_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    schedule, run = await add_recurring(db_session)
+    assert run is not None
+    before = (schedule.status, schedule.version, run.status)
+    with pytest.raises(ScheduleVersionConflict):
+        await SchedulePauseService(db_session).pause(
+            guild_id=schedule.guild_id,
+            public_id=str(schedule.public_id),
+            actor_user_id=CREATOR_ID,
+            administrator=False,
+            paused_at=NOW,
+            expected_version=schedule.version + 1,
+        )
+    assert (schedule.status, schedule.version, run.status) == before
+    assert await db_session.scalar(select(func.count(OperationLog.id))) == 0
+
+
 CREATOR_ID = 18_200
 
 

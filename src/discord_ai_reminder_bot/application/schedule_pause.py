@@ -48,6 +48,10 @@ class ScheduleStateChangeUnavailable(Exception):
     """The target is absent, unauthorized, conflicting, or ineligible."""
 
 
+class ScheduleVersionConflict(ScheduleStateChangeUnavailable):
+    """The displayed schedule version is no longer current."""
+
+
 class ResumeMode(StrEnum):
     NEXT_REGULAR = "next_regular"
     IMMEDIATE_ONCE = "immediate_once"
@@ -120,13 +124,16 @@ class SchedulePauseService:
         actor_user_id: int,
         administrator: bool,
         paused_at: datetime,
+        expected_version: int | None = None,
     ) -> PausedSchedule:
         paused_at = require_utc(paused_at)
         snapshot = _snapshot(await self._find(guild_id=guild_id, public_id=public_id))
+        _validate_expected_version(snapshot.version, expected_version)
         runs = await self._runs.list_for_schedule_state_change(
             schedule_id=snapshot.schedule_id, lock=True
         )
         schedule = await self._lock_and_revalidate(snapshot)
+        _validate_expected_version(schedule.version, expected_version)
         self._authorize(schedule, actor_user_id=actor_user_id, administrator=administrator)
         try:
             validate_pause_target(
@@ -185,9 +192,11 @@ class SchedulePauseService:
         actor_user_id: int,
         administrator: bool,
         resumed_at: datetime,
+        expected_version: int | None = None,
     ) -> ResumePreview:
         resumed_at = require_utc(resumed_at)
         schedule = await self._find(guild_id=guild_id, public_id=public_id)
+        _validate_expected_version(schedule.version, expected_version)
         self._authorize(schedule, actor_user_id=actor_user_id, administrator=administrator)
         try:
             validate_resume_target(
@@ -224,13 +233,16 @@ class SchedulePauseService:
         configured_guild_id: int | None = None,
         mode: ResumeMode = ResumeMode.NEXT_REGULAR,
         replacement_at: datetime | None = None,
+        expected_version: int | None = None,
     ) -> ResumedSchedule:
         resumed_at = require_utc(resumed_at)
         snapshot = _snapshot(await self._find(guild_id=guild_id, public_id=public_id))
+        _validate_expected_version(snapshot.version, expected_version)
         runs = await self._runs.list_for_schedule_state_change(
             schedule_id=snapshot.schedule_id, lock=True
         )
         schedule = await self._lock_and_revalidate(snapshot)
+        _validate_expected_version(schedule.version, expected_version)
         self._authorize(schedule, actor_user_id=actor_user_id, administrator=administrator)
         try:
             schedule_type = ScheduleType(schedule.schedule_type)
@@ -495,3 +507,12 @@ def _snapshot(schedule: Schedule) -> _TargetSnapshot:
         version=schedule.version,
         next_run_at=schedule.next_run_at,
     )
+
+
+def _validate_expected_version(actual: int, expected: int | None) -> None:
+    if expected is None:
+        return
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+        raise ValueError("expected_version must be a positive integer")
+    if actual != expected:
+        raise ScheduleVersionConflict

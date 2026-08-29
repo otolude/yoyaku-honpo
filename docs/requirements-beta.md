@@ -412,6 +412,13 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 詳細Viewは本人限定、ephemeral、最後の有効操作から900秒の非永続Viewとする。timeout時はDBへ接続せず、表示内容と部品を残してdisabledにし、固定の再実行案内を加える。
 - View待機中にSession、transaction、row lockを保持せず、Bot終了時は一覧・詳細・既存確認ViewとModalを停止してwaitを回収する。
 
+## 12.3 Phase 2: 予約詳細からの状態操作
+
+- 詳細Viewは状態と操作可否に応じて一時停止、再開、削除を提供する。編集UIは提供しない。
+- 詳細表示時versionをexpected versionとして更新Serviceへ渡し、不一致を固定の競合案内で拒否する。
+- 操作後はcommit後の新しいread Sessionで詳細を再取得し、同じephemeralメッセージを更新する。
+- 管理者が他人の予約を削除する場合だけ、1～500文字の理由入力を必須とする。
+
 ## 13. β版の完成条件
 
 次の条件をすべて満たしたとき、Phase 1のβ版を完成とする。

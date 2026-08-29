@@ -15,6 +15,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
     DeleteReasonRequired,
     ScheduleDeletionService,
     ScheduleDeletionUnavailable,
+    ScheduleDeletionVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_execution import ScheduleExecutionService
 from discord_ai_reminder_bot.application.worker import PollingWorker
@@ -33,6 +34,25 @@ NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
 GUILD_ID = 8_100
 CREATOR_ID = 8_200
 ADMIN_ID = 8_201
+
+
+async def test_delete_expected_version_conflict_changes_nothing(
+    db_session: AsyncSession,
+) -> None:
+    schedule, runs = await add_schedule(db_session)
+    before = (schedule.status, schedule.version, runs[0].status)
+    with pytest.raises(ScheduleDeletionVersionConflict):
+        await ScheduleDeletionService(db_session).delete(
+            guild_id=schedule.guild_id,
+            public_id=str(schedule.public_id),
+            actor_user_id=CREATOR_ID,
+            administrator=False,
+            reason=None,
+            deleted_at=NOW,
+            expected_version=schedule.version + 1,
+        )
+    assert (schedule.status, schedule.version, runs[0].status) == before
+    assert await db_session.scalar(select(func.count(OperationLog.id))) == 0
 
 
 async def add_schedule(

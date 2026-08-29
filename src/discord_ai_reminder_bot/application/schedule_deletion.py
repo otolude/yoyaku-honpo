@@ -40,6 +40,10 @@ class ScheduleDeletionUnavailable(Exception):
     """The target is absent, unauthorized, conflicting, or not deletable."""
 
 
+class ScheduleDeletionVersionConflict(ScheduleDeletionUnavailable):
+    """The displayed schedule version is no longer current."""
+
+
 class DeleteReasonRequired(Exception):
     """An administrator must explain deletion of another creator's schedule."""
 
@@ -86,8 +90,10 @@ class ScheduleDeletionService:
         actor_user_id: int,
         administrator: bool,
         reason: str | None,
+        expected_version: int | None = None,
     ) -> ScheduleDeletionView:
         schedule = await self._find(guild_id=guild_id, public_id=public_id)
+        _validate_expected_version(schedule.version, expected_version)
         runs = await self._runs.list_for_deletion(
             schedule_id=schedule.id,
             current_scheduled_for=schedule.next_run_at,
@@ -111,10 +117,12 @@ class ScheduleDeletionService:
         administrator: bool,
         reason: str | None,
         deleted_at: datetime,
+        expected_version: int | None = None,
     ) -> DeletedSchedule:
         deleted_at = require_utc(deleted_at)
         unlocked = await self._find(guild_id=guild_id, public_id=public_id)
         snapshot = _snapshot(unlocked)
+        _validate_expected_version(snapshot.version, expected_version)
         runs = await self._runs.list_for_deletion(
             schedule_id=snapshot.schedule_id,
             current_scheduled_for=snapshot.next_run_at,
@@ -131,6 +139,7 @@ class ScheduleDeletionService:
             or schedule.next_run_at != snapshot.next_run_at
         ):
             raise ScheduleDeletionUnavailable
+        _validate_expected_version(schedule.version, expected_version)
         self._validate(schedule, runs, actor_user_id=actor_user_id, administrator=administrator)
         reason = _validated_reason(
             reason,
@@ -217,6 +226,15 @@ def _snapshot(schedule: Schedule) -> _TargetSnapshot:
         version=schedule.version,
         next_run_at=schedule.next_run_at,
     )
+
+
+def _validate_expected_version(actual: int, expected: int | None) -> None:
+    if expected is None:
+        return
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+        raise ValueError("expected_version must be a positive integer")
+    if actual != expected:
+        raise ScheduleDeletionVersionConflict
 
 
 def _to_view(

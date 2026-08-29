@@ -128,6 +128,8 @@ docker compose --profile test rm -f postgres_test
 
 ## `/post`コマンド
 
+`/post show`または`/post list`から開いた予約詳細では、状態に応じて一時停止・再開・削除を実行できます。一覧から開いた場合は元の絞り込みとページへ戻れます。編集は引き続き`/post edit`を使用してください。
+
 - `/post create`: 単発予約
 - `/post create-daily`: 毎日予約（終了日は `明日`、`8/30`、`2026-08-30` など）
 - `/post create-weekly`: 毎週予約
