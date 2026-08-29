@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -9,8 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     ScheduleAutocompleteOperation,
+    ScheduleAutocompleteView,
     ScheduleQueryService,
 )
+from discord_ai_reminder_bot.bot.posts import (
+    DELETE_UNAVAILABLE_MESSAGE,
+    EDIT_UNAVAILABLE_MESSAGE,
+    STATE_CHANGE_UNAVAILABLE_MESSAGE,
+    PostCommands,
+)
+from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import (
     DeliveryAttemptStatus,
     RunStatus,
@@ -30,6 +41,7 @@ GUILD_ID = 8_100
 OTHER_GUILD_ID = 8_101
 CREATOR_ID = 8_200
 OTHER_CREATOR_ID = 8_201
+ROLE_ID = 8_202
 
 
 def make_schedule(
@@ -67,6 +79,42 @@ def service_for(db_session: AsyncSession) -> ScheduleQueryService:
         join_transaction_mode="create_savepoint",
     )
     return ScheduleQueryService(factory)
+
+
+def session_factory_for(db_session: AsyncSession) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(
+        bind=db_session.bind,
+        class_=AsyncSession,
+        autoflush=False,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+
+
+def fake_interaction() -> MagicMock:
+    value = MagicMock(spec=discord.Interaction)
+    value.guild_id = GUILD_ID
+    value.guild = MagicMock(spec=discord.Guild)
+    value.guild.id = GUILD_ID
+    member = MagicMock(spec=discord.Member)
+    member.id = CREATOR_ID
+    member.guild = value.guild
+    member.guild_permissions = MagicMock(spec=discord.Permissions)
+    member.guild_permissions.administrator = False
+    role = MagicMock(spec=discord.Role)
+    role.id = ROLE_ID
+    role.guild = value.guild
+    member.roles = [role]
+    value.user = member
+    value.response = MagicMock(spec=discord.InteractionResponse)
+    value.response.is_done.return_value = False
+    value.response.send_message = AsyncMock()
+    value.response.defer = AsyncMock()
+    value.followup = MagicMock(spec=discord.Webhook)
+    value.followup.send = AsyncMock()
+    value.edit_original_response = AsyncMock()
+    value.extras = {}
+    return value
 
 
 def autocomplete_schedule(
@@ -189,6 +237,158 @@ async def autocomplete(
         channel_ids=channel_ids,
         now=NOW,
     )
+
+
+@pytest.mark.parametrize(
+    ("operation", "initial_status", "expected_message"),
+    [
+        (ScheduleAutocompleteOperation.EDIT, ScheduleStatus.ACTIVE, EDIT_UNAVAILABLE_MESSAGE),
+        (
+            ScheduleAutocompleteOperation.PAUSE,
+            ScheduleStatus.ACTIVE,
+            STATE_CHANGE_UNAVAILABLE_MESSAGE,
+        ),
+        (
+            ScheduleAutocompleteOperation.RESUME,
+            ScheduleStatus.PAUSED,
+            STATE_CHANGE_UNAVAILABLE_MESSAGE,
+        ),
+        (
+            ScheduleAutocompleteOperation.DELETE,
+            ScheduleStatus.ACTIVE,
+            DELETE_UNAVAILABLE_MESSAGE,
+        ),
+    ],
+)
+async def test_autocomplete_selection_is_revalidated_after_separate_session_state_change(
+    db_session: AsyncSession,
+    operation: ScheduleAutocompleteOperation,
+    initial_status: ScheduleStatus,
+    expected_message: str,
+) -> None:
+    schedule = autocomplete_schedule(status=initial_status)
+    db_session.add(schedule)
+    await db_session.flush()
+    if initial_status is ScheduleStatus.ACTIVE:
+        await add_current_run(db_session, schedule)
+    factory = session_factory_for(db_session)
+    queries = ScheduleQueryService(factory)
+    commands = PostCommands(
+        queries=queries,
+        session_factory=factory,
+        clock=FixedClock(NOW),
+        configured_guild_id=GUILD_ID,
+        allowed_role_ids=(ROLE_ID,),
+        logger=logging.getLogger("test.autocomplete-conflict"),
+    )
+    autocomplete_interaction = fake_interaction()
+    autocomplete_callback = {
+        ScheduleAutocompleteOperation.EDIT: commands.edit_public_id_autocomplete,
+        ScheduleAutocompleteOperation.PAUSE: commands.pause_public_id_autocomplete,
+        ScheduleAutocompleteOperation.RESUME: commands.resume_public_id_autocomplete,
+        ScheduleAutocompleteOperation.DELETE: commands.delete_public_id_autocomplete,
+    }[operation]
+
+    choices = await autocomplete_callback(autocomplete_interaction, "")
+    assert [choice.value for choice in choices] == [str(schedule.public_id)]
+
+    async with factory() as concurrent_session, concurrent_session.begin():
+        await concurrent_session.execute(
+            update(Schedule)
+            .where(Schedule.id == schedule.id)
+            .values(
+                status=ScheduleStatus.ENDED.value,
+                next_run_at=None,
+                terminal_at=NOW,
+                version=Schedule.version + 1,
+            )
+        )
+
+    selected_public_id = choices[0].value
+    command_interaction = fake_interaction()
+    if operation is ScheduleAutocompleteOperation.EDIT:
+        await commands.edit_command.callback(
+            commands, command_interaction, selected_public_id, content="changed"
+        )
+    elif operation is ScheduleAutocompleteOperation.PAUSE:
+        await commands.pause_command.callback(commands, command_interaction, selected_public_id)
+    elif operation is ScheduleAutocompleteOperation.RESUME:
+        await commands.resume_command.callback(commands, command_interaction, selected_public_id)
+    else:
+        await commands.delete_command.callback(
+            commands, command_interaction, selected_public_id, reason=None
+        )
+
+    sent_messages = [
+        call.args[0]
+        for sender in (command_interaction.response.send_message, command_interaction.followup.send)
+        for call in sender.await_args_list
+        if call.args
+    ]
+    assert sent_messages == [expected_message]
+    async with factory() as verification_session:
+        state = (
+            await verification_session.execute(
+                select(
+                    Schedule.status, Schedule.version, Schedule.content, Schedule.terminal_at
+                ).where(Schedule.id == schedule.id)
+            )
+        ).one()
+        operation_logs = await verification_session.scalar(select(func.count(OperationLog.id)))
+    assert state == (ScheduleStatus.ENDED.value, 2, "never returned body", NOW)
+    assert operation_logs == 0
+
+
+async def test_autocomplete_dto_and_choices_exclude_body_internal_id_and_other_guild_canaries(
+    db_session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body_canaries = (
+        "LONG-BODY-" + "x" * 180,
+        "token_test_0123456789abcdef",
+        "postgresql+asyncpg://secret:password@development/app",
+        "traceback-sentinel-private",
+    )
+    owned = autocomplete_schedule(channel_id=8_399)
+    owned.content = " ".join(body_canaries)
+    other_guild = autocomplete_schedule(guild_id=OTHER_GUILD_ID, channel_id=9_999)
+    other_guild.content = "other-guild-reservation-private"
+    db_session.add_all([owned, other_guild])
+    await db_session.flush()
+    factory = session_factory_for(db_session)
+    commands = PostCommands(
+        queries=ScheduleQueryService(factory),
+        session_factory=factory,
+        clock=FixedClock(NOW),
+        configured_guild_id=GUILD_ID,
+        allowed_role_ids=(ROLE_ID,),
+        logger=logging.getLogger("test.autocomplete-information-boundary"),
+    )
+    value = fake_interaction()
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.name = "safe-channel"
+    value.guild.get_channel.return_value = channel
+
+    with caplog.at_level(logging.ERROR, logger="test.autocomplete-information-boundary"):
+        choices = await commands.show_public_id_autocomplete(value, "")
+
+    assert len(choices) == 1
+    assert choices[0].value == str(owned.public_id)
+    assert len(choices[0].name) <= 100
+    rendered = f"{choices[0].name} {choices[0].value} {caplog.text}"
+    for canary in (*body_canaries, str(other_guild.channel_id), other_guild.content):
+        assert canary not in rendered
+    assert set(ScheduleAutocompleteView.__dataclass_fields__) == {
+        "public_id",
+        "channel_id",
+        "creator_user_id",
+        "schedule_type",
+        "status",
+        "display_at",
+    }
+    value.response.send_message.assert_not_awaited()
+    value.followup.send.assert_not_awaited()
+    assert caplog.text == ""
 
 
 async def schedule_detail(

@@ -260,6 +260,30 @@ async def test_autocomplete_failure_is_empty_and_logs_only_fixed_event(caplog) -
     assert secret not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_autocomplete_presenter_failure_is_empty_and_logs_only_fixed_event(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    queries = AsyncMock()
+    queries.autocomplete_schedules.return_value = (autocomplete_view(),)
+    secret = "presenter-traceback-secret"
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.schedule_autocomplete_choice",
+        MagicMock(side_effect=RuntimeError(secret)),
+    )
+    group = commands(queries)
+    value = interaction()
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        choices = await group.show_public_id_autocomplete(value, "")
+
+    assert choices == []
+    value.response.send_message.assert_not_awaited()
+    value.followup.send.assert_not_awaited()
+    assert "schedule_autocomplete_failed" in caplog.text
+    assert secret not in caplog.text
+
+
 def cached_channel(
     value: MagicMock,
     *,
@@ -299,6 +323,13 @@ async def test_autocomplete_resolves_visible_cached_text_channel_names(current, 
     value = interaction()
     category = MagicMock(spec=discord.CategoryChannel)
     category.name = "tester-category"
+    thread = MagicMock(spec=discord.Thread)
+    thread.name = "tester-thread"
+    voice = MagicMock(spec=discord.VoiceChannel)
+    voice.name = "tester-voice"
+    dm = MagicMock(spec=discord.DMChannel)
+    dm.name = "tester-dm"
+    value.guild.fetch_channel = AsyncMock()
     value.guild.text_channels = [
         cached_channel(value, channel_id=401, name="tester-a"),
         cached_channel(value, channel_id=402, name="tester-b"),
@@ -308,34 +339,52 @@ async def test_autocomplete_resolves_visible_cached_text_channel_names(current, 
         cached_channel(value, channel_id=406, name="tester-secret", visible=False),
         cached_channel(value, channel_id=407, name="tester-other", guild_id=GUILD_ID + 1),
         category,
+        thread,
+        voice,
+        dm,
     ]
 
     await group.show_public_id_autocomplete(value, current)
 
     assert queries.autocomplete_schedules.await_args.kwargs["channel_ids"] == expected
-    category.permissions_for.assert_not_called()
+    for excluded in (category, thread, voice, dm):
+        excluded.permissions_for.assert_not_called()
+    value.guild.fetch_channel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("current", ["x\n", "x\x00", "x\u200b", "x" * 101])
-async def test_autocomplete_rejects_unsafe_channel_search_without_query(current) -> None:
-    queries = AsyncMock()
-    group = commands(queries)
-    assert await group.show_public_id_autocomplete(interaction(), current) == []
-    queries.autocomplete_schedules.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_autocomplete_uses_cache_only_and_cache_failure_is_safe() -> None:
+@pytest.mark.parametrize("current", ["#", " \t ", "x\n", "x\x00", "x\x01", "x\u200b", "x" * 101])
+async def test_autocomplete_rejects_unsafe_channel_search_without_query(current, caplog) -> None:
     queries = AsyncMock()
     group = commands(queries)
     value = interaction()
-    type(value.guild).text_channels = property(lambda unused: (_ for _ in ()).throw(RuntimeError()))
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        assert await group.show_public_id_autocomplete(value, current) == []
+    queries.autocomplete_schedules.assert_not_awaited()
+    value.response.send_message.assert_not_awaited()
+    value.followup.send.assert_not_awaited()
+    assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_uses_cache_only_and_cache_failure_is_safe(caplog) -> None:
+    queries = AsyncMock()
+    group = commands(queries)
+    value = interaction()
+    secret = "cache-traceback-secret"
+    type(value.guild).text_channels = property(
+        lambda unused: (_ for _ in ()).throw(RuntimeError(secret))
+    )
     value.guild.fetch_channel = AsyncMock()
 
-    assert await group.show_public_id_autocomplete(value, "tester") == []
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        assert await group.show_public_id_autocomplete(value, "tester") == []
     value.guild.fetch_channel.assert_not_awaited()
     queries.autocomplete_schedules.assert_not_awaited()
+    value.response.send_message.assert_not_awaited()
+    value.followup.send.assert_not_awaited()
+    assert "schedule_autocomplete_failed" in caplog.text
+    assert secret not in caplog.text
 
 
 def text_channel(value: MagicMock, *, guild_id: int = GUILD_ID) -> MagicMock:

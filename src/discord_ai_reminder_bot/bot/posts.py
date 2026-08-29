@@ -2635,7 +2635,7 @@ class PostCommands(app_commands.Group):
         search = current.strip().removeprefix("#")
         search = search.strip().casefold()
         if not search:
-            return frozenset()
+            return frozenset() if current == "" else None
         guild = interaction.guild
         member = interaction.user
         if guild is None or not isinstance(member, discord.Member):

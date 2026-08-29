@@ -4,7 +4,7 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 28件／未確認 19件（合計47件）
+- 集計: 確認済み 37件／未確認 10件（合計47件）
 
 ## 実Discord確認記録
 
@@ -79,6 +79,21 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 「直接show詳細基盤」は今回の隔離重点検証として、`tests/test_post_commands.py::test_direct_show_builds_detail_context_and_delete_button`、`tests/integration/test_schedule_queries_integration.py::test_detail_action_availability_for_every_valid_state_and_type`、`tests/test_post_commands.py::test_detail_action_buttons_follow_read_only_availability`で、共通`ScheduleDetailView`、canonical public_id、最新expected_version、actor ID、状態別部品、直接showでの「一覧へ戻る」非表示を確認した。`tests/test_post_commands.py::test_detail_rejects_other_user_dm_wrong_guild_and_permission_loss`、`tests/test_post_commands.py::test_detail_back_rechecks_schedule_ownership_and_prevents_double_action`、`tests/test_schedule_queries.py::test_show_uses_guild_public_id_and_enforces_owner`で、Contextへguild IDを保持せず、各操作のInteractionから現在guildを検証し、DM、別guild、権限喪失、所有者／管理者境界を安全な固定案内で再検証することを確認した。`tests/test_post_commands.py::test_detail_custom_id_is_fixed_and_close_collects_view`、`tests/test_post_presenter.py::test_detail_never_displays_internal_version`、`tests/test_interactions.py::test_initial_and_followup_responses_are_ephemeral_with_mentions_disabled`で、内部DB IDをBot層へ渡さないDTO境界、custom_idとEmbedの情報境界、ephemeral、`AllowedMentions.none()`を確認した。証跡commitは未コミットのテスト変更を含むため記録せず、実施日2026-08-30、実施者Oto、証跡種別はFake Interaction／実ViewStore／固定Clock／専用PostgreSQLによる自動テスト隔離受入とする。
 
+### 2026-08-30 Autocomplete境界隔離受入
+
+- 実施者: Oto
+- 既存証跡種別: 既存自動テストによる隔離受入
+- 既存証跡commit: `e9c4e4974b009381626c5a730baf4230808fab67`
+- 追加証跡種別: Fake Interaction／固定Clock／専用PostgreSQLによる隔離受入
+
+「本人境界」「管理者境界」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order`と`tests/test_schedule_queries.py::test_autocomplete_scopes_creator_and_returns_immutable_projection`で、本人だけへのcreator絞り込み、管理者のguild内全作成者参照、別guild除外、不要情報を持たないimmutable DTOを確認した。「認可失敗」は`tests/test_interactions.py::test_unsafe_or_unauthorized_interaction_is_rejected`と`tests/test_interactions.py::test_tree_denies_autocomplete_with_only_empty_choices`で、DM、設定外guild、非member、許可ロールなしを拒否し、Autocompleteには通常メッセージを送らず空候補だけを返すことを確認した。
+
+「詳細編集no-op／競合」は`tests/test_post_commands.py::test_daily_detail_edit_complete_noop_uses_no_changes_response_not_input_error`、`tests/test_post_commands.py::test_detail_edit_expected_version_conflict_still_refreshes_detail`、`tests/integration/test_schedule_editing_integration.py::test_edit_expected_version_conflict_changes_nothing`、`tests/integration/test_schedule_editing_integration.py::test_consecutive_edits_use_latest_version_and_noop_does_not_increment`で、no-op時の固定案内・更新なしと、古いexpected versionの競合案内・最新詳細復帰・DBとOperationLog非変更を確認した。「詳細編集Modal lifecycle」は`tests/test_post_commands.py::test_closed_edit_modal_can_be_reopened_without_retiring_parent`、`tests/test_post_commands.py::test_edit_modal_timeout_preserves_parent_detail`、`tests/test_post_commands.py::test_second_edit_opens_modal_and_no_op_refreshes_same_message`で、旧Modal停止、遅延submitと二重submitの抑止、×相当の無通知close後と有限timeout後の親詳細維持・再オープンを確認した。
+
+「channel境界」は`tests/test_post_commands.py::test_autocomplete_resolves_visible_cached_text_channel_names`と`tests/test_post_commands.py::test_autocomplete_uses_cache_only_and_cache_failure_is_safe`で、同guildかつ閲覧可能なTextChannelだけをID集合へ入れ、閲覧不能、別guild、Thread、Category、Voice、DM、cache失敗を除外し、RESTを呼ばず、失敗詳細を応答・通常ログへ出さないことを確認した。「入力拒否」は`tests/test_post_commands.py::test_autocomplete_rejects_unsafe_channel_search_without_query`と`tests/test_schedule_queries.py::test_autocomplete_invalid_search_returns_empty_without_opening_session`で、`#`だけ、trim後空、改行、NUL、その他の制御文字、U+200B、101文字をQuery／Session開始前に空候補とし、通常応答・例外ログを生成しないことを確認した。既存の`tests/test_post_commands.py::test_autocomplete_resolves_visible_cached_text_channel_names`と`tests/test_schedule_queries.py::test_autocomplete_accepts_only_fixed_searches`で安全な日本語・英字・先頭`#`検索を維持する。
+
+「状態競合」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_selection_is_revalidated_after_separate_session_state_change`で、edit／pause／resume／deleteの候補取得後に別Sessionで状態とversionを変更し、選択済みcanonical UUIDをFake Interactionで実行して、最新DB状態による固定拒否、DB・OperationLog非変更を確認した。「情報境界」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_dto_and_choices_exclude_body_internal_id_and_other_guild_canaries`、`tests/integration/test_schedule_queries_integration.py::test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order`、`tests/test_post_commands.py::test_autocomplete_returns_full_uuid_and_admin_scope`、`tests/test_post_commands.py::test_autocomplete_failure_is_empty_and_logs_only_fixed_event`、`tests/test_post_commands.py::test_autocomplete_presenter_failure_is_empty_and_logs_only_fixed_event`、`tests/test_post_presenter.py::test_autocomplete_choice_is_bounded_safe_and_omits_paused_datetime`で、最大25件・100文字、canonical public UUID value、本文・秘密・内部ID・別guild情報を持たないDTO／候補／応答／固定イベントログ境界を確認した。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
@@ -91,16 +106,16 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | channel名完全一致 | `tester-a`で`#tester-a`への予約が表示される |
 | [x] | channel名前方・部分一致 | `tester`で`#tester-a`、`#tester-b`、`お知らせ`で`#運営お知らせ`等が表示される |
 | [x] | `#`・casefold・日本語 | `#一般`、英字の大文字入力、日本語channel名で同じ安全な検索結果になる |
-| [ ] | channel境界 | 閲覧不能、別guild、Thread、Category、Voice、DMの名前は候補検索に使われない |
-| [ ] | 入力拒否 | `#`だけ、制御文字、改行、ゼロ幅文字、100文字超は名前検索されず安全に空候補になる |
+| [x] | channel境界 | 閲覧不能、別guild、Thread、Category、Voice、DMの名前は候補検索に使われない |
+| [x] | 入力拒否 | `#`だけ、制御文字、改行、ゼロ幅文字、100文字超は名前検索されず安全に空候補になる |
 | [x] | 数値ID互換 | 数値channel ID完全一致でも従来どおり検索できる |
-| [ ] | 本人境界 | 許可ロール利用者には本人所有の予約だけが表示される |
-| [ ] | 管理者境界 | 管理者には設定guild内の他作成者の予約も表示される |
+| [x] | 本人境界 | 許可ロール利用者には本人所有の予約だけが表示される |
+| [x] | 管理者境界 | 管理者には設定guild内の他作成者の予約も表示される |
 | [x] | 候補選択 | 選択後に完全なUUIDv7が入り、各コマンドを実行できる |
 | [x] | 直接入力互換 | 候補を選ばず完全なcanonical UUIDv7を貼り付けて実行できる |
-| [ ] | 状態競合 | 候補表示後、実行前に状態・runを変えると既存の安全な拒否になる |
-| [ ] | 認可失敗 | DM、設定外guild、権限なしでは通常メッセージを送らず空候補になる |
-| [ ] | 情報境界 | 本文、秘密情報、内部ID、他guild情報が候補・利用者応答・通常ログに出ない |
+| [x] | 状態競合 | 候補表示後、実行前に状態・runを変えると既存の安全な拒否になる |
+| [x] | 認可失敗 | DM、設定外guild、権限なしでは通常メッセージを送らず空候補になる |
+| [x] | 情報境界 | 本文、秘密情報、内部ID、他guild情報が候補・利用者応答・通常ログに出ない |
 | [x] | channel cache miss | 名前検索は該当なしとなり、REST取得せず、別条件の候補表示では短縮channel IDを使う |
 | [ ] | 応答時間 | 空入力・検索入力のどちらも3秒以内に候補または空候補が返る |
 | [x] | 直接show詳細基盤 | `/post show`から共通`ScheduleDetailView`を表示する。長寿命Contextにはcanonical public_id、最新expected_version、actor ID、必要なlist originだけを保持し、guild IDや内部DB IDは保持・伝達しない。編集可能状態は✏️編集、activeのdaily／weeklyは⏸️一時停止、pausedのdaily／weeklyは▶️再開、削除可能状態は🗑️削除を表示し、直接show由来では「一覧へ戻る」を表示しない。操作不能なボタンは現在の仕様に従ってdisabled表示または非表示とし、version、内部DB ID、可否理由をEmbedへ表示しない。応答はephemeralかつ`AllowedMentions.none()`とする。各ボタン操作時にInteractionから現在guildを取得し、DMを拒否して、Interactionと最新Scheduleのguild境界、所有者／管理者認可、最新状態を再検証する。別guildや権限喪失時は安全な固定案内とし、fixed custom_idへguild ID、user ID、public_id、versionを含めない |
@@ -123,8 +138,8 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 毎日編集Modal | 投稿先、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
 | [x] | 毎週編集Modal | 投稿先、曜日、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
 | [x] | 詳細編集clear | 空欄で本文削除と終了日解除ができ、状態・run規則が維持される |
-| [ ] | 詳細編集no-op／競合 | no-opは更新せず固定案内、古いModalは競合案内と最新詳細へ戻る |
+| [x] | 詳細編集no-op／競合 | no-opは更新せず固定案内、古いModalは競合案内と最新詳細へ戻る |
 | [ ] | 詳細編集認可・channel境界 | 本人・管理者境界と同guild TextChannel・Bot権限をsubmit時に再確認する |
-| [ ] | 詳細編集Modal lifecycle | 二重submitを防止し、close／15分timeout後も親詳細から再度編集できる |
+| [x] | 詳細編集Modal lifecycle | 二重submitを防止し、close／15分timeout後も親詳細から再度編集できる |
 | [x] | 詳細編集後の一覧復帰 | 最新詳細の操作と一覧由来Contextを維持し、戻ると最新一覧へclampされる |
 | [ ] | 詳細編集表示・情報境界 | 本文全文や内部情報を通知・custom_id・通常ログへ出さず安全に表示される |

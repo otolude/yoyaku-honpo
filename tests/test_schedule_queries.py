@@ -163,7 +163,19 @@ async def test_autocomplete_accepts_only_fixed_searches(monkeypatch, current, ex
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "current", ["本文検索", "019-", "x" * 101, "０１２３", "daily\n", "daily\x00", "daily\u200b"]
+    "current",
+    [
+        "#",
+        " \t ",
+        "本文検索",
+        "019-",
+        "x" * 101,
+        "０１２３",
+        "daily\n",
+        "daily\x00",
+        "daily\x01",
+        "daily\u200b",
+    ],
 )
 async def test_autocomplete_invalid_search_returns_empty_without_opening_session(current) -> None:
     factory = MagicMock()
