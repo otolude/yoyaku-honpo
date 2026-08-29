@@ -28,6 +28,7 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
 from discord_ai_reminder_bot.application.schedule_editing import (
     EditedSchedule,
     ScheduleEditNoChanges,
+    ScheduleEditUnavailable,
     ScheduleEditVersionConflict,
 )
 from discord_ai_reminder_bot.application.schedule_pause import (
@@ -1344,7 +1345,17 @@ def test_detail_edit_channel_optional_empty_keeps_current_channel() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    ["cache-miss", "other-guild", "thread", "dm", "category", "voice", "permissions", "member"],
+    [
+        "cache-miss",
+        "other-guild",
+        "thread",
+        "dm",
+        "category",
+        "voice",
+        "view-permission",
+        "send-permission",
+        "member",
+    ],
 )
 async def test_detail_edit_channel_failures_use_destination_message_before_transaction(
     failure: str,
@@ -1386,9 +1397,12 @@ async def test_detail_edit_channel_failures_use_destination_message_before_trans
         cached = MagicMock(spec=discord.CategoryChannel)
     elif failure == "voice":
         cached = MagicMock(spec=discord.VoiceChannel)
-    elif failure == "permissions":
+    elif failure == "view-permission":
         cached = cached_text_channel(submitted.guild)
         cached.permissions_for.return_value.view_channel = False
+    elif failure == "send-permission":
+        cached = cached_text_channel(submitted.guild)
+        cached.permissions_for.return_value.send_messages = False
     elif failure == "member":
         submitted.guild.me = None
     submitted.guild.get_channel.return_value = cached
@@ -1400,6 +1414,8 @@ async def test_detail_edit_channel_failures_use_destination_message_before_trans
     assert submitted.response.send_message.await_args.kwargs["allowed_mentions"].to_dict() == {
         "parse": []
     }
+    assert not hasattr(submitted.guild, "fetch_channel") or not submitted.guild.fetch_channel.called
+    assert detail_view.finished is False and not detail_view.is_finished()
     session.__aenter__.assert_not_awaited()
 
 
@@ -2737,6 +2753,288 @@ async def test_detail_state_refresh_presenter_failure_logs_only_fixed_event(
     ]
     assert secret not in caplog.text
     assert source.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_detail_show_list_and_failure_paths_keep_content_and_internal_boundaries(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    content = "正式な本文欄 " + "A" * 1_200
+    expected_version_canary = 2_147_483_647
+    selected = replace(view(content=content), version=expected_version_canary)
+    selected_detail = replace(
+        detail(selected),
+        actions=replace(
+            detail(selected).actions,
+            reason_code=ScheduleActionReason.RUN_CONFLICT,
+            observed_version=expected_version_canary,
+        ),
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = selected_detail
+    group = commands(queries)
+
+    shown = interaction()
+    await group.show_command.callback(group, shown, str(selected.public_id))
+    show_kwargs = shown.response.send_message.await_args.kwargs
+    show_embed = show_kwargs["embed"]
+    show_text = " ".join(
+        [show_embed.title, show_embed.description or ""]
+        + [f"{field.name} {field.value}" for field in show_embed.fields]
+    )
+    assert f"`{selected.public_id}`" in show_text
+    assert str(expected_version_canary) not in show_text
+    assert ScheduleActionReason.RUN_CONFLICT.value not in show_text
+    assert len(show_embed) <= 6_000
+    assert show_kwargs["ephemeral"] is True
+    assert show_kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    for item in show_kwargs["view"].children:
+        for forbidden in (
+            str(selected.public_id),
+            str(expected_version_canary),
+            str(GUILD_ID),
+            str(USER_ID),
+            content,
+        ):
+            assert forbidden not in item.custom_id
+
+    page = SchedulePage((selected,), 1, 1)
+    queries.get_schedule_page.return_value = page
+    listed = interaction()
+    await group.list_command.callback(group, listed, None, 1)
+    list_view = listed.response.send_message.await_args.kwargs["view"]
+    opened = interaction()
+    await group._show_list_selection(list_view, opened, str(selected.public_id))
+    list_detail_kwargs = opened.response.edit_message.await_args.kwargs
+    assert list_detail_kwargs["embed"].to_dict() == show_embed.to_dict()
+    assert list_detail_kwargs["allowed_mentions"].to_dict() == {"parse": []}
+
+    secret = (
+        "token_test_private postgresql+psycopg://user:password@development/private "
+        "Discord API response traceback-sentinel"
+    )
+    failing_queries = AsyncMock()
+    failing_queries.get_schedule_detail.side_effect = RuntimeError(secret)
+    failing_group = commands(failing_queries)
+    failed = interaction()
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await failing_group.show_command.callback(failing_group, failed, str(selected.public_id))
+    assert failed.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    assert [record.message for record in caplog.records if record.name == "test.posts"] == [
+        "schedule_show_failed"
+    ]
+    assert secret not in caplog.text
+
+    caplog.clear()
+    presenter_group = commands(queries)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.schedule_detail_embed",
+        MagicMock(side_effect=RuntimeError(secret)),
+    )
+    presenter_failed = interaction()
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await presenter_group.show_command.callback(
+            presenter_group, presenter_failed, str(selected.public_id)
+        )
+    assert presenter_failed.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+    assert [record.message for record in caplog.records if record.name == "test.posts"] == [
+        "schedule_presentation_failed"
+    ]
+    assert secret not in caplog.text
+    assert set(ScheduleView.__dataclass_fields__) == {
+        "public_id",
+        "channel_id",
+        "creator_user_id",
+        "schedule_type",
+        "status",
+        "content",
+        "next_run_at",
+        "local_time",
+        "weekday",
+        "end_date",
+        "version",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    ["owner", "administrator", "other-owner", "dm", "wrong-guild", "role-loss", "admin-loss"],
+)
+async def test_detail_edit_submit_rechecks_actor_and_administrator_boundary(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    creator_id = USER_ID + 1 if boundary in {"administrator", "admin-loss"} else USER_ID
+    selected = replace(
+        view(content="before"),
+        creator_user_id=creator_id,
+        schedule_type=ScheduleType.DAILY,
+        local_time=time(9),
+        version=9,
+    )
+    latest = replace(selected, content="after", version=10)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(latest)
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=boundary in {"administrator", "admin-loss"}),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(),
+        list_origin=ScheduleListOrigin(ScheduleStatus.ACTIVE, ScheduleType.DAILY, 2),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=parent, default_channel=None)
+    modal.channel._handle_submit(interaction(), {"values": []}, {})
+    modal.local_time._value = "09:00"
+    modal.end_date._value = ""
+    modal.content._value = "after"
+    submitted = interaction(administrator=boundary == "administrator")
+    submitted.guild.get_channel.return_value = cached_text_channel(submitted.guild)
+    if boundary == "other-owner":
+        submitted.user.id = USER_ID + 1
+    elif boundary == "dm":
+        submitted.guild = None
+        submitted.guild_id = None
+    elif boundary == "wrong-guild":
+        submitted.guild.id = GUILD_ID + 1
+        submitted.guild_id = GUILD_ID + 1
+    elif boundary == "role-loss":
+        submitted.user.roles = []
+    service = AsyncMock()
+    service.edit.return_value = EditedSchedule(
+        public_id=selected.public_id,
+        channel_id=selected.channel_id,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE,
+        content="after",
+        next_run_at=selected.next_run_at,
+        local_time=time(9),
+        weekday=None,
+        end_date=None,
+        changed_fields=("content",),
+        pending_runs_skipped=0,
+        run_replaced=False,
+        retry_pending_preserved=False,
+        previous_status=ScheduleStatus.ACTIVE,
+    )
+    if boundary == "admin-loss":
+        service.edit.side_effect = ScheduleEditUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await modal.on_submit(submitted)
+
+    if boundary in {"owner", "administrator"}:
+        service.edit.assert_awaited_once()
+        assert service.edit.await_args.kwargs["administrator"] is (boundary == "administrator")
+        assert service.edit.await_args.kwargs["expected_version"] == 9
+        assert submitted.edit_original_response.await_args.kwargs["view"].context.list_origin == (
+            parent.context.list_origin
+        )
+    elif boundary == "admin-loss":
+        service.edit.assert_awaited_once()
+        assert service.edit.await_args.kwargs["administrator"] is False
+        assert submitted.edit_original_response.await_args.kwargs["content"] == (
+            "指定された予約は見つからないか、編集できません。"
+        )
+    else:
+        service.edit.assert_not_awaited()
+        assert submitted.response.send_message.await_args.args == (PERMISSION_DENIED_MESSAGE,)
+        assert parent.finished is False and not parent.is_finished()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "noop", "conflict", "database"])
+async def test_detail_edit_result_keeps_body_only_in_modal_and_latest_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    outcome: str,
+) -> None:
+    secret_body = "正当なModal初期本文 " + "x" * 100 + " token_test_private traceback-sentinel"
+    selected = replace(
+        view(content=secret_body), schedule_type=ScheduleType.DAILY, local_time=time(9), version=17
+    )
+    latest = replace(selected, version=18)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(latest)
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(),
+    )
+    modal = ScheduleEditModal(commands=group, detail_view=parent, default_channel=None)
+    assert modal.content.default == secret_body
+    modal.channel._handle_submit(interaction(), {"values": []}, {})
+    modal.local_time._value = "09:00"
+    modal.end_date._value = ""
+    modal.content._value = secret_body
+    service = AsyncMock()
+    service.edit.return_value = EditedSchedule(
+        public_id=selected.public_id,
+        channel_id=selected.channel_id,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.ACTIVE,
+        content=secret_body,
+        next_run_at=selected.next_run_at,
+        local_time=time(9),
+        weekday=None,
+        end_date=None,
+        changed_fields=("content",),
+        pending_runs_skipped=0,
+        run_replaced=False,
+        retry_pending_preserved=False,
+        previous_status=ScheduleStatus.ACTIVE,
+    )
+    if outcome == "noop":
+        service.edit.side_effect = ScheduleEditNoChanges
+    elif outcome == "conflict":
+        service.edit.side_effect = ScheduleEditVersionConflict
+    elif outcome == "database":
+        service.edit.side_effect = RuntimeError(secret_body)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+    submitted = interaction()
+    submitted.guild.get_channel.return_value = cached_text_channel(submitted.guild)
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await modal.on_submit(submitted)
+
+    if outcome == "database":
+        assert submitted.response.send_message.await_args.args == (INTERNAL_ERROR_MESSAGE,)
+        assert parent.finished is False and not parent.is_finished()
+        assert [record.message for record in caplog.records if record.name == "test.posts"] == [
+            "schedule_detail_edit_failed"
+        ]
+    else:
+        kwargs = submitted.edit_original_response.await_args.kwargs
+        expected = {
+            "success": "予約を編集しました。\n変更した項目: 本文",
+            "noop": DETAIL_EDIT_NO_CHANGES_MESSAGE,
+            "conflict": DETAIL_CONFLICT_MESSAGE,
+        }[outcome]
+        assert kwargs["content"] == expected
+        assert secret_body not in kwargs["content"]
+        assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+        detail_text = " ".join(field.value for field in kwargs["embed"].fields)
+        assert "正当なModal初期本文" in detail_text
+        assert "token\\_test\\_private" in detail_text
+        assert parent.is_finished() and kwargs["view"] in group._detail_views
+    for component in modal.walk_children():
+        custom_id = getattr(component, "custom_id", None)
+        if custom_id:
+            for forbidden in (
+                str(selected.public_id),
+                str(selected.version),
+                str(GUILD_ID),
+                str(USER_ID),
+                secret_body,
+            ):
+                assert forbidden not in custom_id
+    assert secret_body not in caplog.text
 
 
 @pytest.mark.asyncio

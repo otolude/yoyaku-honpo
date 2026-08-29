@@ -15,11 +15,13 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     ScheduleAutocompleteView,
     ScheduleQueryService,
 )
+from discord_ai_reminder_bot.bot.post_views import ScheduleListOrigin
 from discord_ai_reminder_bot.bot.posts import (
     DELETE_UNAVAILABLE_MESSAGE,
     EDIT_UNAVAILABLE_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
     PostCommands,
+    ScheduleEditModal,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import (
@@ -91,7 +93,7 @@ def session_factory_for(db_session: AsyncSession) -> async_sessionmaker[AsyncSes
     )
 
 
-def fake_interaction() -> MagicMock:
+def fake_interaction(*, administrator: bool = False) -> MagicMock:
     value = MagicMock(spec=discord.Interaction)
     value.guild_id = GUILD_ID
     value.guild = MagicMock(spec=discord.Guild)
@@ -100,7 +102,7 @@ def fake_interaction() -> MagicMock:
     member.id = CREATOR_ID
     member.guild = value.guild
     member.guild_permissions = MagicMock(spec=discord.Permissions)
-    member.guild_permissions.administrator = False
+    member.guild_permissions.administrator = administrator
     role = MagicMock(spec=discord.Role)
     role.id = ROLE_ID
     role.guild = value.guild
@@ -389,6 +391,80 @@ async def test_autocomplete_dto_and_choices_exclude_body_internal_id_and_other_g
     value.response.send_message.assert_not_awaited()
     value.followup.send.assert_not_awaited()
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize("administrator", [False, True], ids=["owner", "admin-other-owner"])
+async def test_detail_edit_modal_submit_rechecks_actor_and_commits_latest_detail(
+    db_session: AsyncSession, administrator: bool
+) -> None:
+    schedule = autocomplete_schedule(
+        creator_user_id=OTHER_CREATOR_ID if administrator else CREATOR_ID
+    )
+    db_session.add(schedule)
+    await db_session.flush()
+    await add_current_run(db_session, schedule)
+    factory = session_factory_for(db_session)
+    queries = ScheduleQueryService(factory)
+    commands = PostCommands(
+        queries=queries,
+        session_factory=factory,
+        clock=FixedClock(NOW),
+        configured_guild_id=GUILD_ID,
+        allowed_role_ids=(ROLE_ID,),
+        logger=logging.getLogger("test.detail-edit-boundary"),
+    )
+    detail = await queries.get_schedule_detail(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=administrator,
+        public_id=str(schedule.public_id),
+        now=NOW,
+    )
+    assert detail is not None
+    parent = commands._build_detail_view(
+        interaction=fake_interaction(administrator=administrator),
+        actor_user_id=CREATOR_ID,
+        detail=detail,
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(
+            status=ScheduleStatus.ACTIVE, schedule_type=ScheduleType.DAILY, page=2
+        ),
+    )
+    modal = ScheduleEditModal(commands=commands, detail_view=parent, default_channel=None)
+    modal.channel._handle_submit(fake_interaction(), {"values": []}, {})
+    modal.local_time._value = "12:00"
+    modal.end_date._value = ""
+    modal.content._value = "updated through modal"
+    submitted = fake_interaction(administrator=administrator)
+    cached = MagicMock(spec=discord.TextChannel)
+    cached.id = schedule.channel_id
+    cached.guild = submitted.guild
+    permissions = MagicMock(spec=discord.Permissions)
+    permissions.view_channel = permissions.send_messages = True
+    cached.permissions_for.return_value = permissions
+    submitted.guild.me = MagicMock(spec=discord.Member)
+    submitted.guild.get_channel.return_value = cached
+    submitted.guild.fetch_channel = AsyncMock()
+
+    await modal.on_submit(submitted)
+
+    async with factory() as verification:
+        persisted = await verification.scalar(select(Schedule).where(Schedule.id == schedule.id))
+        operation_count = await verification.scalar(
+            select(func.count(OperationLog.id)).where(OperationLog.schedule_id == schedule.id)
+        )
+    assert persisted is not None
+    assert persisted.content == "updated through modal" and persisted.version == 2
+    assert operation_count == 1
+    submitted.guild.fetch_channel.assert_not_awaited()
+    refreshed = submitted.edit_original_response.await_args.kwargs["view"]
+    assert refreshed.context.expected_version == 2
+    assert refreshed.context.list_origin == ScheduleListOrigin(
+        status=ScheduleStatus.ACTIVE, schedule_type=ScheduleType.DAILY, page=2
+    )
+    assert submitted.edit_original_response.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
 
 
 async def schedule_detail(

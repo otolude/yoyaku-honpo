@@ -4,7 +4,7 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 41件／未確認 6件（合計47件）
+- 集計: 確認済み 44件／未確認 3件（合計47件）
 
 ## 実Discord確認記録
 
@@ -107,6 +107,17 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 「詳細操作情報境界」は`tests/test_post_commands.py::test_detail_state_operation_failures_expose_only_fixed_boundary`と`tests/test_post_commands.py::test_detail_state_refresh_presenter_failure_logs_only_fixed_event`でpause／resume／deleteのDB失敗と共通Presenter失敗にcanaryを与え、固定応答、固定イベント名、例外全文・本文・理由・token・DATABASE_URL・worker情報の通常ログ非表示、`AllowedMentions.none()`を確認した。`tests/test_post_commands.py::test_detail_custom_id_is_fixed_and_close_collects_view`、`tests/test_post_commands.py::test_detail_pause_callback_refreshes_paused_detail_and_preserves_origin`、`tests/test_post_commands.py::test_detail_overdue_resume_choices_use_expected_version_and_refresh_owner`、`tests/test_post_commands.py::test_list_and_detail_real_view_store_dispatch_without_timeout_and_close_cleanly`、`tests/test_post_presenter.py::test_detail_never_displays_internal_version`、`tests/test_post_presenter.py::test_show_two_thousand_markup_characters_stays_within_limits`、`tests/test_interactions.py::test_initial_and_followup_responses_are_ephemeral_with_mentions_disabled`で、fixed custom_id、DTO、本文・内部ID・version・reason code・別guild情報、Embed上限、ephemeral、実ViewStore境界を確認した。
 
+### 2026-08-30 詳細編集・情報境界群隔離受入
+
+- 実施者: Oto
+- 証跡種別: Fake Interaction／固定Clock／専用PostgreSQLによる隔離受入
+
+「詳細情報境界」は`tests/test_post_commands.py::test_detail_show_list_and_failure_paths_keep_content_and_internal_boundaries`で、共通ScheduleDetailを`/post show`成功と一覧選択から表示し、正式な本文欄、canonical UUIDv7、fixed custom_id、内部version・reason code・秘密の非表示、Embed上限、ephemeral、`AllowedMentions.none()`を確認した。同nodeのQuery／Presenter失敗と`tests/test_post_commands.py::test_detail_state_refresh_presenter_failure_logs_only_fixed_event`で、固定応答・固定イベント名だけを残して例外全文、token、DATABASE_URL、Discord応答sentinelを出さないことを確認した。`tests/integration/test_schedule_queries_integration.py::test_detail_creator_admin_guild_and_detached_dto_boundaries`、`tests/test_schedule_queries.py::test_show_uses_guild_public_id_and_enforces_owner`、`tests/test_post_presenter.py::test_show_preserves_line_breaks_but_escapes_user_markup_and_mentions`、`tests/test_post_presenter.py::test_show_two_thousand_markup_characters_stays_within_limits`で、別guild除外、内部DB ID・worker・秘密を持たないdetached DTO、Markdown・mention安全化、Discord文字数上限を確認した。
+
+「詳細編集認可・channel境界」は`tests/integration/test_schedule_queries_integration.py::test_detail_edit_modal_submit_rechecks_actor_and_commits_latest_detail`で、所有者本人と同guild管理者による他作成者予約のModal submitをFake Interaction・固定Clock・専用PostgreSQLの一続きの経路で実行し、Service内認可、expected_version、commit後の最新Detail、一覧origin、OperationLog、cache-only channel検証を確認した。`tests/test_post_commands.py::test_detail_edit_submit_rechecks_actor_and_administrator_boundary`で、他利用者、DM、設定外guild、ロール喪失、Modal表示後の管理者権限喪失をsubmit時に再検証し、固定案内と親View維持を確認した。`tests/test_post_commands.py::test_detail_edit_channel_failures_use_destination_message_before_transaction`、`tests/test_post_commands.py::test_detail_edit_component_or_channel_id_corruption_is_internal_error`、`tests/test_post_commands.py::test_detail_edit_channel_missing_id_is_internal_error`、`tests/test_post_commands.py::test_detail_edit_multiple_channels_is_input_error_before_transaction`、`tests/test_post_commands.py::test_detail_edit_channel_optional_empty_keeps_current_channel`で、cache miss、別guild、Thread、Category、Voice、DM、閲覧・送信権限、Bot member、不正ID・型・範囲・欠落、未選択を横断し、RESTなし、Session・transaction開始前の固定拒否を確認した。`tests/integration/test_schedule_editing_integration.py::test_edit_expected_version_conflict_changes_nothing`、`tests/integration/test_schedule_editing_integration.py::test_noop_invalid_options_boundary_and_authorization_change_nothing`、`tests/integration/test_schedule_editing_integration.py::test_processing_claimed_and_sending_are_rejected`で、version・状態・run・attemptのlock後再検証とDB・OperationLog非変更を確認した。
+
+「詳細編集表示・情報境界」は`tests/test_post_commands.py::test_detail_edit_result_keeps_body_only_in_modal_and_latest_detail`で、現在本文をModal初期値と最新Detailの正式な本文欄だけへ表示し、成功通知、no-op、競合、DB失敗の案内・custom_id・固定ログへ本文全文、version、guild／user ID、秘密、例外全文を複製しないことを確認した。`tests/test_post_commands.py::test_daily_detail_edit_v2_submit_reaches_service_with_all_field_semantics`、`tests/test_post_commands.py::test_detail_edit_channel_failures_use_destination_message_before_transaction`、`tests/test_post_commands.py::test_detail_edit_expected_version_conflict_still_refreshes_detail`、`tests/test_post_commands.py::test_detail_edit_modal_on_error_is_sanitized_and_preserves_parent`、既存の入力不正・全角終了日node群で、成功、no-op、入力・終了日・channel不正、認可、競合、DB／Presenter失敗、Modal on_errorを横断し、固定イベント、親View維持または最新View移譲、ephemeral、`AllowedMentions.none()`を確認した。`tests/test_post_commands.py::test_detail_edit_modal_has_type_specific_v2_labels_and_defaults`とPresenter上限node群でModal、Select、TextInput、EmbedのDiscord上限を確認した。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
@@ -135,7 +146,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 一覧詳細から戻る | 一覧で予約を選択後、同じephemeralメッセージの「一覧へ戻る」で元の状態・種類・ページ条件へ戻れる |
 | [x] | 詳細中の一覧更新 | 詳細表示中に予約件数や状態が変わっても、戻ると最新一覧を取得し、消滅した末尾ページは最後の有効ページへ補正される |
 | [x] | 一覧・詳細View長寿命化 | 15分経過後もList／DetailのButton・Selectが有効でcallbackへdispatchされ、最新認可・状態・version・run・attemptを再検証する。Bot再起動後の古い画面は復元せず、`/post list`／`/post show`再実行で復帰する |
-| [ ] | 詳細情報境界 | version、内部DB ID、操作可否の内部理由、秘密情報が詳細Embed・応答・通常ログに表示されない |
+| [x] | 詳細情報境界 | version、内部DB ID、操作可否の内部理由、秘密情報が詳細Embed・応答・通常ログに表示されない |
 | [x] | 状態別詳細ボタン | 現在のSchedule状態、種別、run、attemptから操作可否をread-onlyで決定し、edit、pause、resume、deleteを状態マトリクスに従って表示する。processing、claimed、sending、unknown、不整合では安全側で操作不可とし、操作時に最新状態と認可を再検証する。fixed custom_idを使用し、予約IDやversion等を含めない |
 | [x] | 詳細から一時停止 | `/post show`と一覧詳細の両方で一時停止でき、成功通知、paused詳細、注意事項へ更新される |
 | [x] | 詳細から即時再開 | 保持投稿時刻前に再開でき、成功通知と最新active／draft詳細へ更新される |
@@ -152,7 +163,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 毎週編集Modal | 投稿先、曜日、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
 | [x] | 詳細編集clear | 空欄で本文削除と終了日解除ができ、状態・run規則が維持される |
 | [x] | 詳細編集no-op／競合 | no-opは更新せず固定案内、古いModalは競合案内と最新詳細へ戻る |
-| [ ] | 詳細編集認可・channel境界 | 本人・管理者境界と同guild TextChannel・Bot権限をsubmit時に再確認する |
+| [x] | 詳細編集認可・channel境界 | 本人・管理者境界と同guild TextChannel・Bot権限をsubmit時に再確認する |
 | [x] | 詳細編集Modal lifecycle | 二重submitを防止し、close／15分timeout後も親詳細から再度編集できる |
 | [x] | 詳細編集後の一覧復帰 | 最新詳細の操作と一覧由来Contextを維持し、戻ると最新一覧へclampされる |
-| [ ] | 詳細編集表示・情報境界 | 本文全文や内部情報を通知・custom_id・通常ログへ出さず安全に表示される |
+| [x] | 詳細編集表示・情報境界 | 本文全文や内部情報を通知・custom_id・通常ログへ出さず安全に表示される |
