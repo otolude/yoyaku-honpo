@@ -74,6 +74,7 @@ from discord_ai_reminder_bot.bot.posts import (
     InteractionActor,
     PostCommands,
     ResumeChoiceView,
+    ScheduleDeletionConfirmView,
     ScheduleEditModal,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
@@ -1807,6 +1808,96 @@ async def test_detail_back_preserves_filters_page_and_clamps_latest_list() -> No
 
 
 @pytest.mark.asyncio
+async def test_detail_back_uses_changed_service_snapshot_and_recomputes_filtered_page() -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.WEEKLY, status=ScheduleStatus.ACTIVE, version=1
+    )
+    changed = replace(selected, status=ScheduleStatus.PAUSED, content="変更後", version=2)
+    queries = AsyncMock()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((selected,), 3, 21),
+        SchedulePage((changed,), 2, 11),
+    ]
+    queries.get_schedule_detail.side_effect = [detail(selected), detail(changed)]
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    group = commands(queries, session=session)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 3)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    list_view.schedule_type = ScheduleType.WEEKLY
+
+    opened = interaction()
+    await group._show_list_selection(list_view, opened, str(selected.public_id))
+    detail_view = opened.response.edit_message.await_args.kwargs["view"]
+
+    # A separate query/service snapshot now observes the changed reservation.
+    returned = interaction()
+    await group._return_to_list(detail_view, returned)
+
+    queries.get_schedule_detail.assert_awaited_with(
+        guild_id=GUILD_ID,
+        requester_user_id=USER_ID,
+        administrator=False,
+        public_id=str(selected.public_id),
+        now=NOW,
+    )
+    assert queries.get_schedule_page.await_args.kwargs == {
+        "guild_id": GUILD_ID,
+        "requester_user_id": USER_ID,
+        "administrator": False,
+        "status": None,
+        "page": 3,
+        "schedule_type": ScheduleType.WEEKLY,
+        "clamp": True,
+    }
+    latest = returned.response.edit_message.await_args.kwargs["view"]
+    assert latest.page == 2
+    assert latest.status is None
+    assert latest.schedule_type is ScheduleType.WEEKLY
+    assert changed.status is ScheduleStatus.PAUSED and changed.content == "変更後"
+    assert changed.version == 2 and selected.version == 1
+    assert "変更後" in returned.response.edit_message.await_args.kwargs["embed"].fields[-1].value
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_detail_back_excludes_changed_status_and_clamps_recomputed_page() -> None:
+    selected = replace(
+        view(), schedule_type=ScheduleType.WEEKLY, status=ScheduleStatus.ACTIVE, version=1
+    )
+    remaining = replace(view(), schedule_type=ScheduleType.WEEKLY, status=ScheduleStatus.ACTIVE)
+    changed = replace(selected, status=ScheduleStatus.PAUSED, version=2)
+    queries = AsyncMock()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((selected,), 3, 21),
+        SchedulePage((remaining,), 2, 11),
+    ]
+    queries.get_schedule_detail.side_effect = [detail(selected), detail(changed)]
+    group = commands(queries)
+    original = interaction()
+    status = app_commands.Choice(name="有効", value=ScheduleStatus.ACTIVE.value)
+    await group.list_command.callback(group, original, status, 3)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    list_view.schedule_type = ScheduleType.WEEKLY
+
+    opened = interaction()
+    await group._show_list_selection(list_view, opened, str(selected.public_id))
+    returned = interaction()
+    await group._return_to_list(opened.response.edit_message.await_args.kwargs["view"], returned)
+
+    assert queries.get_schedule_page.await_args.kwargs["clamp"] is True
+    assert queries.get_schedule_page.await_args.kwargs["status"] is ScheduleStatus.ACTIVE
+    latest = returned.response.edit_message.await_args.kwargs["view"]
+    assert latest.page == 2 and latest.status is ScheduleStatus.ACTIVE
+    assert latest.schedule_type is ScheduleType.WEEKLY
+    select = next(item for item in latest.children if item.custom_id == "post_list_select")
+    assert [option.value for option in select.options] == [str(remaining.public_id)]
+    assert str(changed.public_id) not in [option.value for option in select.options]
+
+
+@pytest.mark.asyncio
 async def test_detail_remains_active_after_900_seconds_without_database_resources() -> None:
     selected = view()
     queries = AsyncMock()
@@ -1827,6 +1918,69 @@ async def test_detail_remains_active_after_900_seconds_without_database_resource
     assert not any(item.disabled for item in detail_view.children)
     assert detail_view in group._detail_views
     session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_and_detail_real_view_store_dispatch_without_timeout_and_close_cleanly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_page.return_value = SchedulePage((selected,), 1, 1)
+    queries.get_schedule_detail.return_value = detail(selected)
+    group = commands(queries)
+    store = ViewStore(MagicMock())
+
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    store.add_view(list_view, message_id=41)
+    group._move_list_page = AsyncMock()  # type: ignore[method-assign]
+    list_click = interaction()
+    list_click.message = MagicMock(spec=discord.Message)
+    list_click.message.id = 41
+    list_click.data = {}
+    store.dispatch_view(discord.ComponentType.button.value, "post_list_next", list_click)
+
+    direct = interaction()
+    await group.show_command.callback(group, direct, str(selected.public_id))
+    detail_view = direct.response.send_message.await_args.kwargs["view"]
+    store.add_view(detail_view, message_id=42)
+    group._edit_from_detail = AsyncMock()  # type: ignore[method-assign]
+    detail_click = interaction()
+    detail_click.message = MagicMock(spec=discord.Message)
+    detail_click.message.id = 42
+    detail_click.data = {}
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        store.dispatch_view(
+            discord.ComponentType.button.value,
+            DETAIL_EDIT_CUSTOM_ID,
+            detail_click,
+        )
+        for _ in range(10):
+            if group._move_list_page.await_count and group._edit_from_detail.await_count:
+                break
+            await asyncio.sleep(0)
+
+    group._move_list_page.assert_awaited_once_with(list_view, list_click, 2)
+    group._edit_from_detail.assert_awaited_once_with(detail_view, detail_click)
+    for active_view in (list_view, detail_view):
+        assert active_view.timeout is None
+        assert active_view._BaseView__timeout_task is None
+        assert not active_view.is_finished()
+        assert not all(getattr(item, "disabled", False) for item in active_view.children)
+    original.edit_original_response.assert_not_awaited()
+    direct.edit_original_response.assert_not_awaited()
+    assert "schedule_list_timeout_response_failed" not in caplog.text
+    assert "schedule_detail_timeout_response_failed" not in caplog.text
+    assert "/post list" in original.response.send_message.await_args.kwargs["embed"].description
+    assert "/post show" in direct.response.send_message.await_args.kwargs["embed"].description
+
+    await group.close_confirmation_views()
+    await group.close_confirmation_views()
+    assert list_view.is_finished() and detail_view.is_finished()
+    assert not group._list_views and not group._detail_views
+    assert not store._views
 
 
 @pytest.mark.asyncio
@@ -1942,6 +2096,151 @@ async def test_close_collects_open_resume_modal_and_parent_view() -> None:
     assert modal.closed and modal.is_finished()
     assert not group._resume_views
     assert not group._resume_modals
+
+
+@pytest.mark.asyncio
+async def test_detail_resume_cancel_timeout_and_races_are_read_only_and_recoverable() -> None:
+    selected = replace(
+        view(),
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.PAUSED,
+        next_run_at=None,
+        version=7,
+    )
+    paused_detail = detail(selected)
+    paused_detail = replace(
+        paused_detail,
+        actions=replace(paused_detail.actions, can_pause=False, can_resume=True),
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = paused_detail
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    group = commands(queries, session=session)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=paused_detail,
+        embed=discord.Embed(title="予約詳細"),
+    )
+    assert parent.timeout is None
+    snapshot = (selected.status, selected.version, selected.next_run_at, selected.content)
+
+    cancel_view = ResumeChoiceView(
+        commands=group,
+        interaction=parent.initial_interaction,
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=parent.context,
+    )
+    group._resume_views.add(cancel_view)
+    cancelled = interaction()
+    await group._cancel_resume_choice(cancel_view, cancelled)
+    await group._cancel_resume_choice(cancel_view, interaction())
+    await group._expire_resume_choice(cancel_view)
+
+    assert cancel_view.timeout == 900.0 and cancel_view.is_finished()
+    assert queries.get_schedule_detail.await_count == 1
+    latest_parent = next(iter(group._detail_views))
+    assert latest_parent.timeout is None and not latest_parent.is_finished()
+    assert latest_parent.context.expected_version == 7
+    assert (selected.status, selected.version, selected.next_run_at, selected.content) == snapshot
+    assert "キャンセル" in cancelled.response.edit_message.await_args.kwargs["content"]
+
+    timeout_origin = interaction()
+    timeout_view = ResumeChoiceView(
+        commands=group,
+        interaction=timeout_origin,
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+        detail_context=latest_parent.context,
+    )
+    group._resume_views.add(timeout_view)
+    await group._expire_resume_choice(timeout_view)
+    await group._expire_resume_choice(timeout_view)
+    await group._cancel_resume_choice(timeout_view, interaction())
+
+    assert timeout_view.is_finished()
+    assert all(item.disabled for item in timeout_view.children)
+    timeout_kwargs = timeout_origin.edit_original_response.await_args.kwargs
+    assert "/post show" in timeout_kwargs["content"] and "/post list" in timeout_kwargs["content"]
+    assert timeout_kwargs["view"] is timeout_view
+    assert (selected.status, selected.version, selected.next_run_at, selected.content) == snapshot
+    session.__aenter__.assert_not_awaited()
+    await group.close_confirmation_views()
+    await group.close_confirmation_views()
+    assert not group._resume_views and not group._detail_views
+
+
+@pytest.mark.asyncio
+async def test_detail_delete_cancel_timeout_and_races_are_read_only_and_recoverable() -> None:
+    selected = replace(view(), schedule_type=ScheduleType.DAILY, version=9)
+    selected_detail = detail(selected)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = selected_detail
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    group = commands(queries, session=session)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=selected_detail,
+        embed=discord.Embed(title="予約詳細"),
+    )
+    assert parent.timeout is None
+    snapshot = (selected.status, selected.version, selected.next_run_at, selected.content)
+
+    cancel_view = ScheduleDeletionConfirmView(
+        commands=group,
+        interaction=parent.initial_interaction,
+        public_id=str(selected.public_id),
+        reason="creator_deleted",
+        actor_user_id=USER_ID,
+        detail_context=parent.context,
+    )
+    group._delete_views.add(cancel_view)
+    cancelled = interaction()
+    await group._cancel_deletion(cancel_view, cancelled)
+    await group._cancel_deletion(cancel_view, interaction())
+    await group._expire_deletion(cancel_view)
+
+    assert cancel_view.timeout == 900.0 and cancel_view.is_finished()
+    assert queries.get_schedule_detail.await_count == 1
+    latest_parent = next(iter(group._detail_views))
+    assert latest_parent.timeout is None and not latest_parent.is_finished()
+    assert latest_parent.context.expected_version == 9
+    assert (selected.status, selected.version, selected.next_run_at, selected.content) == snapshot
+    assert "キャンセル" in cancelled.response.edit_message.await_args.kwargs["content"]
+
+    timeout_origin = interaction()
+    timeout_view = ScheduleDeletionConfirmView(
+        commands=group,
+        interaction=timeout_origin,
+        public_id=str(selected.public_id),
+        reason="creator_deleted",
+        actor_user_id=USER_ID,
+        detail_context=latest_parent.context,
+    )
+    group._delete_views.add(timeout_view)
+    await group._expire_deletion(timeout_view)
+    await group._expire_deletion(timeout_view)
+    await group._confirm_deletion(timeout_view, interaction())
+    await group._cancel_deletion(timeout_view, interaction())
+
+    assert timeout_view.is_finished()
+    assert all(item.disabled for item in timeout_view.children)
+    timeout_kwargs = timeout_origin.edit_original_response.await_args.kwargs
+    assert "/post show" in timeout_kwargs["content"] and "/post list" in timeout_kwargs["content"]
+    assert timeout_kwargs["view"] is timeout_view
+    assert (selected.status, selected.version, selected.next_run_at, selected.content) == snapshot
+    session.__aenter__.assert_not_awaited()
+    await group.close_confirmation_views()
+    await group.close_confirmation_views()
+    assert not group._delete_views and not group._detail_views
 
 
 @pytest.mark.asyncio

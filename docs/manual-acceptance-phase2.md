@@ -4,7 +4,7 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 17件／未確認 30件（合計47件）
+- 集計: 確認済み 28件／未確認 19件（合計47件）
 
 ## 実Discord確認記録
 
@@ -42,15 +42,52 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 スマホ、別利用者、別guild、管理者境界、権限喪失、競合、Fake Gateway、および詳細由来の一時停止・再開4択など、今回直接確認していない項目は変更していない。
 
+### 2026-08-30 自動テストによる隔離受入
+
+- 実施者: Oto
+- 証跡commit: `a751fc8db7287d398b9518840bd6ec0cc2dc73fe`
+- 証跡種別: 自動テストによる隔離受入
+- 実行結果: 専用PostgreSQL込み全pytest 1028件成功（通常pytest 746件成功／282件skip、重点テスト31件成功）
+
+「最大件数」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order`で、専用PostgreSQLに27件を作成し、`next_run_at`と内部順序による安定順および先頭25件への制限を直接確認した。
+
+「channel cache miss」は`tests/test_post_commands.py::test_autocomplete_uses_cache_only_and_cache_failure_is_safe`で、channel cache取得失敗時に空候補となりREST取得も予約検索も行わないことを確認した。`tests/test_post_presenter.py::test_autocomplete_choice_uses_safe_channel_id_fallback`で、別条件から得た候補のchannel名が安全に解決できない場合に短縮channel IDを表示することを確認した。
+
+「詳細編集ボタン」は`tests/test_schedule_queries.py::test_detail_action_basic_state_and_type_matrix`、`tests/test_schedule_queries.py::test_detail_actions_fail_closed_for_run_and_attempt_conflicts`、`tests/test_post_commands.py::test_detail_action_buttons_follow_read_only_availability`、`tests/test_post_commands.py::test_direct_show_builds_detail_context_and_delete_button`で、編集可否の状態・種別・run・attempt境界と、先頭位置での有効／disabled表示を直接確認した。
+
+「詳細編集後の一覧復帰」は`tests/test_post_commands.py::test_detail_edit_modal_submits_multiple_fields_and_clear_flags_atomically`、`tests/test_post_commands.py::test_second_edit_opens_modal_and_no_op_refreshes_same_message`、`tests/test_post_commands.py::test_detail_back_preserves_filters_page_and_clamps_latest_list`で、編集後の最新詳細が一覧由来Contextと最新操作可否を維持し、戻る際に同じフィルターとページを使って最新一覧を取得して有効ページへclampすることを確認した。
+
+「`/post edit` 変更指定なし」は`tests/test_post_commands.py::test_edit_public_id_only_uses_dedicated_safe_response_without_session`と`tests/test_post_commands.py::test_edit_autocomplete_selected_public_id_only_uses_same_dedicated_response`で、直接入力とAutocomplete候補選択の両方について専用ephemeral案内、`AllowedMentions.none()`、Service・Session・transaction未生成を確認した。DB接続経路へ入らないため、DB更新とOperationLog生成も行われない。
+
+「詳細中の一覧更新」は、件数減少時の再取得と末尾ページclampは直接確認できるが、詳細表示中に予約状態が変化した場合の最新一覧行を直接assertする既存nodeがないため未確認を維持した。「一覧・詳細View長寿命化」はListの実ViewStoreによる900秒相当dispatch、Detailのtimeoutなし・disabledなし・DB資源非保持、操作時の各安全境界を個別に確認できる一方、Detailを実ViewStoreから900秒相当後にdispatchすることとBot再起動後に古い画面を復元しないことを直接assertしていないため未確認を維持した。
+
+### 2026-08-30 View隔離重点受入
+
+- 実施者: Oto
+- 証跡種別: Fake Interaction／実ViewStore／固定Clock／専用PostgreSQLによる隔離受入
+- 実行結果: 追加テスト7件成功、対象重点テスト56件成功、通常pytest 752件成功／283件skip、専用PostgreSQL込み全pytest 1035件成功
+
+「詳細中の一覧更新」は`tests/test_post_commands.py::test_detail_back_uses_changed_service_snapshot_and_recomputes_filtered_page`、`tests/test_post_commands.py::test_detail_back_excludes_changed_status_and_clamps_recomputed_page`、`tests/integration/test_schedule_queries_integration.py::test_detail_return_observes_separate_session_change_and_clamps_filter_page`で、一覧から詳細への遷移、別Sessionによる状態・本文・version変更、最新詳細と一覧の再取得、一覧行の更新、status／type／page維持、filter対象外化後の件数再計算と末尾page clamp、待機中のDB資源非保持を確認した。
+
+「一覧・詳細View長寿命化」は`tests/test_post_commands.py::test_list_and_detail_real_view_store_dispatch_without_timeout_and_close_cleanly`、`tests/test_interactions.py::test_long_lived_ephemeral_view_uses_zero_registration_bridge_and_restores_none`、`tests/test_post_commands.py::test_list_view_rejects_other_user_and_remains_enabled_without_timeout`、`tests/test_post_commands.py::test_detail_rejects_other_user_dm_wrong_guild_and_permission_loss`、`tests/test_bot_runtime.py::test_setup_hook_does_not_restore_dynamic_schedule_views`で、実ViewStoreによるList／Detail dispatch、`timeout=None`、timeout Taskなし、部品の非disabled、timeout応答・失敗ログなし、操作時の再認可、再実行案内、二重closeを含む回収、再起動時の非復元を確認した。最新状態・version・run・attemptの再検証は状態操作と競合の既存Service／統合nodeを組み合わせて確認した。
+
+「状態別詳細ボタン」は`tests/integration/test_schedule_queries_integration.py::test_detail_action_availability_for_every_valid_state_and_type`、`tests/integration/test_schedule_queries_integration.py::test_detail_action_run_attempt_and_time_boundaries`、`tests/integration/test_schedule_queries_integration.py::test_detail_paused_resume_requires_pristine_pending`、`tests/test_post_commands.py::test_detail_action_buttons_follow_read_only_availability`、`tests/test_post_commands.py::test_detail_custom_id_is_fixed_and_close_collects_view`で、全有効状態・種別、processing run、claimed／sending／unknown attempt、current run不整合、paused保持run不整合に対する安全側の操作可否とUI、fixed custom_id、情報境界を確認した。操作後のService再検証は既存のversion・状態競合nodeで確認した。
+
+「再開cancel／timeout」は`tests/test_post_commands.py::test_detail_resume_cancel_timeout_and_races_are_read_only_and_recoverable`と`tests/test_post_commands.py::test_close_collects_open_resume_modal_and_parent_view`で、長寿命の最新親Detailへの復帰、cancel／timeout時のDB経路未開始とpaused snapshot維持、有限timeout、timeout後のdisabledと再取得案内、二重cancel／timeout競合、Bot close時のView・Modal・wait回収を確認した。Sessionを開始しないためrun、version、OperationLog、NotificationLogを変更せず、実Gateway通信も行っていない。
+
+「削除cancel／timeout」は`tests/test_post_commands.py::test_detail_delete_cancel_timeout_and_races_are_read_only_and_recoverable`、`tests/test_post_commands.py::test_close_stops_and_collects_delete_views`、`tests/test_post_commands.py::test_delete_view_rejects_other_user_and_double_confirmation`で、長寿命の最新親Detailへの復帰、cancel／timeout時のDB経路未開始とSchedule snapshot維持、有限timeout、timeout後のdisabled、二重confirm／cancel／timeout競合、Bot close時のView・wait回収を確認した。Sessionを開始しないため削除、run更新、OperationLog、NotificationLog生成を行わず、実Gateway通信も行っていない。
+
+「直接show詳細基盤」は今回の隔離重点検証として、`tests/test_post_commands.py::test_direct_show_builds_detail_context_and_delete_button`、`tests/integration/test_schedule_queries_integration.py::test_detail_action_availability_for_every_valid_state_and_type`、`tests/test_post_commands.py::test_detail_action_buttons_follow_read_only_availability`で、共通`ScheduleDetailView`、canonical public_id、最新expected_version、actor ID、状態別部品、直接showでの「一覧へ戻る」非表示を確認した。`tests/test_post_commands.py::test_detail_rejects_other_user_dm_wrong_guild_and_permission_loss`、`tests/test_post_commands.py::test_detail_back_rechecks_schedule_ownership_and_prevents_double_action`、`tests/test_schedule_queries.py::test_show_uses_guild_public_id_and_enforces_owner`で、Contextへguild IDを保持せず、各操作のInteractionから現在guildを検証し、DM、別guild、権限喪失、所有者／管理者境界を安全な固定案内で再検証することを確認した。`tests/test_post_commands.py::test_detail_custom_id_is_fixed_and_close_collects_view`、`tests/test_post_presenter.py::test_detail_never_displays_internal_version`、`tests/test_interactions.py::test_initial_and_followup_responses_are_ephemeral_with_mentions_disabled`で、内部DB IDをBot層へ渡さないDTO境界、custom_idとEmbedの情報境界、ephemeral、`AllowedMentions.none()`を確認した。証跡commitは未コミットのテスト変更を含むため記録せず、実施日2026-08-30、実施者Oto、証跡種別はFake Interaction／実ViewStore／固定Clock／専用PostgreSQLによる自動テスト隔離受入とする。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
 | [x] | Web版 `/post edit` | 編集可能な候補だけが表示される |
-| [ ] | `/post edit` 変更指定なし | Autocomplete候補選択後を含め、予約IDだけでは専用案内をephemeral表示し、DB更新・OperationLog生成を行わない |
+| [x] | `/post edit` 変更指定なし | Autocomplete候補選択後を含め、予約IDだけでは専用案内をephemeral表示し、DB更新・OperationLog生成を行わない |
 | [ ] | スマホ版 `/post delete` | 100文字以内の候補名が識別でき、本文を含まない |
 | [x] | PC／Web `/post pause` | activeのdaily／weeklyだけが表示される |
 | [x] | PC／Web `/post resume` | 再開可能なpaused daily／weeklyだけが表示される |
-| [ ] | 最大件数 | 候補が最大25件で安定順に表示される |
+| [x] | 最大件数 | 候補が最大25件で安定順に表示される |
 | [x] | channel名完全一致 | `tester-a`で`#tester-a`への予約が表示される |
 | [x] | channel名前方・部分一致 | `tester`で`#tester-a`、`#tester-b`、`お知らせ`で`#運営お知らせ`等が表示される |
 | [x] | `#`・casefold・日本語 | `#一般`、英字の大文字入力、日本語channel名で同じ安全な検索結果になる |
@@ -64,24 +101,24 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [ ] | 状態競合 | 候補表示後、実行前に状態・runを変えると既存の安全な拒否になる |
 | [ ] | 認可失敗 | DM、設定外guild、権限なしでは通常メッセージを送らず空候補になる |
 | [ ] | 情報境界 | 本文、秘密情報、内部ID、他guild情報が候補・利用者応答・通常ログに出ない |
-| [ ] | channel cache miss | 名前検索は該当なしとなり、REST取得せず、別条件の候補表示では短縮channel IDを使う |
+| [x] | channel cache miss | 名前検索は該当なしとなり、REST取得せず、別条件の候補表示では短縮channel IDを使う |
 | [ ] | 応答時間 | 空入力・検索入力のどちらも3秒以内に候補または空候補が返る |
-| [ ] | 直接show詳細基盤 | `/post show`の詳細表示に状態に合う接続済み操作だけが表示され、未実装の編集ボタンは表示されない |
+| [x] | 直接show詳細基盤 | `/post show`から共通`ScheduleDetailView`を表示する。長寿命Contextにはcanonical public_id、最新expected_version、actor ID、必要なlist originだけを保持し、guild IDや内部DB IDは保持・伝達しない。編集可能状態は✏️編集、activeのdaily／weeklyは⏸️一時停止、pausedのdaily／weeklyは▶️再開、削除可能状態は🗑️削除を表示し、直接show由来では「一覧へ戻る」を表示しない。操作不能なボタンは現在の仕様に従ってdisabled表示または非表示とし、version、内部DB ID、可否理由をEmbedへ表示しない。応答はephemeralかつ`AllowedMentions.none()`とする。各ボタン操作時にInteractionから現在guildを取得し、DMを拒否して、Interactionと最新Scheduleのguild境界、所有者／管理者認可、最新状態を再検証する。別guildや権限喪失時は安全な固定案内とし、fixed custom_idへguild ID、user ID、public_id、versionを含めない |
 | [x] | 一覧詳細から戻る | 一覧で予約を選択後、同じephemeralメッセージの「一覧へ戻る」で元の状態・種類・ページ条件へ戻れる |
-| [ ] | 詳細中の一覧更新 | 詳細表示中に予約件数や状態が変わっても、戻ると最新一覧を取得し、消滅した末尾ページは最後の有効ページへ補正される |
-| [ ] | 一覧・詳細View長寿命化 | 15分経過後もList／DetailのButton・Selectが有効でcallbackへdispatchされ、最新認可・状態・version・run・attemptを再検証する。Bot再起動後の古い画面は復元せず、`/post list`／`/post show`再実行で復帰する |
+| [x] | 詳細中の一覧更新 | 詳細表示中に予約件数や状態が変わっても、戻ると最新一覧を取得し、消滅した末尾ページは最後の有効ページへ補正される |
+| [x] | 一覧・詳細View長寿命化 | 15分経過後もList／DetailのButton・Selectが有効でcallbackへdispatchされ、最新認可・状態・version・run・attemptを再検証する。Bot再起動後の古い画面は復元せず、`/post list`／`/post show`再実行で復帰する |
 | [ ] | 詳細情報境界 | version、内部DB ID、操作可否の内部理由、秘密情報が詳細Embed・応答・通常ログに表示されない |
-| [ ] | 状態別詳細ボタン | active定期は一時停止、paused定期は再開、削除可能状態は削除が表示され、編集ボタンは表示されない |
+| [x] | 状態別詳細ボタン | 現在のSchedule状態、種別、run、attemptから操作可否をread-onlyで決定し、edit、pause、resume、deleteを状態マトリクスに従って表示する。processing、claimed、sending、unknown、不整合では安全側で操作不可とし、操作時に最新状態と認可を再検証する。fixed custom_idを使用し、予約IDやversion等を含めない |
 | [ ] | 詳細から一時停止 | `/post show`と一覧詳細の両方で一時停止でき、成功通知、paused詳細、注意事項へ更新される |
 | [x] | 詳細から即時再開 | 保持投稿時刻前に再開でき、成功通知と最新active／draft詳細へ更新される |
 | [ ] | 詳細から再開4択 | 保持投稿時刻後に4択が表示され、各選択肢が既存再開規則どおり動作する |
-| [ ] | 再開cancel／timeout | cancelでpaused詳細へ戻り、15分timeoutでは4択がdisabledのまま残り予約はpausedを維持する |
+| [x] | 再開cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`ResumeChoice`はcancelでDB更新せずpausedを維持して最新Detail Viewへ戻る。timeoutでもDB更新せずpausedを維持し、ResumeChoiceを操作不能にして親詳細を再取得する方法を案内する。待機中にSession、transaction、row lockを保持せず、Bot close時にViewとwait Taskを回収する |
 | [x] | 詳細から作成者削除 | 作成者は理由入力なしで確認へ進み、成功後にdeleted詳細と固定通知が表示される |
 | [ ] | 管理者の他人削除理由 | 管理者が他人の予約を削除すると1～500文字の理由Modalが先に表示され、空白だけを拒否する |
-| [ ] | 削除cancel／timeout | cancelで最新詳細へ戻り、15分timeoutでは確認ボタンがdisabledのまま残り予約は変更されない |
+| [x] | 削除cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`DeleteConfirm`はcancelでDB更新・削除・OperationLog生成を行わず最新Detail Viewへ戻る。timeoutでは削除せず、待機中にSession、transaction、row lockを保持しない。Bot close時にViewとwait Taskを回収する |
 | [ ] | 詳細操作競合 | 古い詳細からの操作が固定の競合案内で拒否され、最新詳細とボタンへ更新される |
 | [ ] | 詳細操作情報境界 | custom_id、Embed、応答、通常ログに予約本文、version、内部ID、理由、秘密情報、例外全文が出ない |
-| [ ] | 詳細編集ボタン | 編集可能時だけ有効で、操作不能時は先頭位置にdisabled表示される |
+| [x] | 詳細編集ボタン | 編集可能時だけ有効で、操作不能時は先頭位置にdisabled表示される |
 | [x] | 単発編集Modal | 投稿先、完全なJST投稿日時、本文の現在値が表示され、一度に編集できる |
 | [x] | 毎日編集Modal | 投稿先、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
 | [x] | 毎週編集Modal | 投稿先、曜日、投稿時刻、終了日、本文の現在値が表示され、一度に編集できる |
@@ -89,5 +126,5 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [ ] | 詳細編集no-op／競合 | no-opは更新せず固定案内、古いModalは競合案内と最新詳細へ戻る |
 | [ ] | 詳細編集認可・channel境界 | 本人・管理者境界と同guild TextChannel・Bot権限をsubmit時に再確認する |
 | [ ] | 詳細編集Modal lifecycle | 二重submitを防止し、close／15分timeout後も親詳細から再度編集できる |
-| [ ] | 詳細編集後の一覧復帰 | 最新詳細の操作と一覧由来Contextを維持し、戻ると最新一覧へclampされる |
+| [x] | 詳細編集後の一覧復帰 | 最新詳細の操作と一覧由来Contextを維持し、戻ると最新一覧へclampされる |
 | [ ] | 詳細編集表示・情報境界 | 本文全文や内部情報を通知・custom_id・通常ログへ出さず安全に表示される |

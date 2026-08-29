@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.schedule_queries import (
@@ -684,6 +684,68 @@ async def test_detail_action_run_attempt_and_time_boundaries(db_session: AsyncSe
     assert observed[inside.public_id] is not None
     assert not observed[inside.public_id].actions.can_edit
     assert observed[inside.public_id].actions.can_delete
+
+
+async def test_detail_return_observes_separate_session_change_and_clamps_filter_page(
+    db_session: AsyncSession,
+) -> None:
+    schedules = [autocomplete_schedule(schedule_type=ScheduleType.WEEKLY) for _ in range(21)]
+    db_session.add_all(schedules)
+    await db_session.flush()
+    service = service_for(db_session)
+    initial = await service.get_schedule_page(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=False,
+        status=ScheduleStatus.ACTIVE,
+        schedule_type=ScheduleType.WEEKLY,
+        page=3,
+        clamp=False,
+    )
+    selected = initial.schedules[0]
+    assert initial.page == 3 and initial.total_count == 21
+
+    separate_factory = async_sessionmaker(
+        bind=db_session.bind,
+        class_=AsyncSession,
+        autoflush=False,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    async with separate_factory() as separate, separate.begin():
+        await separate.execute(
+            update(Schedule)
+            .where(Schedule.public_id == selected.public_id)
+            .values(
+                status=ScheduleStatus.PAUSED.value,
+                content="changed",
+                next_run_at=None,
+                version=2,
+            )
+        )
+
+    latest_detail = await service.get_schedule_detail(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=False,
+        public_id=str(selected.public_id),
+        now=NOW,
+    )
+    latest_page = await service.get_schedule_page(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=False,
+        status=ScheduleStatus.ACTIVE,
+        schedule_type=ScheduleType.WEEKLY,
+        page=3,
+        clamp=True,
+    )
+
+    assert latest_detail is not None
+    assert latest_detail.schedule.status is ScheduleStatus.PAUSED
+    assert latest_detail.schedule.content == "changed" and latest_detail.schedule.version == 2
+    assert latest_page.page == 2 and latest_page.total_count == 20
+    assert selected.public_id not in {item.public_id for item in latest_page.schedules}
 
 
 async def test_detail_paused_resume_requires_pristine_pending(db_session: AsyncSession) -> None:

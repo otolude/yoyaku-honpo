@@ -122,6 +122,23 @@ async def test_setup_hook_syncs_configured_guild_only_once(
 
 
 @pytest.mark.asyncio
+async def test_setup_hook_does_not_restore_dynamic_schedule_views(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    verify = AsyncMock(return_value="bf82b90bcd5e")
+    sync = AsyncMock(return_value=[])
+    add_view = MagicMock()
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+    monkeypatch.setattr(bot, "add_view", add_view)
+
+    await bot.setup_hook()
+
+    add_view.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_setup_hook_does_not_sync_when_schema_verification_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
