@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, String, and_, cast, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +69,18 @@ class ClaimedScheduleRun:
 
     run: ScheduleRun
     attempt: DeliveryAttempt
+
+
+@dataclass(frozen=True)
+class ScheduleAutocompleteRow:
+    """Minimal read projection for schedule ID autocomplete."""
+
+    public_id: uuid.UUID
+    channel_id: int
+    creator_user_id: int
+    schedule_type: str
+    status: str
+    display_at: datetime | None
 
 
 def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[tuple[ScheduleRun]]:
@@ -292,6 +304,169 @@ class ScheduleRepository:
         if schedule is None:
             raise RepositoryNotFoundError("schedule was not found")
         return schedule
+
+    async def autocomplete_schedules(
+        self,
+        *,
+        guild_id: int,
+        creator_user_id: int | None,
+        operation: str,
+        now: datetime,
+        limit: int,
+        uuid_prefix: str | None = None,
+        schedule_type: ScheduleType | None = None,
+        status: ScheduleStatus | None = None,
+        channel_id: int | None = None,
+        channel_ids: frozenset[int] = frozenset(),
+    ) -> list[ScheduleAutocompleteRow]:
+        """Return a bounded, stable, read-only autocomplete projection."""
+        _validate_limit(limit)
+        now = require_utc(now)
+        allowed_statuses = {
+            "show": tuple(item.value for item in ScheduleStatus),
+            "edit": (
+                ScheduleStatus.DRAFT.value,
+                ScheduleStatus.ACTIVE.value,
+                ScheduleStatus.PAUSED.value,
+            ),
+            "delete": (
+                ScheduleStatus.DRAFT.value,
+                ScheduleStatus.ACTIVE.value,
+                ScheduleStatus.PAUSED.value,
+                ScheduleStatus.FAILED.value,
+            ),
+            "pause": (ScheduleStatus.ACTIVE.value,),
+            "resume": (ScheduleStatus.PAUSED.value,),
+        }
+        if operation not in allowed_statuses:
+            raise ValueError("unsupported autocomplete operation")
+
+        statement = select(
+            Schedule.public_id,
+            Schedule.channel_id,
+            Schedule.creator_user_id,
+            Schedule.schedule_type,
+            Schedule.status,
+            Schedule.next_run_at,
+        ).where(
+            Schedule.guild_id == guild_id,
+            Schedule.status.in_(allowed_statuses[operation]),
+        )
+        if creator_user_id is not None:
+            statement = statement.where(Schedule.creator_user_id == creator_user_id)
+        search_conditions = []
+        if uuid_prefix is not None:
+            if len(uuid_prefix) == 36:
+                search_conditions.append(Schedule.public_id == uuid.UUID(uuid_prefix))
+            else:
+                search_conditions.append(cast(Schedule.public_id, String).like(f"{uuid_prefix}%"))
+        if schedule_type is not None:
+            search_conditions.append(Schedule.schedule_type == schedule_type.value)
+        if status is not None:
+            search_conditions.append(Schedule.status == status.value)
+        if channel_id is not None:
+            search_conditions.append(Schedule.channel_id == channel_id)
+        if channel_ids:
+            search_conditions.append(Schedule.channel_id.in_(channel_ids))
+        if search_conditions:
+            statement = statement.where(or_(*search_conditions))
+
+        if operation in {"pause", "resume"}:
+            statement = statement.where(
+                Schedule.schedule_type.in_((ScheduleType.DAILY.value, ScheduleType.WEEKLY.value))
+            )
+        if operation != "show":
+            processing_run = (
+                select(ScheduleRun.id)
+                .where(
+                    ScheduleRun.schedule_id == Schedule.id,
+                    ScheduleRun.status == RunStatus.PROCESSING.value,
+                )
+                .exists()
+            )
+            in_flight_attempt = (
+                select(DeliveryAttempt.id)
+                .join(ScheduleRun, ScheduleRun.id == DeliveryAttempt.schedule_run_id)
+                .where(
+                    ScheduleRun.schedule_id == Schedule.id,
+                    DeliveryAttempt.status.in_(
+                        (
+                            DeliveryAttemptStatus.CLAIMED.value,
+                            DeliveryAttemptStatus.SENDING.value,
+                        )
+                    ),
+                )
+                .exists()
+            )
+            statement = statement.where(~processing_run, ~in_flight_attempt)
+
+        current_run_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.scheduled_for == Schedule.next_run_at,
+                ScheduleRun.status == RunStatus.PENDING.value,
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        if operation in {"delete", "pause"}:
+            statement = statement.where(or_(Schedule.next_run_at.is_(None), current_run_count == 1))
+        elif operation == "edit":
+            statement = statement.where(
+                or_(
+                    and_(
+                        Schedule.status == ScheduleStatus.PAUSED.value,
+                        Schedule.next_run_at.is_(None),
+                        Schedule.schedule_type.in_(
+                            (ScheduleType.DAILY.value, ScheduleType.WEEKLY.value)
+                        ),
+                    ),
+                    and_(
+                        Schedule.status.in_(
+                            (ScheduleStatus.DRAFT.value, ScheduleStatus.ACTIVE.value)
+                        ),
+                        Schedule.next_run_at >= now + timedelta(minutes=5),
+                        current_run_count == 1,
+                    ),
+                )
+            )
+        elif operation == "resume":
+            pending_count = (
+                select(func.count(ScheduleRun.id))
+                .where(
+                    ScheduleRun.schedule_id == Schedule.id,
+                    ScheduleRun.status == RunStatus.PENDING.value,
+                )
+                .correlate(Schedule)
+                .scalar_subquery()
+            )
+            invalid_pending = (
+                select(ScheduleRun.id)
+                .where(
+                    ScheduleRun.schedule_id == Schedule.id,
+                    ScheduleRun.status == RunStatus.PENDING.value,
+                    or_(
+                        ScheduleRun.attempt_count != 0,
+                        ScheduleRun.next_attempt_at != ScheduleRun.scheduled_for,
+                        ScheduleRun.claimed_by.is_not(None),
+                        ScheduleRun.claimed_at.is_not(None),
+                        ScheduleRun.lease_expires_at.is_not(None),
+                        select(DeliveryAttempt.id)
+                        .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+                        .exists(),
+                    ),
+                )
+                .exists()
+            )
+            statement = statement.where(pending_count <= 1, ~invalid_pending)
+
+        result = await self._session.execute(
+            statement.order_by(Schedule.next_run_at.asc().nulls_last(), Schedule.id.asc()).limit(
+                limit
+            )
+        )
+        return [ScheduleAutocompleteRow(*row) for row in result.all()]
 
     async def has_once_duplicate(
         self,

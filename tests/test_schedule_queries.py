@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
+    ScheduleAutocompleteOperation,
     ScheduleQueryService,
     parse_public_id,
 )
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.infrastructure.database.exceptions import RepositoryNotFoundError
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule
+from discord_ai_reminder_bot.infrastructure.database.repositories import ScheduleAutocompleteRow
 
 
 def schedule(*, creator_user_id: int = 20, guild_id: int = 10) -> Schedule:
@@ -39,6 +41,101 @@ class FakeSession:
 
     async def __aexit__(self, exc_type, exc, traceback):
         return None
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_scopes_creator_and_returns_immutable_projection(monkeypatch) -> None:
+    public_id = uuid.uuid7()
+    repository = AsyncMock()
+    repository.autocomplete_schedules.return_value = [
+        ScheduleAutocompleteRow(
+            public_id,
+            30,
+            20,
+            ScheduleType.DAILY.value,
+            ScheduleStatus.ACTIVE.value,
+            datetime(2026, 8, 20, 10, 0, tzinfo=UTC),
+        )
+    ]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_queries.ScheduleRepository",
+        lambda unused: repository,
+    )
+
+    result = await ScheduleQueryService(lambda: FakeSession()).autocomplete_schedules(  # type: ignore[arg-type]
+        guild_id=10,
+        requester_user_id=20,
+        administrator=False,
+        operation=ScheduleAutocompleteOperation.PAUSE,
+        current="daily",
+        now=datetime(2026, 8, 18, tzinfo=UTC),
+    )
+
+    assert result[0].public_id == public_id
+    assert result[0].schedule_type is ScheduleType.DAILY
+    repository.autocomplete_schedules.assert_awaited_once_with(
+        guild_id=10,
+        creator_user_id=20,
+        operation="pause",
+        now=datetime(2026, 8, 18, tzinfo=UTC),
+        limit=25,
+        channel_ids=frozenset(),
+        schedule_type=ScheduleType.DAILY,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        ("有効", {"status": ScheduleStatus.ACTIVE}),
+        ("weekly", {"schedule_type": ScheduleType.WEEKLY}),
+        ("123456789012345678", {"channel_id": 123456789012345678}),
+        ("019", {"uuid_prefix": "019"}),
+    ],
+)
+async def test_autocomplete_accepts_only_fixed_searches(monkeypatch, current, expected) -> None:
+    repository = AsyncMock()
+    repository.autocomplete_schedules.return_value = []
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_queries.ScheduleRepository",
+        lambda unused: repository,
+    )
+    await ScheduleQueryService(lambda: FakeSession()).autocomplete_schedules(  # type: ignore[arg-type]
+        guild_id=10,
+        requester_user_id=20,
+        administrator=True,
+        operation=ScheduleAutocompleteOperation.SHOW,
+        current=current,
+        now=datetime(2026, 8, 18, tzinfo=UTC),
+    )
+    assert repository.autocomplete_schedules.await_args.kwargs == {
+        "guild_id": 10,
+        "creator_user_id": None,
+        "operation": "show",
+        "now": datetime(2026, 8, 18, tzinfo=UTC),
+        "limit": 25,
+        "channel_ids": frozenset(),
+        **expected,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current", ["本文検索", "019-", "x" * 101, "０１２３", "daily\n", "daily\x00", "daily\u200b"]
+)
+async def test_autocomplete_invalid_search_returns_empty_without_opening_session(current) -> None:
+    factory = MagicMock()
+    result = await ScheduleQueryService(factory).autocomplete_schedules(
+        guild_id=10,
+        requester_user_id=20,
+        administrator=False,
+        operation=ScheduleAutocompleteOperation.SHOW,
+        current=current,
+        now=datetime(2026, 8, 18, tzinfo=UTC),
+    )
+    assert result == ()
+    factory.assert_not_called()
 
 
 @pytest.mark.asyncio

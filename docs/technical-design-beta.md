@@ -962,6 +962,16 @@ services:
 
 ## 23. Phase 2への拡張方針
 
+### 23.0 予約ID Autocomplete
+
+`ScheduleQueryService.autocomplete_schedules`は操作種別、検証済み入力、Bot層が解決したchannel ID集合を受け、短時間のSessionで最大25件の不変DTOを返す。Repositoryはguild、creator、Schedule状態を必須条件とし、UUID、種別、状態、数値channel ID、channel ID集合をOR条件で重複なく統合する。操作系では相関subqueryによりprocessing run、claimed/sending attempt、current run不整合を保守的に除外する。`SELECT FOR UPDATE`、全ScheduleのPython読込、flush、commit、明示rollbackは使用しない。
+
+Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作種別を渡す。`Phase1CommandTree.interaction_check`はautocomplete認可失敗時だけ通常メッセージを送らず、空のautocomplete結果を一度返す。callbackは既存`is_authorized_interaction`を再利用して再確認し、DB・表示例外を固定イベント名へ変換して空候補を返す。
+
+候補DTOはpublic UUID、channel ID、creator ID、種別、状態、表示日時だけを持つ。Bot層は前後空白と先頭`#`1個を除去してcasefoldし、設定guildのキャッシュ済みTextChannel一覧から完全・前方・部分一致するIDを解決する。実行者の`view_channel`権限を確認し、別guildと非TextChannelを除外する。NFKC、曖昧検索、REST `fetch_channel`は使わず、危険文字や長すぎる入力は空候補とする。Choice生成はSession終了後に`guild.get_channel`だけで表示名を再解決し、本文、内部DB ID、Discord message ID、worker ID、例外情報はApplication DTOとChoiceへ渡さない。
+
+検索は固定語彙、17～20桁のchannel ID、canonical UUID形式の前方一致に限定する。完全UUIDはUUIDv7を検証する。日時、channel名、本文、曖昧・自然言語検索は行わない。
+
 ### 23.1 AI文章作成
 
 AIプロバイダーを `infrastructure/ai/` に置き、アプリケーション層の文章生成ユースケースからインターフェース越しに呼ぶ。Discordコマンドや予約RepositoryからAI SDKを直接呼ばない。生成結果は利用者が確認してから予約本文へ反映する。

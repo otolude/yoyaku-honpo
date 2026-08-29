@@ -54,6 +54,7 @@ def interaction(
     value.response = MagicMock(spec=discord.InteractionResponse)
     value.response.is_done.return_value = False
     value.response.send_message = AsyncMock()
+    value.response.autocomplete = AsyncMock()
     value.followup = MagicMock(spec=discord.Webhook)
     value.followup.send = AsyncMock()
     value.extras = {}
@@ -181,6 +182,19 @@ async def test_tree_denies_unauthorized_user_with_ephemeral_response() -> None:
     assert value.response.send_message.await_args.kwargs["allowed_mentions"].to_dict() == {
         "parse": []
     }
+
+
+@pytest.mark.asyncio
+async def test_tree_denies_autocomplete_with_only_empty_choices() -> None:
+    tree, _ = tree_with_client()
+    value = interaction(role_ids=[])
+    value.type = discord.InteractionType.autocomplete
+
+    assert not await tree.interaction_check(value)
+
+    value.response.autocomplete.assert_awaited_once_with([])
+    value.response.send_message.assert_not_awaited()
+    value.followup.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

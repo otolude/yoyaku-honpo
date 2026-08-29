@@ -17,7 +17,10 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ResumedSchedule,
     ResumeMode,
 )
-from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
+from discord_ai_reminder_bot.application.schedule_queries import (
+    ScheduleAutocompleteView,
+    ScheduleView,
+)
 from discord_ai_reminder_bot.bot.post_presenter import (
     EMBED_FIELD_LIMIT,
     EMBED_FIELD_NAME_LIMIT,
@@ -32,6 +35,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     edited_schedule_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
+    schedule_autocomplete_choice,
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
@@ -68,6 +72,42 @@ def all_text(embed) -> str:
         [embed.title or "", embed.description or ""]
         + [f"{field.name}\n{field.value}" for field in embed.fields]
     )
+
+
+def test_autocomplete_choice_is_bounded_safe_and_omits_paused_datetime() -> None:
+    item = ScheduleAutocompleteView(
+        public_id=uuid.uuid7(),
+        channel_id=123456789012345678,
+        creator_user_id=300,
+        schedule_type=ScheduleType.DAILY,
+        status=ScheduleStatus.PAUSED,
+        display_at=None,
+    )
+    unsafe = "長い😀e\u0301\n@everyone <@123456789012345678> **見出し**\u200b" * 8
+
+    choice = schedule_autocomplete_choice(item, channel_name=unsafe)
+
+    assert 1 <= len(choice.name) <= 100
+    assert choice.value == str(item.public_id)
+    assert "@everyone" not in choice.name
+    assert "<@" not in choice.name
+    assert "\n" not in choice.name and "\u200b" not in choice.name
+    assert "8/20" not in choice.name
+    assert choice.name.endswith(str(item.public_id)[-6:])
+
+
+def test_autocomplete_choice_uses_safe_channel_id_fallback() -> None:
+    item = ScheduleAutocompleteView(
+        public_id=uuid.uuid7(),
+        channel_id=123456789012345678,
+        creator_user_id=300,
+        schedule_type=ScheduleType.ONCE,
+        status=ScheduleStatus.ACTIVE,
+        display_at=NOW,
+    )
+    choice = schedule_autocomplete_choice(item, channel_name="\n\u200b")
+    assert "#ID 12345678" in choice.name
+    assert "8/20 19:30" in choice.name
 
 
 @pytest.mark.parametrize("held_run_at", [None, NOW])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,10 @@ from discord_ai_reminder_bot.application.schedule_deletion import (
 )
 from discord_ai_reminder_bot.application.schedule_editing import EditedSchedule
 from discord_ai_reminder_bot.application.schedule_pause import PausedSchedule, ResumedSchedule
-from discord_ai_reminder_bot.application.schedule_queries import ScheduleView
+from discord_ai_reminder_bot.application.schedule_queries import (
+    ScheduleAutocompleteView,
+    ScheduleView,
+)
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.schedule_creation import ParsedOnceSchedule
 from discord_ai_reminder_bot.domain.schedule_deletion import MISSING_DELETE_REASON
@@ -66,6 +70,7 @@ STATUS_COLOURS = {
 WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
 SELECT_LABEL_LIMIT = 100
 SELECT_VALUE_LIMIT = 100
+AUTOCOMPLETE_NAME_LIMIT = 100
 LIST_OPERATION_GUIDANCE = "操作可能時間：最後の操作から15分"
 LIST_EXPIRED_GUIDANCE = "操作期限が切れました。最新の一覧は /post list を再実行してください。"
 
@@ -398,6 +403,58 @@ def schedule_select_option(schedule: ScheduleView, *, channel_name: str) -> disc
     if not label or len(label) > SELECT_LABEL_LIMIT or len(value) > SELECT_VALUE_LIMIT:
         raise ValueError("select option exceeds Discord limits")
     return discord.SelectOption(label=label, value=value)
+
+
+def schedule_autocomplete_choice(
+    schedule: ScheduleAutocompleteView, *, channel_name: str
+) -> discord.app_commands.Choice[str]:
+    """Build a bounded choice without body text or internal identifiers."""
+    safe_channel = _safe_autocomplete_channel(channel_name, schedule.channel_id)
+    parts = [
+        f"{STATUS_ICONS[schedule.status]} {STATUS_LABELS[schedule.status]}",
+        TYPE_LABELS[schedule.schedule_type],
+    ]
+    if schedule.display_at is not None:
+        if schedule.display_at.tzinfo is None or schedule.display_at.utcoffset() is None:
+            raise ValueError("autocomplete datetime must be timezone-aware")
+        parts.append(schedule.display_at.astimezone(_TOKYO).strftime("%-m/%-d %H:%M"))
+    identifier = f"ID …{str(schedule.public_id)[-6:]}"
+    fixed_length = len("｜".join([*parts, "", identifier]))
+    channel_budget = max(1, AUTOCOMPLETE_NAME_LIMIT - fixed_length)
+    safe_channel = _truncate_plain_text(safe_channel, channel_budget)
+    name = "｜".join([*parts, safe_channel, identifier])
+    value = str(schedule.public_id)
+    if not name or len(name) > AUTOCOMPLETE_NAME_LIMIT or len(value) > SELECT_VALUE_LIMIT:
+        raise ValueError("autocomplete choice exceeds Discord limits")
+    return discord.app_commands.Choice(name=name, value=value)
+
+
+def _safe_autocomplete_channel(channel_name: str, channel_id: int) -> str:
+    normalized = unicodedata.normalize("NFC", channel_name)
+    normalized = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+    )
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        normalized = f"ID {str(channel_id)[-8:]}"
+    normalized = re.sub(
+        r"@(everyone|here|[!&]?[0-9]{17,20})",
+        r"＠\1",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"<(?=[@#])", "‹", normalized)
+    return f"#{escape_user_text(normalized)}"
+
+
+def _truncate_plain_text(value: str, maximum: int) -> str:
+    if len(value) <= maximum:
+        return value
+    if maximum == 1:
+        return "…"
+    return value[: maximum - 1].rstrip("\\") + "…"
 
 
 def _select_timing(schedule: ScheduleView) -> str:

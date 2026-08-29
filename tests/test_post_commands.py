@@ -26,7 +26,11 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ResumePreview,
     ScheduleStateChangeUnavailable,
 )
-from discord_ai_reminder_bot.application.schedule_queries import SchedulePage, ScheduleView
+from discord_ai_reminder_bot.application.schedule_queries import (
+    ScheduleAutocompleteView,
+    SchedulePage,
+    ScheduleView,
+)
 from discord_ai_reminder_bot.bot.post_presenter import (
     LIST_EXPIRED_GUIDANCE,
     LIST_OPERATION_GUIDANCE,
@@ -80,6 +84,7 @@ def interaction(*, administrator: bool = False, done: bool = False) -> MagicMock
     value.edit_original_response = AsyncMock()
     value.response.defer = AsyncMock()
     value.response.edit_message = AsyncMock()
+    value.response.autocomplete = AsyncMock()
     value.extras = {}
     return value
 
@@ -115,6 +120,142 @@ def commands(queries: AsyncMock, *, session: MagicMock | None = None) -> PostCom
         allowed_role_ids=(ROLE_ID,),
         logger=logging.getLogger("test.posts"),
     )
+
+
+def autocomplete_view(*, status=ScheduleStatus.ACTIVE, schedule_type=ScheduleType.DAILY):
+    return ScheduleAutocompleteView(
+        public_id=uuid.uuid7(),
+        channel_id=400,
+        creator_user_id=USER_ID,
+        schedule_type=schedule_type,
+        status=status,
+        display_at=None if status is ScheduleStatus.PAUSED else NOW,
+    )
+
+
+def test_all_public_id_commands_register_autocomplete() -> None:
+    for command in (
+        PostCommands.show_command,
+        PostCommands.edit_command,
+        PostCommands.delete_command,
+        PostCommands.pause_command,
+        PostCommands.resume_command,
+    ):
+        parameter = command.get_parameter("public_id")
+        assert parameter is not None and parameter.autocomplete is not None
+        assert parameter.required is True
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_returns_full_uuid_and_admin_scope() -> None:
+    queries = AsyncMock()
+    item = autocomplete_view()
+    queries.autocomplete_schedules.return_value = (item,)
+    group = commands(queries)
+    value = interaction(administrator=True)
+    value.guild.get_channel.return_value = MagicMock(name="channel", name_attr="unused")
+    value.guild.get_channel.return_value.name = "一般"
+
+    choices = await group.show_public_id_autocomplete(value, "")
+
+    assert choices[0].value == str(item.public_id)
+    assert "#一般" in choices[0].name
+    assert len(choices[0].name) <= 100
+    assert "本文" not in choices[0].name
+    assert queries.autocomplete_schedules.await_args.kwargs["administrator"] is True
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_failure_is_empty_and_logs_only_fixed_event(caplog) -> None:
+    queries = AsyncMock()
+    secret = "sensitive-exception-detail-that-must-not-be-logged"
+    queries.autocomplete_schedules.side_effect = RuntimeError(secret)
+    group = commands(queries)
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        choices = await group.edit_public_id_autocomplete(interaction(), "")
+
+    assert choices == []
+    assert "schedule_autocomplete_failed" in caplog.text
+    assert secret not in caplog.text
+
+
+def cached_channel(
+    value: MagicMock,
+    *,
+    channel_id: int,
+    name: str,
+    visible: bool = True,
+    guild_id: int = GUILD_ID,
+) -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = channel_id
+    channel.name = name
+    channel.guild = MagicMock(spec=discord.Guild)
+    channel.guild.id = guild_id
+    permissions = MagicMock(spec=discord.Permissions)
+    permissions.view_channel = visible
+    channel.permissions_for.return_value = permissions
+    return channel
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        ("tester-a", frozenset({401})),
+        ("tester", frozenset({401, 402})),
+        ("ster-a", frozenset({401})),
+        ("#tester-a", frozenset({401})),
+        ("TESTER-A", frozenset({401})),
+        ("お知らせ", frozenset({403, 404})),
+        ("#一般", frozenset({405})),
+    ],
+)
+async def test_autocomplete_resolves_visible_cached_text_channel_names(current, expected) -> None:
+    queries = AsyncMock()
+    queries.autocomplete_schedules.return_value = ()
+    group = commands(queries)
+    value = interaction()
+    category = MagicMock(spec=discord.CategoryChannel)
+    category.name = "tester-category"
+    value.guild.text_channels = [
+        cached_channel(value, channel_id=401, name="tester-a"),
+        cached_channel(value, channel_id=402, name="tester-b"),
+        cached_channel(value, channel_id=403, name="運営お知らせ"),
+        cached_channel(value, channel_id=404, name="お知らせ"),
+        cached_channel(value, channel_id=405, name="一般"),
+        cached_channel(value, channel_id=406, name="tester-secret", visible=False),
+        cached_channel(value, channel_id=407, name="tester-other", guild_id=GUILD_ID + 1),
+        category,
+    ]
+
+    await group.show_public_id_autocomplete(value, current)
+
+    assert queries.autocomplete_schedules.await_args.kwargs["channel_ids"] == expected
+    category.permissions_for.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current", ["x\n", "x\x00", "x\u200b", "x" * 101])
+async def test_autocomplete_rejects_unsafe_channel_search_without_query(current) -> None:
+    queries = AsyncMock()
+    group = commands(queries)
+    assert await group.show_public_id_autocomplete(interaction(), current) == []
+    queries.autocomplete_schedules.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_uses_cache_only_and_cache_failure_is_safe() -> None:
+    queries = AsyncMock()
+    group = commands(queries)
+    value = interaction()
+    type(value.guild).text_channels = property(lambda unused: (_ for _ in ()).throw(RuntimeError()))
+    value.guild.fetch_channel = AsyncMock()
+
+    assert await group.show_public_id_autocomplete(value, "tester") == []
+    value.guild.fetch_channel.assert_not_awaited()
+    queries.autocomplete_schedules.assert_not_awaited()
 
 
 def text_channel(value: MagicMock, *, guild_id: int = GUILD_ID) -> MagicMock:

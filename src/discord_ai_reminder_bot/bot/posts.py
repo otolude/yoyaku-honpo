@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -37,6 +38,7 @@ from discord_ai_reminder_bot.application.schedule_pause import (
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
+    ScheduleAutocompleteOperation,
     SchedulePage,
     ScheduleQueryService,
     parse_public_id,
@@ -58,6 +60,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     once_schedule_confirmation_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
+    schedule_autocomplete_choice,
     schedule_deletion_preview_embed,
     schedule_detail_embed,
     schedule_list_embed,
@@ -750,6 +753,14 @@ class PostCommands(app_commands.Group):
             return
         await self._respond_embed(interaction, lambda: schedule_detail_embed(schedule))
 
+    @show_command.autocomplete("public_id")
+    async def show_public_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._public_id_autocomplete(
+            interaction, current=current, operation=ScheduleAutocompleteOperation.SHOW
+        )
+
     @app_commands.command(name="edit", description="予約内容を編集します")
     @app_commands.describe(
         public_id="編集する予約ID",
@@ -884,15 +895,39 @@ class PostCommands(app_commands.Group):
             return
         await self._respond_embed(interaction, lambda: edited_schedule_embed(edited))
 
+    @edit_command.autocomplete("public_id")
+    async def edit_public_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._public_id_autocomplete(
+            interaction, current=current, operation=ScheduleAutocompleteOperation.EDIT
+        )
+
     @app_commands.command(name="pause", description="定期投稿を一時停止します")
     @app_commands.describe(public_id="予約IDを指定します")
     async def pause_command(self, interaction: discord.Interaction, public_id: str) -> None:
         await self._change_schedule_state(interaction, public_id=public_id, resume=False)
 
+    @pause_command.autocomplete("public_id")
+    async def pause_public_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._public_id_autocomplete(
+            interaction, current=current, operation=ScheduleAutocompleteOperation.PAUSE
+        )
+
     @app_commands.command(name="resume", description="一時停止中の定期投稿を再開します")
     @app_commands.describe(public_id="予約IDを指定します")
     async def resume_command(self, interaction: discord.Interaction, public_id: str) -> None:
         await self._change_schedule_state(interaction, public_id=public_id, resume=True)
+
+    @resume_command.autocomplete("public_id")
+    async def resume_public_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._public_id_autocomplete(
+            interaction, current=current, operation=ScheduleAutocompleteOperation.RESUME
+        )
 
     async def _change_schedule_state(
         self, interaction: discord.Interaction, *, public_id: str, resume: bool
@@ -1161,6 +1196,14 @@ class PostCommands(app_commands.Group):
         )
         if await respond_ephemeral(interaction, embed=embed, view=view, logger=self._logger):
             self._delete_views.add(view)
+
+    @delete_command.autocomplete("public_id")
+    async def delete_public_id_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._public_id_autocomplete(
+            interaction, current=current, operation=ScheduleAutocompleteOperation.DELETE
+        )
 
     async def _confirm_deletion(
         self, view: ScheduleDeletionConfirmView, interaction: discord.Interaction
@@ -1602,6 +1645,77 @@ class PostCommands(app_commands.Group):
         if actor is None:
             await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
         return actor
+
+    async def _public_id_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        *,
+        current: str,
+        operation: ScheduleAutocompleteOperation,
+    ) -> list[app_commands.Choice[str]]:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self._configured_guild_id,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        if actor is None:
+            return []
+        try:
+            channel_ids = self._autocomplete_channel_ids(interaction, current)
+            if channel_ids is None:
+                return []
+            schedules = await self._queries.autocomplete_schedules(
+                guild_id=self._configured_guild_id,
+                requester_user_id=actor.user_id,
+                administrator=actor.administrator,
+                operation=operation,
+                current=current,
+                channel_ids=channel_ids,
+                now=self._clock.now(),
+            )
+            return [
+                schedule_autocomplete_choice(
+                    schedule,
+                    channel_name=self._autocomplete_channel_name(interaction, schedule.channel_id),
+                )
+                for schedule in schedules
+            ]
+        except Exception:  # noqa: BLE001 - DB and presentation details remain private
+            self._logger.error("schedule_autocomplete_failed")
+            return []
+
+    @staticmethod
+    def _autocomplete_channel_ids(
+        interaction: discord.Interaction, current: str
+    ) -> frozenset[int] | None:
+        if not isinstance(current, str) or len(current) > 100:
+            return None
+        if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in current):
+            return None
+        search = current.strip().removeprefix("#")
+        search = search.strip().casefold()
+        if not search:
+            return frozenset()
+        guild = interaction.guild
+        member = interaction.user
+        if guild is None or not isinstance(member, discord.Member):
+            return frozenset()
+        matches: set[int] = set()
+        for channel in guild.text_channels:
+            if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild.id:
+                continue
+            if not channel.permissions_for(member).view_channel:
+                continue
+            if search in channel.name.casefold():
+                matches.add(channel.id)
+        return frozenset(matches)
+
+    @staticmethod
+    def _autocomplete_channel_name(interaction: discord.Interaction, channel_id: int) -> str:
+        guild = interaction.guild
+        channel = guild.get_channel(channel_id) if guild is not None else None
+        name = getattr(channel, "name", None)
+        return name if isinstance(name, str) else ""
 
     async def _create_recurring_command(
         self,

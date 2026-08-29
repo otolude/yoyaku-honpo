@@ -346,6 +346,12 @@ docker compose --profile test rm -f postgres_test
 
 `TEST_DATABASE_URL`はコマンド単位で指定する。開発用`postgres`、`postgres_data`、本番DBへ触れない。プロジェクト全体やVolumeをまとめて削除するCompose操作を使わない。
 
+### 18.1 予約ID Autocomplete確認
+
+`/post show|edit|delete|pause|resume`の予約ID欄では、投稿先チャンネル名を基本の検索方法とする。`tester-a`、`tester`、`#tester-a`、`お知らせ`のように入力でき、完全一致・前方一致・部分一致（英字は大文字小文字を区別しない）で、利用者が閲覧・操作できる予約だけが最大25件表示される。UUID、種別、状態、数値channel ID完全一致も利用でき、候補が出ない場合も完全なUUIDv7を直接入力できる。候補取得は読み取り専用で、channel名は設定guildのDiscordキャッシュだけを使用する。キャッシュにないchannelは名前検索できず、候補表示では短縮channel IDへ安全にフォールバックする。REST取得は行わない。
+
+権限不足、DM、設定外guild、DB障害時は通常のephemeralエラーではなく空候補になる。候補取得後に状態が変化した場合は、コマンド実行時の既存の安全な拒否を確認する。実Discord受入項目は[Phase 2手動受入](manual-acceptance-phase2.md)に記録する。
+
 ## 19. 秘密情報の扱い
 
 - `.env`はGit管理対象外とし、内容を表示しない。

@@ -389,6 +389,20 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 利用者向けのエラー表示には内部の例外全文を載せず、必要な対応を日本語で示す。
 - データベースのバックアップはアクセスを制限し、復元できることを確認する。
 
+## 12.1 Phase 2: 予約ID Autocomplete
+
+- `/post show`、`edit`、`delete`、`pause`、`resume`の必須`public_id`へ候補を表示する。
+- 候補値は完全なcanonical UUIDv7とし、候補を使わないUUIDv7直接入力も維持する。
+- 管理者には設定guild内の全作成者、許可ロール利用者には本人所有の候補だけを表示する。
+- DM、設定外guild、不完全なInteraction、認可失敗、DB・表示処理失敗では空候補とする。
+- 候補は最大25件、`next_run_at ASC NULLS LAST, id ASC`の安定順とする。
+- 候補名は状態、種別、JST日時、キャッシュ済みchannel名、UUID末尾6文字だけで構成し、本文や内部IDを含めない。
+- 検索は投稿先チャンネル名を基本とし、前後空白と先頭の`#`1個を検索時だけ除き、casefoldした完全一致・前方一致・部分一致を許可する。日本語を含むUnicodeへ無条件NFKCを適用せず、曖昧検索・編集距離・類義語・本文検索は行わない。UUID前方・完全一致、固定された日英の種別・状態名、数値channel ID完全一致も維持し、同じ入力に複数条件が一致すればORで重複なく統合する。
+- チャンネル名はDBへ保存・送信せず、設定guildのキャッシュ済みTextChannelだけからBot層で安全なchannel ID集合へ解決する。別guild、Thread、DM、Category、Voice、実行者が閲覧不能なchannelを除き、REST取得は行わない。空文字・`#`だけは名前検索せず、制御文字・改行・ゼロ幅文字・100文字超は空候補とする。
+- showは閲覧可能な全状態（deletedを含む）、他の操作は既存の状態・run・attempt規則で明確に操作不能な予約を除外する。
+- 候補は参考情報であり、実行時の認可、状態、version、run、attempt、row lockによる再検証を省略しない。
+- Autocompleteは読み取り専用とし、Discord REST追加取得、DB更新、モデル・Migration・Intent・Bot権限追加を行わない。
+
 ## 13. β版の完成条件
 
 次の条件をすべて満たしたとき、Phase 1のβ版を完成とする。

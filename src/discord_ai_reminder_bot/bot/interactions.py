@@ -93,6 +93,9 @@ class Phase1CommandTree(app_commands.CommandTree[commands.Bot]):
         settings = getattr(client, "settings", None)
         logger = getattr(client, "logger", logging.getLogger(__name__))
         if settings is None:
+            if interaction.type is discord.InteractionType.autocomplete:
+                await _respond_empty_autocomplete(interaction, logger=logger)
+                return False
             await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=logger)
             interaction.extras[_AUTHORIZATION_RESPONSE_KEY] = True
             return False
@@ -103,6 +106,9 @@ class Phase1CommandTree(app_commands.CommandTree[commands.Bot]):
         )
         if authorized:
             return True
+        if interaction.type is discord.InteractionType.autocomplete:
+            await _respond_empty_autocomplete(interaction, logger=logger)
+            return False
         await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=logger)
         interaction.extras[_AUTHORIZATION_RESPONSE_KEY] = True
         return False
@@ -115,3 +121,14 @@ class Phase1CommandTree(app_commands.CommandTree[commands.Bot]):
         logger = getattr(self.client, "logger", logging.getLogger(__name__))
         logger.error("application_command_failed")
         await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=logger)
+
+
+async def _respond_empty_autocomplete(
+    interaction: discord.Interaction, *, logger: logging.Logger
+) -> None:
+    """Fail closed using only the response type valid for autocomplete."""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.autocomplete([])
+    except Exception:  # noqa: BLE001 - Discord failures can contain response bodies
+        logger.error("autocomplete_empty_response_failed")

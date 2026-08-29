@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -16,6 +19,26 @@ from discord_ai_reminder_bot.infrastructure.database.repositories import Schedul
 SCHEDULES_PER_PAGE = 10
 # Discord integer command options are bounded to JavaScript's exact integer range.
 MAX_PAGE_NUMBER = 9_007_199_254_740_991
+MAX_AUTOCOMPLETE_CHOICES = 25
+MAX_AUTOCOMPLETE_INPUT = 100
+
+
+class ScheduleAutocompleteOperation(StrEnum):
+    SHOW = "show"
+    EDIT = "edit"
+    DELETE = "delete"
+    PAUSE = "pause"
+    RESUME = "resume"
+
+
+@dataclass(frozen=True)
+class ScheduleAutocompleteView:
+    public_id: uuid.UUID
+    channel_id: int
+    creator_user_id: int
+    schedule_type: ScheduleType
+    status: ScheduleStatus
+    display_at: datetime | None
 
 
 class InvalidScheduleQueryError(ValueError):
@@ -63,6 +86,56 @@ class ScheduleQueryService:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    async def autocomplete_schedules(
+        self,
+        *,
+        guild_id: int,
+        requester_user_id: int,
+        administrator: bool,
+        operation: ScheduleAutocompleteOperation,
+        current: str,
+        channel_ids: frozenset[int] = frozenset(),
+        now: datetime,
+        limit: int = MAX_AUTOCOMPLETE_CHOICES,
+    ) -> tuple[ScheduleAutocompleteView, ...]:
+        _validate_query_ids(guild_id=guild_id, requester_user_id=requester_user_id)
+        if not isinstance(operation, ScheduleAutocompleteOperation):
+            raise InvalidScheduleQueryError("invalid autocomplete operation")
+        if isinstance(limit, bool) or not 1 <= limit <= MAX_AUTOCOMPLETE_CHOICES:
+            raise InvalidScheduleQueryError("invalid autocomplete limit")
+        if not isinstance(channel_ids, frozenset) or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in channel_ids
+        ):
+            raise InvalidScheduleQueryError("invalid autocomplete channel boundary")
+        search = _parse_autocomplete_input(current)
+        if search is None:
+            if not channel_ids:
+                return ()
+            search = {}
+        async with self._session_factory() as session:
+            rows = await ScheduleRepository(session).autocomplete_schedules(
+                guild_id=guild_id,
+                creator_user_id=None if administrator else requester_user_id,
+                operation=operation.value,
+                now=now,
+                limit=limit,
+                channel_ids=channel_ids,
+                **search,
+            )
+            views = tuple(
+                ScheduleAutocompleteView(
+                    public_id=row.public_id,
+                    channel_id=row.channel_id,
+                    creator_user_id=row.creator_user_id,
+                    schedule_type=ScheduleType(row.schedule_type),
+                    status=ScheduleStatus(row.status),
+                    display_at=row.display_at,
+                )
+                for row in rows
+            )
+        return views
 
     async def list_schedules(
         self,
@@ -171,6 +244,67 @@ def _validate_query_ids(*, guild_id: int, requester_user_id: int) -> None:
     for value in (guild_id, requester_user_id):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise InvalidScheduleQueryError("invalid query boundary")
+
+
+_TYPE_SEARCHES = {
+    "単発": ScheduleType.ONCE,
+    "毎日": ScheduleType.DAILY,
+    "毎週": ScheduleType.WEEKLY,
+    **{item.value: item for item in ScheduleType},
+}
+_STATUS_SEARCHES = {
+    "下書き": ScheduleStatus.DRAFT,
+    "有効": ScheduleStatus.ACTIVE,
+    "一時停止中": ScheduleStatus.PAUSED,
+    "失敗": ScheduleStatus.FAILED,
+    "完了": ScheduleStatus.COMPLETED,
+    "終了済み": ScheduleStatus.ENDED,
+    "削除済み": ScheduleStatus.DELETED,
+    **{item.value: item for item in ScheduleStatus},
+}
+_UUID_PREFIX = re.compile(r"[0-9a-f-]{1,36}")
+
+
+def _parse_autocomplete_input(current: str) -> dict[str, object] | None:
+    if not isinstance(current, str) or len(current) > MAX_AUTOCOMPLETE_INPUT:
+        return None
+    if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in current):
+        return None
+    normalized = current.strip().casefold()
+    if not normalized:
+        return {}
+    if schedule_type := _TYPE_SEARCHES.get(normalized):
+        return {"schedule_type": schedule_type}
+    if status := _STATUS_SEARCHES.get(normalized):
+        return {"status": status}
+    if normalized.isascii() and normalized.isdecimal() and 17 <= len(normalized) <= 20:
+        channel_id = int(normalized)
+        return {"channel_id": channel_id} if 0 < channel_id <= 9_223_372_036_854_775_807 else None
+    if _UUID_PREFIX.fullmatch(normalized) and _is_canonical_uuid_prefix(normalized):
+        if len(normalized) == 36:
+            try:
+                parse_public_id(normalized)
+            except InvalidScheduleQueryError:
+                return None
+        return {"uuid_prefix": normalized}
+    return None
+
+
+def _is_canonical_uuid_prefix(value: str) -> bool:
+    template = "xxxxxxxx-xxxx-7xxx-vxxx-xxxxxxxxxxxx"
+    for index, character in enumerate(value):
+        if template[index] == "-":
+            if character != "-":
+                return False
+        elif template[index] == "7":
+            if character != "7":
+                return False
+        elif template[index] == "v":
+            if character not in "89ab":
+                return False
+        elif character == "-":
+            return False
+    return True
 
 
 def _to_view(schedule: Schedule) -> ScheduleView:

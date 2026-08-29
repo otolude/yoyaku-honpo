@@ -7,10 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
+    ScheduleAutocompleteOperation,
     ScheduleQueryService,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
-from discord_ai_reminder_bot.infrastructure.database.models import Schedule
+from discord_ai_reminder_bot.domain.enums import (
+    DeliveryAttemptStatus,
+    RunStatus,
+    ScheduleStatus,
+    ScheduleType,
+)
+from discord_ai_reminder_bot.infrastructure.database.models import (
+    DeliveryAttempt,
+    Schedule,
+    ScheduleRun,
+)
 
 pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
@@ -55,6 +65,107 @@ def service_for(db_session: AsyncSession) -> ScheduleQueryService:
         join_transaction_mode="create_savepoint",
     )
     return ScheduleQueryService(factory)
+
+
+def autocomplete_schedule(
+    *,
+    status: ScheduleStatus = ScheduleStatus.ACTIVE,
+    schedule_type: ScheduleType = ScheduleType.DAILY,
+    creator_user_id: int = CREATOR_ID,
+    guild_id: int = GUILD_ID,
+    channel_id: int = 8_300,
+    next_run_at: datetime | None = NOW + timedelta(hours=2),
+) -> Schedule:
+    terminal = status in {
+        ScheduleStatus.COMPLETED,
+        ScheduleStatus.ENDED,
+        ScheduleStatus.DELETED,
+    }
+    if status in {
+        ScheduleStatus.PAUSED,
+        ScheduleStatus.FAILED,
+        ScheduleStatus.COMPLETED,
+        ScheduleStatus.ENDED,
+        ScheduleStatus.DELETED,
+    }:
+        next_run_at = None
+    return Schedule(
+        public_id=uuid.uuid7(),
+        guild_id=guild_id,
+        channel_id=channel_id,
+        creator_user_id=creator_user_id,
+        schedule_type=schedule_type.value,
+        status=status.value,
+        content=None if status is ScheduleStatus.DRAFT else "never returned body",
+        next_run_at=next_run_at,
+        local_time=time(12, 0) if schedule_type is not ScheduleType.ONCE else None,
+        weekday=0 if schedule_type is ScheduleType.WEEKLY else None,
+        version=1,
+        deleted_at=NOW if status is ScheduleStatus.DELETED else None,
+        terminal_at=NOW if terminal else None,
+    )
+
+
+async def add_current_run(
+    session: AsyncSession,
+    schedule: Schedule,
+    *,
+    status: RunStatus = RunStatus.PENDING,
+    attempt_status: DeliveryAttemptStatus | None = None,
+) -> ScheduleRun:
+    await session.flush()
+    scheduled_for = schedule.next_run_at or NOW + timedelta(hours=1)
+    processing = status is RunStatus.PROCESSING
+    terminal = status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.SKIPPED}
+    worker_id = uuid.uuid4()
+    run = ScheduleRun(
+        schedule_id=schedule.id,
+        scheduled_for=scheduled_for,
+        status=status.value,
+        attempt_count=1 if processing or attempt_status else 0,
+        next_attempt_at=scheduled_for if status is RunStatus.PENDING else None,
+        claimed_by=worker_id if processing else None,
+        claimed_at=NOW if processing else None,
+        lease_expires_at=NOW + timedelta(minutes=5) if processing else None,
+        result_code="test_terminal" if terminal else None,
+        discord_message_id=1 if status is RunStatus.SUCCEEDED else None,
+        finished_at=NOW if terminal else None,
+        started_at=NOW if processing or terminal else None,
+    )
+    session.add(run)
+    await session.flush()
+    if attempt_status is not None:
+        session.add(
+            DeliveryAttempt(
+                schedule_run_id=run.id,
+                attempt_number=1,
+                status=attempt_status.value,
+                claimed_by=worker_id,
+                claimed_at=NOW,
+                send_started_at=(NOW if attempt_status is DeliveryAttemptStatus.SENDING else None),
+            )
+        )
+        await session.flush()
+    return run
+
+
+async def autocomplete(
+    session: AsyncSession,
+    operation: ScheduleAutocompleteOperation,
+    *,
+    administrator: bool = False,
+    current: str = "",
+    channel_ids: frozenset[int] = frozenset(),
+):
+    return await service_for(session).autocomplete_schedules(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=administrator,
+        operation=operation,
+        current=current,
+        channel_ids=channel_ids,
+        now=NOW,
+    )
 
 
 async def test_real_postgres_list_boundaries_order_and_pagination(
@@ -267,3 +378,163 @@ async def test_real_postgres_queries_do_not_modify_rows(db_session: AsyncSession
         after.version,
         after.updated_at,
     ) == snapshot
+
+
+async def test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order(
+    db_session: AsyncSession,
+) -> None:
+    owned = [
+        autocomplete_schedule(next_run_at=NOW + timedelta(minutes=index // 2 + 10))
+        for index in range(27)
+    ]
+    other_owner = autocomplete_schedule(
+        creator_user_id=OTHER_CREATOR_ID, next_run_at=NOW + timedelta(minutes=1)
+    )
+    other_guild = autocomplete_schedule(guild_id=OTHER_GUILD_ID)
+    deleted = autocomplete_schedule(status=ScheduleStatus.DELETED, schedule_type=ScheduleType.ONCE)
+    db_session.add_all([*owned, other_owner, other_guild, deleted])
+    await db_session.flush()
+
+    creator = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW)
+    admin = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW, administrator=True)
+    admin_deleted = await service_for(db_session).autocomplete_schedules(
+        guild_id=GUILD_ID,
+        requester_user_id=CREATOR_ID,
+        administrator=True,
+        operation=ScheduleAutocompleteOperation.SHOW,
+        current="deleted",
+        now=NOW,
+    )
+    expected = sorted(owned, key=lambda item: (item.next_run_at, item.id))[:25]
+
+    assert [item.public_id for item in creator] == [item.public_id for item in expected]
+    assert len(creator) == 25
+    assert other_owner.public_id in {item.public_id for item in admin}
+    assert other_guild.public_id not in {item.public_id for item in admin}
+    assert [item.public_id for item in admin_deleted] == [deleted.public_id]
+    assert all(item.creator_user_id == CREATOR_ID for item in creator)
+
+
+async def test_autocomplete_operation_state_and_run_boundaries(db_session: AsyncSession) -> None:
+    editable = autocomplete_schedule()
+    missing_current = autocomplete_schedule()
+    paused = autocomplete_schedule(status=ScheduleStatus.PAUSED)
+    failed = autocomplete_schedule(status=ScheduleStatus.FAILED, schedule_type=ScheduleType.ONCE)
+    pause_once = autocomplete_schedule(schedule_type=ScheduleType.ONCE)
+    processing = autocomplete_schedule()
+    claimed = autocomplete_schedule()
+    terminal_current = autocomplete_schedule()
+    db_session.add_all(
+        [
+            editable,
+            missing_current,
+            paused,
+            failed,
+            pause_once,
+            processing,
+            claimed,
+            terminal_current,
+        ]
+    )
+    await add_current_run(db_session, editable)
+    await add_current_run(db_session, pause_once)
+    await add_current_run(db_session, processing, status=RunStatus.PROCESSING)
+    await add_current_run(db_session, claimed, attempt_status=DeliveryAttemptStatus.CLAIMED)
+    await add_current_run(db_session, terminal_current, status=RunStatus.FAILED)
+
+    edit_ids = {
+        item.public_id
+        for item in await autocomplete(db_session, ScheduleAutocompleteOperation.EDIT)
+    }
+    delete_ids = {
+        item.public_id
+        for item in await autocomplete(db_session, ScheduleAutocompleteOperation.DELETE)
+    }
+    pause_ids = {
+        item.public_id
+        for item in await autocomplete(db_session, ScheduleAutocompleteOperation.PAUSE)
+    }
+
+    assert editable.public_id in edit_ids
+    assert paused.public_id in edit_ids
+    assert missing_current.public_id not in edit_ids
+    assert processing.public_id not in edit_ids
+    assert claimed.public_id not in edit_ids
+    assert terminal_current.public_id not in edit_ids
+    assert failed.public_id in delete_ids
+    assert editable.public_id in pause_ids
+    assert pause_once.public_id not in pause_ids
+
+
+async def test_autocomplete_resume_requires_supported_pristine_pending_run(
+    db_session: AsyncSession,
+) -> None:
+    no_pending = autocomplete_schedule(status=ScheduleStatus.PAUSED)
+    pristine = autocomplete_schedule(status=ScheduleStatus.PAUSED)
+    multiple = autocomplete_schedule(status=ScheduleStatus.PAUSED)
+    attempted = autocomplete_schedule(status=ScheduleStatus.PAUSED)
+    db_session.add_all([no_pending, pristine, multiple, attempted])
+    await add_current_run(db_session, pristine)
+    await add_current_run(db_session, multiple)
+    await db_session.flush()
+    db_session.add(
+        ScheduleRun(
+            schedule_id=multiple.id,
+            scheduled_for=NOW + timedelta(hours=3),
+            status=RunStatus.PENDING.value,
+            attempt_count=0,
+            next_attempt_at=NOW + timedelta(hours=3),
+        )
+    )
+    await add_current_run(db_session, attempted, attempt_status=DeliveryAttemptStatus.SENDING)
+    await db_session.flush()
+
+    ids = {
+        item.public_id
+        for item in await autocomplete(db_session, ScheduleAutocompleteOperation.RESUME)
+    }
+    assert ids == {no_pending.public_id, pristine.public_id}
+
+
+async def test_autocomplete_fixed_searches_and_read_only_snapshot(db_session: AsyncSession) -> None:
+    daily = autocomplete_schedule(channel_id=123456789012345678)
+    weekly = autocomplete_schedule(schedule_type=ScheduleType.WEEKLY)
+    db_session.add_all([daily, weekly])
+    await add_current_run(db_session, daily)
+    await add_current_run(db_session, weekly)
+    daily_id = daily.id
+    daily_public_id = daily.public_id
+    weekly_public_id = weekly.public_id
+    before = (daily.version, daily.updated_at, daily.content)
+    await db_session.flush()
+
+    by_prefix = await autocomplete(
+        db_session, ScheduleAutocompleteOperation.SHOW, current=str(daily_public_id)[:30]
+    )
+    by_exact = await autocomplete(
+        db_session, ScheduleAutocompleteOperation.SHOW, current=str(daily_public_id)
+    )
+    by_type = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW, current="毎週")
+    by_status = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW, current="active")
+    by_channel = await autocomplete(
+        db_session, ScheduleAutocompleteOperation.SHOW, current="123456789012345678"
+    )
+    by_channel_names = await autocomplete(
+        db_session,
+        ScheduleAutocompleteOperation.SHOW,
+        current="active",
+        channel_ids=frozenset({daily.channel_id, weekly.channel_id}),
+    )
+    db_session.expire_all()
+    reloaded = (
+        await db_session.execute(select(Schedule).where(Schedule.id == daily_id))
+    ).scalar_one()
+
+    assert [item.public_id for item in by_prefix] == [daily_public_id]
+    assert [item.public_id for item in by_exact] == [daily_public_id]
+    assert [item.public_id for item in by_type] == [weekly_public_id]
+    assert {item.public_id for item in by_status} == {daily_public_id, weekly_public_id}
+    assert [item.public_id for item in by_channel] == [daily_public_id]
+    assert {item.public_id for item in by_channel_names} == {daily_public_id, weekly_public_id}
+    assert len(by_channel_names) == 2
+    assert (reloaded.version, reloaded.updated_at, reloaded.content) == before

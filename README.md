@@ -138,6 +138,8 @@ docker compose --profile test rm -f postgres_test
 - `/post pause`: 定期予約の一時停止
 - `/post resume`: 定期予約の再開
 
+`show`、`edit`、`delete`、`pause`、`resume`では予約ID欄に投稿先チャンネル名（例: `tester`、`#一般`、`お知らせ`）を入力すると、権限と操作可能状態に応じた候補を最大25件表示します。完全一致・前方一致・部分一致に対応し、英字の大文字小文字は区別しません。候補値は完全なUUIDv7です。UUID、種別、状態、数値チャンネルIDでも検索でき、候補を選ばず完全な予約IDを直接貼り付けても実行できます。
+
 日時形式、状態遷移、権限、通知、Recoveryの詳細は[Phase 1要件](docs/requirements-beta.md)を参照してください。
 
 ## 機密情報
