@@ -61,8 +61,6 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_schedule_embed,
     deleted_schedule_embed,
     edited_schedule_embed,
-    expired_schedule_detail_embed,
-    expired_schedule_list_embed,
     once_schedule_confirmation_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
@@ -101,6 +99,10 @@ from discord_ai_reminder_bot.domain.schedule_deletion import (
 
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
 INVALID_INPUT_MESSAGE = "入力内容を確認してください。"
+EDIT_REQUEST_REQUIRED_MESSAGE = (
+    "変更する項目を1つ以上指定してください。"
+    "画面を見ながら編集する場合は /post show を使用してください。"
+)
 DETAIL_EDIT_CHANNEL_MESSAGE = (
     "投稿先を確認してください。Botが閲覧・送信できる同じサーバーのテキストチャンネルを"
     "選択してください。"
@@ -306,7 +308,6 @@ class ScheduleEditModal(discord.ui.Modal):
 
     def _release(self) -> None:
         self.closed = True
-        self.detail_view.edit_modal_active = False
         self.commands._edit_modals.discard(self)
         self.stop()
 
@@ -381,7 +382,7 @@ class ScheduleListView(discord.ui.View):
         page: SchedulePage,
         embed: discord.Embed,
     ) -> None:
-        super().__init__(timeout=900.0)
+        super().__init__(timeout=None)
         self.commands = commands
         self.initial_interaction = interaction
         self.actor_user_id = actor_user_id
@@ -438,9 +439,6 @@ class ScheduleListView(discord.ui.View):
             interaction, PERMISSION_DENIED_MESSAGE, logger=self.commands._logger
         )
         return False
-
-    async def on_timeout(self) -> None:
-        await self.commands._expire_list(self)
 
 
 class ScheduleDeletionConfirmView(discord.ui.View):
@@ -690,19 +688,21 @@ class ResumeChoiceView(discord.ui.View):
         label="本日分の時刻を指定", style=discord.ButtonStyle.primary, custom_id="post_resume_time"
     )
     async def time_button(self, interaction: discord.Interaction, unused) -> None:
-        if self.finished:
-            await respond_ephemeral(
-                interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self.commands._logger
-            )
-            return
-        modal = ResumeTimeModal(self)
-        self.commands._resume_modals.add(modal)
-        try:
-            await interaction.response.send_modal(modal)
-        except Exception:  # noqa: BLE001 - Discord details remain private
-            self.commands._resume_modals.discard(modal)
-            modal.stop()
-            self.commands._logger.error("schedule_resume_modal_response_failed")
+        async with self.action_lock:
+            if self.finished or self.closed:
+                await respond_ephemeral(
+                    interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self.commands._logger
+                )
+                return
+            self.commands._retire_resume_modals()
+            modal = ResumeTimeModal(self)
+            self.commands._resume_modals.add(modal)
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:  # noqa: BLE001 - Discord details remain private
+                self.commands._resume_modals.discard(modal)
+                modal.stop()
+                self.commands._logger.error("schedule_resume_modal_response_failed")
 
     @discord.ui.button(
         label="キャンセル", style=discord.ButtonStyle.secondary, custom_id="post_resume_cancel"
@@ -952,7 +952,13 @@ class PostCommands(app_commands.Group):
             self._logger.error("schedule_presentation_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        if await respond_ephemeral(interaction, embed=embed, view=list_view, logger=self._logger):
+        if await respond_ephemeral(
+            interaction,
+            embed=embed,
+            view=list_view,
+            long_lived_view=True,
+            logger=self._logger,
+        ):
             self._list_views.add(list_view)
 
     @app_commands.command(name="show", description="予約の詳細を表示します")
@@ -994,6 +1000,7 @@ class PostCommands(app_commands.Group):
             interaction,
             embed=embed,
             view=detail_view if detail_view.has_components else None,
+            long_lived_view=detail_view.has_components,
             logger=self._logger,
         )
         if sent and detail_view.has_components:
@@ -1007,12 +1014,12 @@ class PostCommands(app_commands.Group):
             interaction, current=current, operation=ScheduleAutocompleteOperation.SHOW
         )
 
-    @app_commands.command(name="edit", description="予約内容を編集します")
+    @app_commands.command(name="edit", description="予約IDを選び、変更項目を直接指定して編集します")
     @app_commands.describe(
-        public_id="編集する予約ID",
+        public_id="直接編集する予約ID（候補から選択）",
         channel="変更後の投稿先",
         scheduled_at="単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
-        local_time="毎日・毎週のみ｜投稿時刻（HH:MM）",
+        local_time="毎日・毎週のみ｜基本投稿時刻を恒久変更（HH:MM）",
         weekday="毎週のみ｜投稿する曜日",
         end_date=END_DATE_DESCRIPTION,
         content="変更後の本文｜本文削除とは併用不可",
@@ -1053,11 +1060,10 @@ class PostCommands(app_commands.Group):
                 clear_end_date,
             )
         )
-        if (
-            not has_request
-            or (content is not None and clear_content)
-            or (end_date is not None and clear_end_date)
-        ):
+        if not has_request:
+            await respond_ephemeral(interaction, EDIT_REQUEST_REQUIRED_MESSAGE, logger=self._logger)
+            return
+        if (content is not None and clear_content) or (end_date is not None and clear_end_date):
             await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
             return
         try:
@@ -2089,34 +2095,33 @@ class PostCommands(app_commands.Group):
     async def _delete_from_detail(
         self, view: ScheduleDetailView, interaction: discord.Interaction
     ) -> None:
-        if view.finished or view.closed or not view.context.actions.can_delete:
-            await respond_ephemeral(interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger)
-            return
-        actor = await self._detail_actor(view, interaction)
-        if actor is None:
-            return
-        if actor.administrator and actor.user_id != view.context.creator_user_id:
-            modal = DeleteReasonModal(commands=self, detail_view=view)
-            self._delete_reason_modals.add(modal)
-            try:
-                await interaction.response.send_modal(modal)
-            except Exception:  # noqa: BLE001
-                self._delete_reason_modals.discard(modal)
-                modal.stop()
-                self._logger.error("schedule_detail_delete_reason_response_failed")
-            return
+        async with view.action_lock:
+            if view.finished or view.closed or not view.context.actions.can_delete:
+                await respond_ephemeral(
+                    interaction, DELETE_UNAVAILABLE_MESSAGE, logger=self._logger
+                )
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            if actor.administrator and actor.user_id != view.context.creator_user_id:
+                self._retire_delete_reason_modals()
+                modal = DeleteReasonModal(commands=self, detail_view=view)
+                self._delete_reason_modals.add(modal)
+                try:
+                    await interaction.response.send_modal(modal)
+                except Exception:  # noqa: BLE001
+                    self._delete_reason_modals.discard(modal)
+                    modal.stop()
+                    self._logger.error("schedule_detail_delete_reason_response_failed")
+                return
         await self._continue_detail_delete(view, interaction, None)
 
     async def _edit_from_detail(
         self, view: ScheduleDetailView, interaction: discord.Interaction
     ) -> None:
         async with view.action_lock:
-            if (
-                view.finished
-                or view.closed
-                or not view.context.actions.can_edit
-                or view.edit_modal_active
-            ):
+            if view.finished or view.closed or not view.context.actions.can_edit:
                 await respond_ephemeral(interaction, EDIT_UNAVAILABLE_MESSAGE, logger=self._logger)
                 return
             actor = await self._detail_actor(view, interaction)
@@ -2128,13 +2133,34 @@ class PostCommands(app_commands.Group):
             modal = ScheduleEditModal(
                 commands=self, detail_view=view, default_channel=default_channel
             )
-            view.edit_modal_active = True
+            self._retire_edit_modals()
             self._edit_modals.add(modal)
             try:
                 await interaction.response.send_modal(modal)
             except Exception:  # noqa: BLE001
                 modal._release()
                 self._logger.error("schedule_detail_edit_modal_response_failed")
+
+    def _retire_edit_modals(self) -> None:
+        modals = tuple(self._edit_modals)
+        self._edit_modals.clear()
+        for modal in modals:
+            modal.closed = True
+            modal.stop()
+
+    def _retire_delete_reason_modals(self) -> None:
+        modals = tuple(self._delete_reason_modals)
+        self._delete_reason_modals.clear()
+        for modal in modals:
+            modal.closed = True
+            modal.stop()
+
+    def _retire_resume_modals(self) -> None:
+        modals = tuple(self._resume_modals)
+        self._resume_modals.clear()
+        for modal in modals:
+            modal.closed = True
+            modal.stop()
 
     async def _submit_detail_edit(
         self, modal: ScheduleEditModal, interaction: discord.Interaction
@@ -2480,27 +2506,6 @@ class PostCommands(app_commands.Group):
                 self._logger.error("schedule_detail_back_failed")
                 await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
 
-    async def _expire_detail(self, view: ScheduleDetailView) -> None:
-        async with view.action_lock:
-            if view.finished or view.closed:
-                return
-            view.finished = True
-            view.timed_out = True
-            view.disable_components()
-            expired_embed = expired_schedule_detail_embed(view.current_embed)
-            try:
-                await view.initial_interaction.edit_original_response(
-                    content=None,
-                    embed=expired_embed,
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except Exception:  # noqa: BLE001 - Discord details remain private
-                self._logger.error("schedule_detail_timeout_response_failed")
-            finally:
-                view.stop()
-                self._detail_views.discard(view)
-
     async def close_detail_views(self) -> None:
         views = tuple(self._detail_views)
         self._detail_views.clear()
@@ -2510,27 +2515,6 @@ class PostCommands(app_commands.Group):
             view.stop()
         if views:
             await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
-
-    async def _expire_list(self, view: ScheduleListView) -> None:
-        async with view.action_lock:
-            if view.finished or view.closed:
-                return
-            view.finished = True
-            for item in view.children:
-                if isinstance(item, discord.ui.Button | discord.ui.Select):
-                    item.disabled = True
-            expired_embed = expired_schedule_list_embed(view.current_embed)
-            try:
-                await view.initial_interaction.edit_original_response(
-                    embed=expired_embed,
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except Exception:  # noqa: BLE001 - Discord details remain private
-                self._logger.error("schedule_list_timeout_response_failed")
-            finally:
-                view.stop()
-                self._list_views.discard(view)
 
     async def close_list_views(self) -> None:
         views = tuple(self._list_views)
@@ -2575,7 +2559,6 @@ class PostCommands(app_commands.Group):
         self._edit_modals.clear()
         for modal in edit_modals:
             modal.closed = True
-            modal.detail_view.edit_modal_active = False
             modal.stop()
         await self.close_delete_views()
         await self.close_list_views()

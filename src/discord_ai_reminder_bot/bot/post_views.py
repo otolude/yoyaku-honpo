@@ -71,7 +71,7 @@ class ScheduleDetailView(discord.ui.View):
         context: ScheduleDetailContext,
         embed: discord.Embed,
     ) -> None:
-        super().__init__(timeout=900.0)
+        super().__init__(timeout=None)
         self.commands = commands
         self.initial_interaction = interaction
         self.context = context
@@ -79,8 +79,6 @@ class ScheduleDetailView(discord.ui.View):
         self.action_lock = asyncio.Lock()
         self.finished = False
         self.closed = False
-        self.timed_out = False
-        self.edit_modal_active = False
         edit = discord.ui.Button(
             label="編集",
             emoji="✏️",
@@ -147,11 +145,3 @@ class ScheduleDetailView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         return await self.commands._detail_interaction_allowed(self, interaction)
-
-    async def on_timeout(self) -> None:
-        await self.commands._expire_detail(self)
-
-    def disable_components(self) -> None:
-        for item in self.children:
-            if isinstance(item, discord.ui.Button | discord.ui.Select):
-                item.disabled = True

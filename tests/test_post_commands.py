@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
@@ -42,11 +43,7 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     SchedulePage,
     ScheduleView,
 )
-from discord_ai_reminder_bot.bot.post_presenter import (
-    DETAIL_EXPIRED_GUIDANCE,
-    LIST_EXPIRED_GUIDANCE,
-    LIST_OPERATION_GUIDANCE,
-)
+from discord_ai_reminder_bot.bot.post_presenter import LIST_OPERATION_GUIDANCE
 from discord_ai_reminder_bot.bot.post_views import (
     DETAIL_BACK_CUSTOM_ID,
     DETAIL_EDIT_CUSTOM_ID,
@@ -65,7 +62,10 @@ from discord_ai_reminder_bot.bot.posts import (
     DETAIL_CONFLICT_MESSAGE,
     DETAIL_EDIT_CHANNEL_MESSAGE,
     DETAIL_EDIT_NO_CHANGES_MESSAGE,
+    EDIT_NO_CHANGES_MESSAGE,
+    EDIT_REQUEST_REQUIRED_MESSAGE,
     END_DATE_DESCRIPTION,
+    END_DATE_INPUT_MESSAGE,
     FULLWIDTH_DATETIME_INPUT_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
@@ -765,7 +765,7 @@ async def test_creator_list_responds_ephemerally_without_mentions() -> None:
     assert kwargs["ephemeral"] is True
     assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert LIST_OPERATION_GUIDANCE in kwargs["embed"].description
-    assert kwargs["view"].timeout == 900.0
+    assert kwargs["view"].timeout is None
 
 
 @pytest.mark.asyncio
@@ -1048,7 +1048,7 @@ async def test_detail_refresh_retires_old_view_before_registering_replacement() 
     replacement = group._detail_views.pop()
     assert replacement is not old_view
     assert replacement.is_finished() is False
-    assert replacement.timeout == 900.0
+    assert replacement.timeout is None
     dispatch_item = store._views[message_id][
         (discord.ComponentType.button.value, DETAIL_EDIT_CUSTOM_ID)
     ]
@@ -1658,7 +1658,6 @@ async def test_detail_edit_modal_on_error_is_sanitized_and_preserves_parent(
         embed=discord.Embed(title="予約詳細"),
     )
     modal = ScheduleEditModal(commands=group, detail_view=detail_view, default_channel=None)
-    detail_view.edit_modal_active = True
     group._edit_modals.add(modal)
     submitted = interaction(done=done)
     secret = "secret-component-value"
@@ -1671,12 +1670,76 @@ async def test_detail_edit_modal_on_error_is_sanitized_and_preserves_parent(
     assert sender.await_args.kwargs["ephemeral"] is True
     assert sender.await_args.kwargs["allowed_mentions"].to_dict() == {"parse": []}
     assert detail_view.finished is False and detail_view.closed is False
-    assert detail_view.edit_modal_active is False
     assert modal not in group._edit_modals and modal.is_finished()
     records = [record for record in caplog.records if record.name == "test.posts"]
     assert [record.message for record in records] == ["schedule_detail_edit_modal_error"]
     assert records[0].exc_info is None
     assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_closed_edit_modal_can_be_reopened_without_retiring_parent() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    group._detail_views.add(detail_view)
+    edit_button = next(
+        item for item in detail_view.children if item.custom_id == DETAIL_EDIT_CUSTOM_ID
+    )
+
+    first_click = interaction()
+    first_click.guild.get_channel.return_value = cached_text_channel(first_click.guild)
+    await edit_button.callback(first_click)
+    first_modal = first_click.response.send_modal.await_args.args[0]
+
+    # Discord sends no interaction when the user closes a modal with the X.
+    assert detail_view.finished is False and detail_view.closed is False
+    assert not detail_view.is_finished()
+    second_click = interaction()
+    second_click.guild.get_channel.return_value = cached_text_channel(second_click.guild)
+    await edit_button.callback(second_click)
+    second_modal = second_click.response.send_modal.await_args.args[0]
+
+    assert second_modal is not first_modal
+    assert first_modal.closed and first_modal.is_finished()
+    assert second_modal in group._edit_modals
+    assert detail_view in group._detail_views
+    assert detail_view.finished is False and detail_view.closed is False
+    assert not detail_view.is_finished()
+
+    group._submit_detail_edit = AsyncMock()  # type: ignore[method-assign]
+    await second_modal.on_submit(interaction())
+    group._submit_detail_edit.assert_awaited_once()
+    await first_modal.on_submit(interaction())
+    group._submit_detail_edit.assert_awaited_once()
+    assert detail_view.finished is False and detail_view.closed is False
+    await group.close_confirmation_views()
+
+
+@pytest.mark.asyncio
+async def test_edit_modal_timeout_preserves_parent_detail() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    clicked = interaction()
+    await group._edit_from_detail(detail_view, clicked)
+    modal = clicked.response.send_modal.await_args.args[0]
+
+    await modal.on_timeout()
+
+    assert modal.closed and modal.is_finished()
+    assert detail_view.finished is False and detail_view.closed is False
+    assert not detail_view.is_finished()
 
 
 @pytest.mark.asyncio
@@ -1702,7 +1765,7 @@ async def test_direct_show_builds_detail_context_and_delete_button() -> None:
     assert [item.label for item in built.children] == ["編集", "削除"]
     assert built.context.public_id == selected.public_id
     assert built.context.expected_version == selected.version
-    assert built.timeout == 900.0
+    assert built.timeout is None
     assert built in group._detail_views
 
 
@@ -1744,7 +1807,7 @@ async def test_detail_back_preserves_filters_page_and_clamps_latest_list() -> No
 
 
 @pytest.mark.asyncio
-async def test_detail_timeout_keeps_disabled_back_without_database_access() -> None:
+async def test_detail_remains_active_after_900_seconds_without_database_resources() -> None:
     selected = view()
     queries = AsyncMock()
     queries.get_schedule_page.return_value = SchedulePage((selected,), 1, 1)
@@ -1759,50 +1822,11 @@ async def test_detail_timeout_keeps_disabled_back_without_database_access() -> N
     chosen = interaction()
     await group._show_list_selection(list_view, chosen, str(selected.public_id))
     detail_view = chosen.response.edit_message.await_args.kwargs["view"]
-    queries.reset_mock()
-
-    await group._expire_detail(detail_view)
-    await group._expire_detail(detail_view)
-
-    assert detail_view.finished and detail_view.timed_out and detail_view.is_finished()
-    assert detail_view.children[0].disabled
-    assert all(item.disabled for item in detail_view.children)
-    assert detail_view.children[-1].custom_id == DETAIL_BACK_CUSTOM_ID
-    assert detail_view not in group._detail_views
-    queries.get_schedule_detail.assert_not_awaited()
-    queries.get_schedule_page.assert_not_awaited()
+    assert detail_view.timeout is None
+    assert not detail_view.is_finished()
+    assert not any(item.disabled for item in detail_view.children)
+    assert detail_view in group._detail_views
     session.__aenter__.assert_not_awaited()
-    kwargs = original.edit_original_response.await_args.kwargs
-    assert kwargs["view"] is detail_view
-    assert DETAIL_EXPIRED_GUIDANCE in kwargs["embed"].description
-    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
-
-
-@pytest.mark.asyncio
-async def test_detail_timeout_failure_logs_only_fixed_event(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    selected = view()
-    group = commands(AsyncMock())
-    original = interaction()
-    secret = "sensitive-detail-timeout-value"
-    original.edit_original_response.side_effect = RuntimeError(secret)
-    detail_view = group._build_detail_view(
-        interaction=original,
-        actor_user_id=USER_ID,
-        detail=detail(selected),
-        embed=discord.Embed(title="予約詳細"),
-        list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
-    )
-    group._detail_views.add(detail_view)
-
-    with caplog.at_level(logging.ERROR):
-        await detail_view.on_timeout()
-
-    assert "schedule_detail_timeout_response_failed" in caplog.text
-    assert secret not in caplog.text
-    assert "RuntimeError" not in caplog.text
-    assert detail_view.is_finished()
 
 
 @pytest.mark.asyncio
@@ -1921,6 +1945,58 @@ async def test_close_collects_open_resume_modal_and_parent_view() -> None:
 
 
 @pytest.mark.asyncio
+async def test_closed_resume_time_modal_can_be_reopened_without_retiring_parent() -> None:
+    group = commands(AsyncMock())
+    parent = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(uuid.uuid7()),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+    )
+    first_click = interaction()
+    await parent.time_button.callback(first_click)
+    first_modal = first_click.response.send_modal.await_args.args[0]
+
+    second_click = interaction()
+    await parent.time_button.callback(second_click)
+    second_modal = second_click.response.send_modal.await_args.args[0]
+
+    assert second_modal is not first_modal
+    assert first_modal.closed and first_modal.is_finished()
+    assert second_modal in group._resume_modals
+    assert parent.finished is False and parent.closed is False
+    assert not parent.is_finished()
+    await group.close_confirmation_views()
+
+
+@pytest.mark.asyncio
+async def test_closed_delete_reason_modal_can_be_reopened_without_retiring_detail() -> None:
+    selected = replace(view(), creator_user_id=USER_ID + 1)
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(administrator=True),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    first_click = interaction(administrator=True)
+    await group._delete_from_detail(detail_view, first_click)
+    first_modal = first_click.response.send_modal.await_args.args[0]
+
+    second_click = interaction(administrator=True)
+    await group._delete_from_detail(detail_view, second_click)
+    second_modal = second_click.response.send_modal.await_args.args[0]
+
+    assert second_modal is not first_modal
+    assert first_modal.closed and first_modal.is_finished()
+    assert second_modal in group._delete_reason_modals
+    assert detail_view.finished is False and detail_view.closed is False
+    assert not detail_view.is_finished()
+    await group.close_confirmation_views()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("schedule_type", "value", "label"),
     [
@@ -1980,7 +2056,7 @@ async def test_empty_type_filter_keeps_filter_available_and_disables_paging() ->
 
 
 @pytest.mark.asyncio
-async def test_list_view_rejects_other_user_and_timeout_disables_retained_view() -> None:
+async def test_list_view_rejects_other_user_and_remains_enabled_without_timeout() -> None:
     queries = AsyncMock()
     queries.get_schedule_page.side_effect = [
         SchedulePage(tuple(view() for _ in range(10)), 2, 24),
@@ -2000,47 +2076,44 @@ async def test_list_view_rejects_other_user_and_timeout_disables_retained_view()
     assert other.response.send_message.await_args.kwargs["ephemeral"] is True
 
     await group._filter_list_type(list_view, interaction(), ScheduleType.WEEKLY)
-    displayed = list_view.current_embed.to_dict()
-    queries.reset_mock()
-    await group._expire_list(list_view)
-    assert list_view.finished is True
-    assert list_view.is_finished()
-    assert list_view not in group._list_views
-    assert all(item.disabled for item in list_view.children)
-    queries.get_schedule_page.assert_not_awaited()
+    assert list_view.timeout is None
+    assert list_view.finished is False
+    assert not list_view.is_finished()
+    assert list_view in group._list_views
+    assert not all(item.disabled for item in list_view.children)
     session.__aenter__.assert_not_awaited()
-    kwargs = original.edit_original_response.await_args.kwargs
-    assert kwargs["view"] is list_view
-    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
-    expired = kwargs["embed"]
-    assert LIST_EXPIRED_GUIDANCE in expired.description
-    assert "1 / 1ページ｜全1件" in expired.description
-    assert "種類：毎週" in expired.description
-    assert expired.fields == list_view.current_embed.fields
-    assert list_view.current_embed.to_dict() == displayed
 
 
 @pytest.mark.asyncio
-async def test_list_timeout_edit_failure_is_sanitized_and_stops_view(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    secret = "token=discord-secret-value"
+async def test_list_component_dispatches_after_900_second_equivalent() -> None:
     queries = AsyncMock()
-    queries.get_schedule_page.return_value = SchedulePage((view(),), 1, 1)
+    queries.get_schedule_page.return_value = SchedulePage(tuple(view() for _ in range(10)), 1, 11)
     group = commands(queries)
     original = interaction()
-    original.edit_original_response.side_effect = RuntimeError(secret)
     await group.list_command.callback(group, original, None, 1)
     list_view = original.response.send_message.await_args.kwargs["view"]
+    group._move_list_page = AsyncMock()  # type: ignore[method-assign]
+    store = ViewStore(MagicMock())
+    store.add_view(list_view, message_id=42)
+    clicked = interaction()
+    clicked.message = MagicMock(spec=discord.Message)
+    clicked.message.id = 42
+    clicked.data = {}
 
-    with caplog.at_level(logging.ERROR):
-        await list_view.on_timeout()
+    store.dispatch_view(
+        discord.ComponentType.button.value,
+        "post_list_next",
+        clicked,
+    )
+    for _ in range(10):
+        if group._move_list_page.await_count:
+            break
+        await asyncio.sleep(0)
 
-    assert list_view.is_finished()
-    assert list_view not in group._list_views
-    assert "schedule_list_timeout_response_failed" in caplog.text
-    assert secret not in caplog.text
-    assert "RuntimeError" not in caplog.text
+    group._move_list_page.assert_awaited_once_with(list_view, clicked, 2)
+    assert list_view.timeout is None
+    assert not list_view.is_finished()
+    list_view.stop()
 
 
 @pytest.mark.asyncio
@@ -2161,10 +2234,10 @@ def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> No
         discord.AppCommandOptionType.boolean,
     ]
     assert [parameter.description for parameter in parameters] == [
-        "編集する予約ID",
+        "直接編集する予約ID（候補から選択）",
         "変更後の投稿先",
         "単発のみ｜投稿日時（YYYY-MM-DD HH:MM）",
-        "毎日・毎週のみ｜投稿時刻（HH:MM）",
+        "毎日・毎週のみ｜基本投稿時刻を恒久変更（HH:MM）",
         "毎週のみ｜投稿する曜日",
         END_DATE_DESCRIPTION,
         "変更後の本文｜本文削除とは併用不可",
@@ -2172,11 +2245,142 @@ def test_edit_command_exposes_one_required_and_eight_optional_parameters() -> No
         "毎日・毎週のみ｜終了日を解除",
     ]
     assert all(len(parameter.description) <= 100 for parameter in parameters)
+    assert len(group.edit_command.description) <= 100
+    assert "直接指定" in group.edit_command.description
     assert [choice.value for choice in parameters[4].choices] == list(range(7))
 
     callback_parameters = inspect.signature(group.edit_command.callback).parameters
     assert callback_parameters["clear_content"].default is False
     assert callback_parameters["clear_end_date"].default is False
+
+
+@pytest.mark.asyncio
+async def test_edit_public_id_only_uses_dedicated_safe_response_without_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    service_factory = MagicMock()
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.posts.ScheduleEditingService", service_factory)
+
+    await group.edit_command.callback(group, value, str(uuid.uuid7()))
+
+    assert value.response.send_message.await_args.args == (EDIT_REQUEST_REQUIRED_MESSAGE,)
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    assert "本文" not in EDIT_REQUEST_REQUIRED_MESSAGE
+    session.__aenter__.assert_not_awaited()
+    session.begin.assert_not_called()
+    service_factory.assert_not_called()
+    value.response.defer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_autocomplete_selected_public_id_only_uses_same_dedicated_response() -> None:
+    item = autocomplete_view()
+    queries = AsyncMock()
+    queries.autocomplete_schedules.return_value = (item,)
+    session = MagicMock()
+    group = commands(queries, session=session)
+    value = interaction()
+    value.guild.get_channel.return_value = MagicMock(name="channel")
+    value.guild.get_channel.return_value.name = "一般"
+    choice = (await group.edit_public_id_autocomplete(value, ""))[0]
+    submitted = interaction()
+
+    await group.edit_command.callback(group, submitted, choice.value)
+
+    assert submitted.response.send_message.await_args.args == (EDIT_REQUEST_REQUIRED_MESSAGE,)
+    session.__aenter__.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_one_explicit_field_reaches_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_id = uuid.uuid7()
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    service = AsyncMock()
+    service.edit.return_value = EditedSchedule(
+        public_id=public_id,
+        channel_id=400,
+        schedule_type=ScheduleType.ONCE,
+        status=ScheduleStatus.ACTIVE,
+        content="変更後",
+        next_run_at=NOW,
+        local_time=None,
+        weekday=None,
+        end_date=None,
+        changed_fields=("content",),
+        pending_runs_skipped=0,
+        run_replaced=False,
+        retry_pending_preserved=False,
+        previous_status=ScheduleStatus.ACTIVE,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await group.edit_command.callback(group, value, str(public_id), content="変更後")
+
+    service.edit.assert_awaited_once()
+    assert service.edit.await_args.kwargs["values"].content == "変更後"
+    session.__aenter__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_edit_explicit_same_value_remains_service_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+    service = AsyncMock()
+    service.edit.side_effect = ScheduleEditNoChanges
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleEditingService", lambda unused: service
+    )
+
+    await group.edit_command.callback(group, value, str(uuid.uuid7()), content="現在値")
+
+    service.edit.assert_awaited_once()
+    session.__aenter__.assert_awaited_once()
+    assert value.response.send_message.await_args.args == (EDIT_NO_CHANGES_MESSAGE,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({"scheduled_at": "not-a-date"}, "入力内容を確認してください。"),
+        ({"end_date": "not-a-date"}, END_DATE_INPUT_MESSAGE),
+        ({"content": "@everyone"}, "入力内容を確認してください。"),
+        (
+            {"content": "本文", "clear_content": True},
+            "入力内容を確認してください。",
+        ),
+        (
+            {"end_date": "2026-08-30", "clear_end_date": True},
+            "入力内容を確認してください。",
+        ),
+    ],
+    ids=["datetime", "end-date", "content", "content-exclusive", "end-date-exclusive"],
+)
+async def test_edit_invalid_inputs_keep_existing_guidance_before_session(
+    options: dict[str, object], expected: str
+) -> None:
+    session = MagicMock()
+    group = commands(AsyncMock(), session=session)
+    value = interaction()
+
+    await group.edit_command.callback(group, value, str(uuid.uuid7()), **options)
+
+    assert value.response.send_message.await_args.args == (expected,)
+    session.__aenter__.assert_not_awaited()
 
 
 @pytest.mark.asyncio

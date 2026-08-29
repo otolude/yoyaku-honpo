@@ -145,6 +145,29 @@ async def test_embed_responses_support_initial_and_followup_without_content() ->
 
 
 @pytest.mark.asyncio
+async def test_long_lived_ephemeral_view_uses_zero_registration_bridge_and_restores_none() -> None:
+    logger = logging.getLogger("test.interaction")
+    value = interaction()
+    view = discord.ui.View(timeout=None)
+    observed_timeouts: list[float | None] = []
+
+    async def observe_send(*args: object, **kwargs: object) -> None:
+        observed_timeouts.append(kwargs["view"].timeout)  # type: ignore[union-attr]
+
+    value.response.send_message.side_effect = observe_send
+    assert await respond_ephemeral(
+        value,
+        embed=discord.Embed(title="safe"),
+        view=view,
+        long_lived_view=True,
+        logger=logger,
+    )
+    assert observed_timeouts == [0.0]
+    assert view.timeout is None
+    assert not view.is_finished()
+
+
+@pytest.mark.asyncio
 async def test_response_requires_exactly_one_of_content_or_embed() -> None:
     value = interaction()
     logger = logging.getLogger("test.interaction")

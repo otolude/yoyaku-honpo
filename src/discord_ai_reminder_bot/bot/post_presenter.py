@@ -71,11 +71,10 @@ WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日
 SELECT_LABEL_LIMIT = 100
 SELECT_VALUE_LIMIT = 100
 AUTOCOMPLETE_NAME_LIMIT = 100
-LIST_OPERATION_GUIDANCE = "操作可能時間：最後の操作から15分"
-LIST_EXPIRED_GUIDANCE = "操作期限が切れました。最新の一覧は /post list を再実行してください。"
-DETAIL_EXPIRED_GUIDANCE = (
-    "操作期限が切れました。最新の状態は /post show または /post list で確認してください。"
+LIST_OPERATION_GUIDANCE = (
+    "Botが稼働している間は操作できます。再起動後は /post list を再実行してください。"
 )
+DETAIL_OPERATION_GUIDANCE = "Botが稼働している間は操作できます。再起動後は /post show または /post list を再実行してください。"
 
 
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
@@ -360,24 +359,9 @@ def schedule_list_embed(
     return _validated(embed)
 
 
-def expired_schedule_list_embed(embed: discord.Embed) -> discord.Embed:
-    """Return the currently displayed embed with fixed expiry guidance appended."""
-    expired = embed.copy()
-    description = expired.description or ""
-    expired.description = f"{description}\n{LIST_EXPIRED_GUIDANCE}".lstrip()
-    return _validated(expired)
-
-
-def expired_schedule_detail_embed(embed: discord.Embed) -> discord.Embed:
-    """Return an unchanged detail with fixed, bounded expiry guidance."""
-    expired = embed.copy()
-    description = expired.description or ""
-    expired.description = f"{description}\n{DETAIL_EXPIRED_GUIDANCE}".lstrip()
-    return _validated(expired)
-
-
 def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     embed = _embed(title="予約詳細", status=schedule.status)
+    embed.description = DETAIL_OPERATION_GUIDANCE
     _field(embed, "状態", status_text(schedule.status), inline=True)
     _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)

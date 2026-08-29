@@ -102,7 +102,7 @@ Bot層はSQLAlchemyモデルを直接操作せず、次回日時や状態遷移�
 
 `/post create`、`/post list`、`/post show` の成功表示はBot層の共通presenterで1つのDiscord Embedへ変換する。タイトル256文字、description 4,096文字、Field名256文字、Field値1,024文字、Field数25、Embed合計6,000文字を上限とし、利用者入力由来の本文はメンションとMarkdownを無効化する。予約IDは省略せずインラインコードで表示し、状態は日本語名とアイコンを色に加えて示す。
 
-予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、同一のguild・作成者/管理者・status・任意schedule_type条件でCOUNTと1ページ10件を取得する。不変DTOだけをBotへ返し、`next_run_at ASC NULLS LAST, id ASC`を維持する。本人限定・最後の操作から900秒の非永続Viewは前後ボタン、固定値`all/once/daily/weekly`の種類Select、最大10件のUUIDv7詳細Selectを別custom_id・別Action Rowで持ち、詳細は既存Presenterを再利用する。種類変更ではpageを1へ戻し、空結果でも種類Selectを残す。ページ移動と詳細からの復帰ではstatus・schedule_type・pageを維持する。各操作はdiscord.py標準のtimeout更新を利用し、短い新規read Sessionと再認可で最新状態を取得する。Session、transaction、row lockは待機中に保持しない。`asyncio.Lock`と終了状態でSelectを含む多重操作を直列化する。timeoutではDBを取得せず、現在のEmbedへ固定案内を加え、全Button・SelectをdisabledにしたViewを元のephemeralメッセージへ残して停止し、編集失敗も固定イベントだけを記録してwaitを回収可能にする。Bot closeではViewを停止してwaitを回収する。操作時は消滅した末尾ページを補正し、コマンドで明示した巨大pageの安全な空結果は維持する。状態未指定時は `deleted` を除外し、明示指定時だけ含める。
+予約一覧は `/post list status:<任意> page:<1以上、既定1>` とし、同一のguild・作成者/管理者・status・任意schedule_type条件でCOUNTと1ページ10件を取得する。不変DTOだけをBotへ返し、`next_run_at ASC NULLS LAST, id ASC`を維持する。本人限定でBot稼働中はtimeoutしないViewは前後ボタン、固定値`all/once/daily/weekly`の種類Select、最大10件のUUIDv7詳細Selectを別custom_id・別Action Rowで持ち、詳細は既存Presenterを再利用する。種類変更ではpageを1へ戻し、空結果でも種類Selectを残す。ページ移動と詳細からの復帰ではstatus・schedule_type・pageを維持する。各操作は短い新規read Sessionと再認可で最新状態を取得する。Session、transaction、row lockは待機中に保持しない。`asyncio.Lock`と終了状態でSelectを含む多重操作を直列化する。Bot closeではViewをstopしてViewStore registryから除去しwaitを回収する。操作時は消滅した末尾ページを補正し、コマンドで明示した巨大pageの安全な空結果は維持する。状態未指定時は `deleted` を除外し、明示指定時だけ含める。再起動時のpersistent View登録・復元は行わない。
 
 ### 4.2 アプリケーション層
 
@@ -276,10 +276,12 @@ discord-ai-reminder-bot/
 
 編集は単一の `/post edit` とし、`public_id`を必須、`channel`、`scheduled_at`、
 `local_time`、`weekday`、`end_date`、`content`、`clear_content`、`clear_end_date`を任意とする。
+予約IDをAutocomplete候補から選び、1項目以上の変更を直接指定する短縮・上級者向け経路であり、画面を確認しながら操作する一般利用者向けの詳細画面「✏️ 編集」と使い分ける。`local_time`は毎日・毎週予約の基本投稿時刻を恒久的に変更する指定であり、今回だけの投稿時刻変更には使用しない。一時停止中も既存仕様で許可された項目を直接編集できる。
 単発、毎日、毎週で許可する項目は要件定義どおりに検証し、予約種別、guild、作成者、
 public_idは不変とする。confirm、View、Modalは使わず、ローカル検証後にephemeralでdeferし、
 コマンド所有のトランザクションをcommitした後で成功Embedをfollowupする。変更指定なし、
 clear=falseだけ、排他的な値とclearの同時指定、実値が変わらないno-opでは更新と履歴追加をしない。
+変更指定なしは固定の専用案内を`AllowedMentions.none()`付きephemeral応答で返し、Session、transaction、row lock、Application Service、OperationLogへ到達させない。明示した値が現在値と同じ場合は、従来どおりService内のno-opとして扱う。不正日時、不正終了日、不正本文、排他違反は既存の原因別案内を維持する。
 
 編集可能状態は`draft`、`active`、および定期の`paused`だけとする。`draft`と`active`は
 現在の`next_run_at >= edited_at + 5分`を必要とし、新しい単発日時または定期候補も同じ
@@ -978,7 +980,7 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 
 一覧から詳細へ移るときは同じephemeralメッセージを編集し、旧`ScheduleListView`をstopしてregistryから除去してから新しい詳細Viewを登録する。戻るときは予約所有境界と最新一覧を短いread Sessionで再確認し、保存したfilter・type・pageを使ってclamp付きで新しい一覧Viewへ移管する。両Viewを同時にregistryへ残さない。
 
-詳細Viewは900秒、`asyncio.Lock`、finished/closed/timed_outを持つ。timeoutではDBへ触れず、現在のEmbedを維持して固定案内を追記し、表示中の部品をdisabledにしたまま元メッセージへ残す。応答失敗は固定イベントだけを記録し、必ずstopしてregistryから除去する。Bot closeは一覧・詳細・作成・削除・再開Viewと開いている再開時刻Modalをstopし、各waitを`gather(return_exceptions=True)`で回収する。persistent View登録と再起動復元は行わない。
+一覧・詳細Viewは`timeout=None`、`asyncio.Lock`、finished/closedを持つ。discord.py 2.7.1がephemeral初回送信時の`None`を900秒へ変換するため、初回登録中だけ公開timeout値`0.0`を使用してtimeout Task生成を抑止し、登録直後に`None`へ戻す。ViewStoreの内部書換えやMonkey Patchは行わない。同一メッセージ更新前に旧Viewをstopし、固定custom_idのdispatch所有権を新View一つへ移す。Bot closeは一覧・詳細・作成・削除・再開Viewと開いているModalをstopし、各waitを`gather(return_exceptions=True)`で回収する。persistent Viewとして起動時登録せず、再起動復元も行わない。削除されたephemeralメッセージはtimeout応答を試みず、closeまたは遷移でregistryから回収する。
 
 検索は固定語彙、17～20桁のchannel ID、canonical UUID形式の前方一致に限定する。完全UUIDはUUIDv7を検証する。日時、channel名、本文、曖昧・自然言語検索は行わない。
 

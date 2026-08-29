@@ -57,17 +57,25 @@ async def respond_ephemeral(
     *,
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
+    long_lived_view: bool = False,
     logger: logging.Logger,
 ) -> bool:
     """Send one safe ephemeral response or followup without leaking failures."""
     if (content is None) == (embed is None):
         raise ValueError("exactly one of content or embed is required")
+    if long_lived_view and (view is None or view.timeout is not None):
+        raise ValueError("long-lived responses require a view with timeout=None")
     mentions = discord.AllowedMentions.none()
     arguments = {"ephemeral": True, "allowed_mentions": mentions}
     if view is not None:
         arguments["view"] = view
     if embed is not None:
         arguments["embed"] = embed
+    # discord.py 2.7.1 changes timeout=None to 900 seconds for an ephemeral
+    # response. A zero timeout creates no ViewStore timeout task; restore None
+    # immediately after registration to keep the public View semantics.
+    if long_lived_view:
+        view.timeout = 0.0
     try:
         if interaction.response.is_done():
             if content is None:
@@ -82,6 +90,9 @@ async def respond_ephemeral(
     except Exception:  # noqa: BLE001 - Discord errors can contain response bodies
         logger.error("interaction_response_failed")
         return False
+    finally:
+        if long_lived_view:
+            view.timeout = None
     return True
 
 
