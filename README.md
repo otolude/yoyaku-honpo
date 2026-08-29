@@ -136,7 +136,7 @@ docker compose --profile test rm -f postgres_test
 - `/post list`: 操作可能な予約の一覧（全件数、ページ移動、予約種類の絞り込み、選択詳細）
 - `/post show`: 予約詳細
 - `/post edit`: 予約IDを候補から選び、1項目以上を直接指定する短縮・上級者向け編集（一時停止中も既存の許可項目を編集可能。定期の `local_time` は基本投稿時刻の恒久変更で、今回だけの時刻変更には使用しない）
-- `/post delete`: 確認View付き論理削除
+- `/post delete`: 確認View付き論理削除。管理者が同じサーバーの他作成者予約を削除する場合だけ、前後空白除去後1～500文字の監査理由が必須（空白だけは拒否）
 - `/post pause`: 定期予約の一時停止
 - `/post resume`: 定期予約の再開
 

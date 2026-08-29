@@ -304,7 +304,7 @@ OperationLogを同一トランザクションで変更する。本文は`content
 channel、日時、曜日、終了日、状態、skip件数、次回再計算の有無だけをchangesへ保存できる。
 内部ID、public_id、version、本文、Discord message ID、例外全文は複製しない。
 
-削除は `/post delete public_id:<canonical UUIDv7> reason:<任意、最大500文字>` とする。理由は前後空白を除去し、未指定または空白だけなら`理由未入力`として扱う。ただし管理者が他人の予約を削除する場合は理由を必須とする。作成者本人（管理者を含む）の理由省略時はOperationLogへ`理由未入力`を保存し、表示は`未入力`とする。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
+削除は `/post delete public_id:<canonical UUIDv7> reason:<任意、最大500文字>` とする。作成者本人（管理者を含む）の理由は任意で、前後空白除去後に未指定または空白だけならOperationLogへ`理由未入力`を保存し、表示は`未入力`とする。管理者が同じguildの他作成者予約を削除する場合だけ`DeleteReasonModal`を先に表示し、前後空白を除去した1～500文字を必須とする。空文字、Unicode・制御空白だけ、501文字以上は型付き入力エラーで拒否し、固定理由へ変換しない。Discord TextInputも`required=True`、`max_length=500`とし、Modal入力境界ではSession開始前、Application Serviceでは所有者判定後かつSchedule lock後にも同じ規則を最終防御として適用する。有効理由はOperationLogだけへ監査用に保存し、確認・成功応答は入力済みの固定表示として、利用者向け応答、custom_id、通常ログへ理由全文を複製しない。不正ID、不存在、権限不足、状態不許可、処理中は同じ固定応答とする。
 
 コマンド実行時は読み取り専用で対象、所有者、状態、runを確認し、ephemeral Embedと赤色の削除・灰色のキャンセルボタンを持つ非永続Viewを表示する。Viewのtimeoutは120秒で、起動時のpersistent View登録は行わず、custom_idへ予約・利用者データを含めない。確認を開いた本人だけが操作でき、ボタン時にもguildと共通認可を再確認する。同一Viewの操作はロックで直列化し、成功、キャンセル、timeout後はViewを除去する。View待機中はDB Sessionやトランザクションを保持せず、削除ボタン時に新しいトランザクションを開始して最新状態を再検証する。確認時点のスナップショットは保証しない。
 

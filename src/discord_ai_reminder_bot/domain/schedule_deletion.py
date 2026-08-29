@@ -33,6 +33,16 @@ def validate_delete_reason(reason: str | None) -> str:
     return normalized
 
 
+def validate_required_delete_reason(reason: str | None) -> str:
+    """Validate an audit reason that must not be missing or whitespace-only."""
+    if reason is None or not isinstance(reason, str):
+        raise InvalidDeleteReasonError("invalid delete reason")
+    normalized = reason.strip()
+    if not normalized or len(normalized) > 500:
+        raise InvalidDeleteReasonError("invalid delete reason")
+    return normalized
+
+
 def deletion_kind(
     *,
     actor_user_id: int,

@@ -17,6 +17,7 @@ from discord_ai_reminder_bot.domain.schedule_deletion import (
     InvalidDeleteReasonError,
     deletion_kind,
     validate_delete_reason,
+    validate_required_delete_reason,
 )
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule, ScheduleRun
 from discord_ai_reminder_bot.infrastructure.database.repositories import (
@@ -77,6 +78,30 @@ def test_delete_reason_is_trimmed_and_preserved() -> None:
     assert validate_delete_reason("x" * 500) == "x" * 500
 
 
+@pytest.mark.parametrize("value", [None, "", " ", "　", "\t", "\n", " \t\n　 ", "x" * 501])
+def test_required_delete_reason_rejects_missing_whitespace_and_too_long(
+    value: str | None,
+) -> None:
+    with pytest.raises(InvalidDeleteReasonError):
+        validate_required_delete_reason(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("x", "x"),
+        ("  有効な理由  ", "有効な理由"),
+        ("x" * 500, "x" * 500),
+        ("内部 空白\nを維持", "内部 空白\nを維持"),
+        ("日本語理由", "日本語理由"),
+    ],
+)
+def test_required_delete_reason_trims_edges_and_preserves_valid_content(
+    value: str, expected: str
+) -> None:
+    assert validate_required_delete_reason(value) == expected
+
+
 @pytest.mark.asyncio
 async def test_admin_deleting_other_creator_requires_reason(
     monkeypatch: pytest.MonkeyPatch,
@@ -96,6 +121,30 @@ async def test_admin_deleting_other_creator_requires_reason(
             administrator=True,
             reason=None,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [None, "", " ", "　", "\t", "\n", " \t\n　 ", "x" * 501])
+async def test_admin_other_required_reason_is_application_final_defense(
+    monkeypatch: pytest.MonkeyPatch, reason: str | None
+) -> None:
+    value = schedule()
+    schedules = AsyncMock()
+    schedules.get_by_public_id.return_value = value
+    runs = AsyncMock()
+    runs.list_for_deletion.return_value = [pending_run(value)]
+    operations = AsyncMock()
+    _patch_repositories(monkeypatch, schedules, runs, operations)
+
+    with pytest.raises(DeleteReasonRequired):
+        await ScheduleDeletionService(AsyncMock()).preview(
+            guild_id=GUILD_ID,
+            public_id=str(value.public_id),
+            actor_user_id=CREATOR_ID + 1,
+            administrator=True,
+            reason=reason,
+        )
+    operations.add.assert_not_awaited()
 
 
 @pytest.mark.asyncio

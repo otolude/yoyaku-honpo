@@ -19,9 +19,10 @@ from discord_ai_reminder_bot.domain.enums import (
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.domain.schedule_deletion import (
     DELETABLE_STATUSES,
-    MISSING_DELETE_REASON,
+    InvalidDeleteReasonError,
     deletion_kind,
     validate_delete_reason,
+    validate_required_delete_reason,
 )
 from discord_ai_reminder_bot.infrastructure.database.exceptions import RepositoryNotFoundError
 from discord_ai_reminder_bot.infrastructure.database.models import (
@@ -261,7 +262,9 @@ def _validated_reason(
     creator_user_id: int,
     administrator: bool,
 ) -> str:
-    normalized = validate_delete_reason(reason)
-    if normalized == MISSING_DELETE_REASON and actor_user_id != creator_user_id and administrator:
-        raise DeleteReasonRequired
-    return normalized
+    if actor_user_id != creator_user_id and administrator:
+        try:
+            return validate_required_delete_reason(reason)
+        except InvalidDeleteReasonError as error:
+            raise DeleteReasonRequired from error
+    return validate_delete_reason(reason)

@@ -23,6 +23,7 @@ from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NotificationLog,
     OperationLog,
     Schedule,
     ScheduleRun,
@@ -248,6 +249,7 @@ async def test_real_postgres_admin_deletes_other_owner_with_expected_kind(
         )
     ).one()
     assert operation.delete_kind == expected_kind
+    assert operation.delete_reason == "planned deletion"
 
 
 async def test_real_postgres_admin_own_failed_is_creator_deleted(
@@ -308,21 +310,23 @@ async def test_real_postgres_admin_own_schedule_without_reason_is_creator_delete
     assert operation.delete_kind == "creator_deleted"
 
 
-async def test_real_postgres_admin_other_without_reason_changes_nothing(
-    db_session: AsyncSession,
+@pytest.mark.parametrize("reason", [None, "", " ", "　", "\t", "\n", " \t\n　 ", "x" * 501])
+async def test_real_postgres_admin_other_invalid_reason_changes_nothing(
+    db_session: AsyncSession, reason: str | None
 ) -> None:
     schedule, runs = await add_schedule(db_session)
+    before = (schedule.status, schedule.version, schedule.next_run_at, runs[0].status)
     with pytest.raises(DeleteReasonRequired):
         await delete(
             db_session,
             schedule,
             actor_user_id=ADMIN_ID,
             administrator=True,
-            reason=None,
+            reason=reason,
         )
-    assert schedule.status == "active"
-    assert runs[0].status == "pending"
+    assert (schedule.status, schedule.version, schedule.next_run_at, runs[0].status) == before
     assert await db_session.scalar(select(func.count()).select_from(OperationLog)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(NotificationLog)) == 0
 
 
 async def test_real_postgres_preview_and_other_guild_do_not_update(

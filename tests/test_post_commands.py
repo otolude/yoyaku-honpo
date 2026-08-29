@@ -64,6 +64,7 @@ from discord_ai_reminder_bot.bot.posts import (
     DATETIME_INPUT_MESSAGE,
     DELETE_CANCELLED_MESSAGE,
     DELETE_EXPIRED_MESSAGE,
+    DELETE_REASON_INPUT_MESSAGE,
     DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
     DETAIL_CONFLICT_MESSAGE,
@@ -81,6 +82,7 @@ from discord_ai_reminder_bot.bot.posts import (
     PERMISSION_DENIED_MESSAGE,
     RESUME_TIME_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
+    DeleteReasonModal,
     InteractionActor,
     PostCommands,
     ResumeChoiceView,
@@ -3087,6 +3089,124 @@ async def test_closed_delete_reason_modal_can_be_reopened_without_retiring_detai
     assert detail_view.finished is False and detail_view.closed is False
     assert not detail_view.is_finished()
     await group.close_confirmation_views()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["", " ", "　", "\t", "\n", " \t\n　 ", "x" * 501])
+async def test_delete_reason_modal_rejects_invalid_input_before_session_and_can_reopen(
+    reason: str,
+) -> None:
+    selected = replace(view(), creator_user_id=USER_ID + 1)
+    group = commands(AsyncMock())
+    session_factory = MagicMock()
+    group._session_factory = session_factory
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=True),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    opened = interaction(administrator=True)
+    await group._delete_from_detail(parent, opened)
+    modal = opened.response.send_modal.await_args.args[0]
+    assert isinstance(modal, DeleteReasonModal)
+    modal.reason._value = reason
+
+    submitted = interaction(administrator=True)
+    await modal.on_submit(submitted)
+
+    assert submitted.response.send_message.await_args.args == (DELETE_REASON_INPUT_MESSAGE,)
+    assert submitted.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert submitted.response.send_message.await_args.kwargs["allowed_mentions"].to_dict() == {
+        "parse": []
+    }
+    if reason:
+        assert reason not in submitted.response.send_message.await_args.args[0]
+    session_factory.assert_not_called()
+    assert parent.finished is False and parent.closed is False and not parent.is_finished()
+    assert modal.finished is False and not modal.is_finished()
+
+    reopened = interaction(administrator=True)
+    await group._delete_from_detail(parent, reopened)
+    replacement = reopened.response.send_modal.await_args.args[0]
+    assert replacement is not modal
+    assert modal.closed and modal.is_finished()
+    assert not parent.is_finished()
+    await group.close_confirmation_views()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [("x", "x"), ("  監査 理由\n詳細  ", "監査 理由\n詳細"), ("x" * 500, "x" * 500)],
+)
+async def test_delete_reason_modal_passes_only_trimmed_valid_reason_to_delete_flow(
+    reason: str, expected: str
+) -> None:
+    selected = replace(view(), creator_user_id=USER_ID + 1)
+    group = commands(AsyncMock())
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=True),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = DeleteReasonModal(commands=group, detail_view=parent)
+    group._delete_reason_modals.add(modal)
+    assert modal.reason.required is True
+    assert modal.reason.min_length == 1 and modal.reason.max_length == 500
+    modal.reason._value = reason
+    group._continue_detail_delete = AsyncMock()
+
+    submitted = interaction(administrator=True)
+    await modal.on_submit(submitted)
+    await modal.on_submit(submitted)
+
+    group._continue_detail_delete.assert_awaited_once_with(parent, submitted, expected)
+    assert modal.closed and modal.is_finished()
+    assert modal not in group._delete_reason_modals
+    assert modal.custom_id == "post_detail_delete_reason"
+    for component in modal.walk_children():
+        custom_id = getattr(component, "custom_id", None)
+        if custom_id:
+            for forbidden in (
+                str(selected.public_id),
+                expected,
+            ):
+                assert forbidden not in custom_id
+
+
+@pytest.mark.asyncio
+async def test_delete_reason_modal_submit_rechecks_administrator_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = replace(view(), creator_user_id=USER_ID + 1)
+    service = AsyncMock()
+    service.preview.side_effect = ScheduleDeletionUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleDeletionService", lambda unused: service
+    )
+    group = commands(AsyncMock())
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=True),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = DeleteReasonModal(commands=group, detail_view=parent)
+    modal.reason._value = "監査理由"
+
+    lost_permission = interaction(administrator=False)
+    await modal.on_submit(lost_permission)
+
+    assert service.preview.await_args.kwargs["administrator"] is False
+    assert lost_permission.response.send_message.await_args.args == (DELETE_UNAVAILABLE_MESSAGE,)
+    assert lost_permission.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert lost_permission.response.send_message.await_args.kwargs[
+        "allowed_mentions"
+    ].to_dict() == {"parse": []}
+    service.delete.assert_not_awaited()
+    assert parent.finished is False and parent.closed is False and not parent.is_finished()
 
 
 @pytest.mark.asyncio

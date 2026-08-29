@@ -95,6 +95,7 @@ from discord_ai_reminder_bot.domain.schedule_creation import (
 from discord_ai_reminder_bot.domain.schedule_deletion import (
     InvalidDeleteReasonError,
     validate_delete_reason,
+    validate_required_delete_reason,
 )
 
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
@@ -115,9 +116,8 @@ DUPLICATE_WARNING_MESSAGE = (
     "同一予約の可能性があります。意図的に作成する場合はallow_duplicate=trueで再実行してください。"
 )
 DELETE_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、削除できません。"
-DELETE_REASON_REQUIRED_MESSAGE = (
-    "他の利用者が作成した予約を削除する場合は、削除理由を入力してください。"
-)
+DELETE_REASON_INPUT_MESSAGE = "削除理由を1文字以上入力してください。"
+DELETE_REASON_REQUIRED_MESSAGE = DELETE_REASON_INPUT_MESSAGE
 DELETE_CANCELLED_MESSAGE = "予約の削除をキャンセルしました。"
 DELETE_EXPIRED_MESSAGE = (
     "確認の有効期限が切れました。必要な場合はもう一度 /post delete を実行してください。"
@@ -510,7 +510,11 @@ class ScheduleDeletionConfirmView(discord.ui.View):
 
 class DeleteReasonModal(discord.ui.Modal, title="削除理由を入力"):
     reason = discord.ui.TextInput(
-        label="削除理由", min_length=1, max_length=500, style=discord.TextStyle.paragraph
+        label="削除理由",
+        required=True,
+        min_length=1,
+        max_length=500,
+        style=discord.TextStyle.paragraph,
     )
 
     def __init__(self, *, commands: PostCommands, detail_view: ScheduleDetailView) -> None:
@@ -527,11 +531,11 @@ class DeleteReasonModal(discord.ui.Modal, title="削除理由を入力"):
                 return
             self.finished = True
             try:
-                reason = validate_delete_reason(str(self.reason.value))
+                reason = validate_required_delete_reason(str(self.reason.value))
             except InvalidDeleteReasonError:
                 self.finished = False
                 await respond_ephemeral(
-                    interaction, INVALID_INPUT_MESSAGE, logger=self.commands._logger
+                    interaction, DELETE_REASON_INPUT_MESSAGE, logger=self.commands._logger
                 )
                 return
             await self.commands._continue_detail_delete(self.detail_view, interaction, reason)

@@ -308,7 +308,7 @@ def resumed_schedule_embed(schedule: ResumedSchedule) -> discord.Embed:
 def _delete_reason_text(reason: str) -> str:
     if reason == MISSING_DELETE_REASON:
         return "未入力"
-    return escape_user_text(reason)
+    return "入力済み（監査ログへ保存）"
 
 
 def schedule_list_embed(

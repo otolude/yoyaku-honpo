@@ -472,7 +472,7 @@ def test_empty_list_is_an_embed() -> None:
     )
 
 
-def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_claims() -> None:
+def test_delete_preview_hides_audit_reason_and_shows_confirmation_without_mutation_claims() -> None:
     public_id = uuid.uuid7()
     embed = schedule_deletion_preview_embed(
         ScheduleDeletionView(
@@ -490,8 +490,9 @@ def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_c
     assert f"`{public_id}`" in text
     assert "🗓️ 投稿予定" in text
     assert "line 1 line 2" in text
-    assert "\\*\\*reason\\*\\*" in text
-    assert "@\u200beveryone" in text
+    assert "入力済み（監査ログへ保存）" in text
+    assert "reason" not in text
+    assert "@everyone" not in text
     assert "下のボタン" in text
     assert len(embed.fields) <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT
@@ -542,6 +543,7 @@ def test_deleted_embed_has_safe_fixed_result_without_thirty_day_promise() -> Non
     assert "削除済みとして記録しました" in text
     assert "すでにDiscordへ投稿されたメッセージは削除されません" in text
     assert "30日後" not in text
-    assert "\\_resolved\\_" in text
+    assert "入力済み（監査ログへ保存）" in text
+    assert "operator" not in text
     assert len(embed.fields) <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT

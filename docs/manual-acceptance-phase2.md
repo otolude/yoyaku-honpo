@@ -4,7 +4,7 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 44件／未確認 3件（合計47件）
+- 集計: 確認済み 45件／未確認 2件（合計47件）
 
 ## 実Discord確認記録
 
@@ -118,6 +118,13 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 「詳細編集表示・情報境界」は`tests/test_post_commands.py::test_detail_edit_result_keeps_body_only_in_modal_and_latest_detail`で、現在本文をModal初期値と最新Detailの正式な本文欄だけへ表示し、成功通知、no-op、競合、DB失敗の案内・custom_id・固定ログへ本文全文、version、guild／user ID、秘密、例外全文を複製しないことを確認した。`tests/test_post_commands.py::test_daily_detail_edit_v2_submit_reaches_service_with_all_field_semantics`、`tests/test_post_commands.py::test_detail_edit_channel_failures_use_destination_message_before_transaction`、`tests/test_post_commands.py::test_detail_edit_expected_version_conflict_still_refreshes_detail`、`tests/test_post_commands.py::test_detail_edit_modal_on_error_is_sanitized_and_preserves_parent`、既存の入力不正・全角終了日node群で、成功、no-op、入力・終了日・channel不正、認可、競合、DB／Presenter失敗、Modal on_errorを横断し、固定イベント、親View維持または最新View移譲、ephemeral、`AllowedMentions.none()`を確認した。`tests/test_post_commands.py::test_detail_edit_modal_has_type_specific_v2_labels_and_defaults`とPresenter上限node群でModal、Select、TextInput、EmbedのDiscord上限を確認した。
 
+### 2026-08-30 管理者による他人予約削除理由隔離受入
+
+- 実施者: Oto
+- 証跡種別: Fake Interaction／専用PostgreSQLによる隔離受入
+
+「管理者の他人削除理由」は`tests/test_schedule_deletion.py::test_required_delete_reason_rejects_missing_whitespace_and_too_long`、`tests/test_schedule_deletion.py::test_required_delete_reason_trims_edges_and_preserves_valid_content`、`tests/test_schedule_deletion.py::test_admin_other_required_reason_is_application_final_defense`で、空文字、半角・全角・制御空白、混合空白、501文字を型付きエラーで拒否し、1文字、trim対象、500文字、内部空白・改行、日本語を保存用理由として維持するDomain／Application境界を確認した。`tests/test_post_commands.py::test_delete_reason_modal_rejects_invalid_input_before_session_and_can_reopen`、`tests/test_post_commands.py::test_delete_reason_modal_passes_only_trimmed_valid_reason_to_delete_flow`、`tests/test_post_commands.py::test_closed_delete_reason_modal_can_be_reopened_without_retiring_detail`で、管理者の他作成者予約だけに有限timeoutの理由Modalを表示し、専用固定案内、Session開始前拒否、親Detail維持、再オープン、二重submit防止、fixed custom_id、ephemeral、`AllowedMentions.none()`を確認した。`tests/integration/test_schedule_deletion_integration.py::test_real_postgres_admin_other_invalid_reason_changes_nothing`、`tests/integration/test_schedule_deletion_integration.py::test_real_postgres_admin_deletes_other_owner_with_expected_kind`と既存の所有者・認可・guild・version・状態・rollback・同時削除node群で、拒否時のSchedule・run・OperationLog・NotificationLog非変更、有効なtrim済み理由を伴う1回の論理削除と1件のOperationLog、所有者本人の理由省略、操作時の最新認可・競合再検証を確認した。`tests/test_post_presenter.py::test_delete_preview_hides_audit_reason_and_shows_confirmation_without_mutation_claims`、`tests/test_post_presenter.py::test_deleted_embed_has_safe_fixed_result_without_thirty_day_promise`で、監査理由全文を利用者向け確認・成功Embedへ複製せず、Discordメッセージを削除しない固定案内を確認した。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
@@ -153,7 +160,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 詳細から再開4択 | 保持投稿時刻後に4択が表示され、各選択肢が既存再開規則どおり動作する |
 | [x] | 再開cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`ResumeChoice`はcancelでDB更新せずpausedを維持して最新Detail Viewへ戻る。timeoutでもDB更新せずpausedを維持し、ResumeChoiceを操作不能にして親詳細を再取得する方法を案内する。待機中にSession、transaction、row lockを保持せず、Bot close時にViewとwait Taskを回収する |
 | [x] | 詳細から作成者削除 | 作成者は理由入力なしで確認へ進み、成功後にdeleted詳細と固定通知が表示される |
-| [ ] | 管理者の他人削除理由 | 管理者が他人の予約を削除すると1～500文字の理由Modalが先に表示され、空白だけを拒否する |
+| [x] | 管理者の他人削除理由 | 管理者が同じguildの他作成者予約を削除する場合だけ、前後空白除去後1～500文字の理由Modalを先に表示し、空文字、半角・全角・Unicode／制御空白だけ、501文字以上を固定理由へ変換せず拒否する。所有者本人は理由Modalなしの既存経路を維持する。submit時にguild、管理者権限、expected_version、状態、run／attemptを再検証し、失敗時はDB・ログを変更せず親Detailを維持する。有効理由だけをDeletion Serviceへ渡して同一transactionのOperationLogへ監査用に保存し、利用者向け応答・custom_id・通常ログへ理由全文や内部情報を複製しない |
 | [x] | 削除cancel／timeout | 親`ScheduleDetailView`はBot稼働中操作可能とし、有限timeoutの`DeleteConfirm`はcancelでDB更新・削除・OperationLog生成を行わず最新Detail Viewへ戻る。timeoutでは削除せず、待機中にSession、transaction、row lockを保持しない。Bot close時にViewとwait Taskを回収する |
 | [x] | 詳細操作競合 | 古い詳細からの操作が固定の競合案内で拒否され、最新詳細とボタンへ更新される |
 | [x] | 詳細操作情報境界 | custom_id、Embed、応答、通常ログに予約本文、version、内部ID、理由、秘密情報、例外全文が出ない |
