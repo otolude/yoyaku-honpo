@@ -403,6 +403,15 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 候補は参考情報であり、実行時の認可、状態、version、run、attempt、row lockによる再検証を省略しない。
 - Autocompleteは読み取り専用とし、Discord REST追加取得、DB更新、モデル・Migration・Intent・Bot権限追加を行わない。
 
+## 12.2 Phase 2: 予約詳細View基盤
+
+- `/post show`と`/post list`の選択後は、同じ予約詳細DTOと詳細Contextを使用する。DTOは正の`version`を内部用に持つが、Embedへ表示しない。
+- 詳細取得時に状態、種別、current run、pending run、processing run、DeliveryAttempt、5分境界をread-onlyで観測し、編集・一時停止・再開・削除の表示用可否を不変DTOで返す。可否は参考情報であり、将来の操作時も既存Application Serviceの再検証を最終判断とする。
+- 第1段階では未接続の操作ボタンを表示しない。直接showは空Viewを送らず、一覧由来だけ固定custom IDの「一覧へ戻る」を表示する。
+- 一覧由来の詳細Contextは状態、種類、ページを保持する。戻る操作では最新の認可、予約所有境界、一覧を再取得し、末尾ページ消滅時は最後の有効ページへ補正する。
+- 詳細Viewは本人限定、ephemeral、最後の有効操作から900秒の非永続Viewとする。timeout時はDBへ接続せず、表示内容と部品を残してdisabledにし、固定の再実行案内を加える。
+- View待機中にSession、transaction、row lockを保持せず、Bot終了時は一覧・詳細・既存確認ViewとModalを停止してwaitを回収する。
+
 ## 13. β版の完成条件
 
 次の条件をすべて満たしたとき、Phase 1のβ版を完成とする。

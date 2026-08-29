@@ -6,15 +6,19 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.exceptions import RepositoryNotFoundError
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule
-from discord_ai_reminder_bot.infrastructure.database.repositories import ScheduleRepository
+from discord_ai_reminder_bot.infrastructure.database.repositories import (
+    ScheduleActionDetailRow,
+    ScheduleRepository,
+)
 
 SCHEDULES_PER_PAGE = 10
 # Discord integer command options are bounded to JavaScript's exact integer range.
@@ -45,6 +49,14 @@ class InvalidScheduleQueryError(ValueError):
     """A public command query failed safe input validation."""
 
 
+class ScheduleActionReason(StrEnum):
+    AVAILABLE = "available"
+    STATUS_OR_TYPE = "status_or_type"
+    TIME_WINDOW = "time_window"
+    RUN_CONFLICT = "run_conflict"
+    ATTEMPT_CONFLICT = "attempt_conflict"
+
+
 @dataclass(frozen=True)
 class ScheduleView:
     public_id: uuid.UUID
@@ -57,6 +69,39 @@ class ScheduleView:
     local_time: time | None
     weekday: int | None
     end_date: date | None
+    version: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version <= 0:
+            raise ValueError("schedule version must be a positive integer")
+
+
+@dataclass(frozen=True)
+class ScheduleActionAvailability:
+    can_edit: bool
+    can_pause: bool
+    can_resume: bool
+    can_delete: bool
+    reason_code: ScheduleActionReason
+    observed_version: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.observed_version, bool)
+            or not isinstance(self.observed_version, int)
+            or self.observed_version <= 0
+        ):
+            raise ValueError("observed version must be a positive integer")
+
+
+@dataclass(frozen=True)
+class ScheduleDetail:
+    schedule: ScheduleView
+    actions: ScheduleActionAvailability
+
+    def __post_init__(self) -> None:
+        if self.schedule.version != self.actions.observed_version:
+            raise ValueError("detail versions must match")
 
 
 @dataclass(frozen=True)
@@ -239,6 +284,45 @@ class ScheduleQueryService:
                 return None
             return _to_view(schedule)
 
+    async def get_schedule_detail(
+        self,
+        *,
+        guild_id: int,
+        requester_user_id: int,
+        administrator: bool,
+        public_id: str,
+        now: datetime,
+    ) -> ScheduleDetail | None:
+        """Return one detached detail and a conservative read-only action observation."""
+        _validate_query_ids(guild_id=guild_id, requester_user_id=requester_user_id)
+        parsed_id = parse_public_id(public_id)
+        now = require_utc(now)
+        async with self._session_factory() as session:
+            try:
+                row = await ScheduleRepository(session).get_action_detail(
+                    guild_id=guild_id,
+                    public_id=parsed_id,
+                )
+            except RepositoryNotFoundError:
+                return None
+            if not administrator and row.creator_user_id != requester_user_id:
+                return None
+            schedule = ScheduleView(
+                public_id=row.public_id,
+                channel_id=row.channel_id,
+                creator_user_id=row.creator_user_id,
+                schedule_type=ScheduleType(row.schedule_type),
+                status=ScheduleStatus(row.status),
+                content=row.content,
+                next_run_at=row.next_run_at,
+                local_time=row.local_time,
+                weekday=row.weekday,
+                end_date=row.end_date,
+                version=row.version,
+            )
+            actions = _action_availability(schedule=schedule, row=row, now=now)
+        return ScheduleDetail(schedule=schedule, actions=actions)
+
 
 def _validate_query_ids(*, guild_id: int, requester_user_id: int) -> None:
     for value in (guild_id, requester_user_id):
@@ -319,4 +403,99 @@ def _to_view(schedule: Schedule) -> ScheduleView:
         local_time=schedule.local_time,
         weekday=schedule.weekday,
         end_date=schedule.end_date,
+        version=schedule.version,
+    )
+
+
+def _action_availability(
+    *, schedule: ScheduleView, row: ScheduleActionDetailRow, now: datetime
+) -> ScheduleActionAvailability:
+    """Evaluate display-only action hints; mutation services remain authoritative."""
+    recurring = schedule.schedule_type in {ScheduleType.DAILY, ScheduleType.WEEKLY}
+    editable_status = schedule.status in {
+        ScheduleStatus.DRAFT,
+        ScheduleStatus.ACTIVE,
+        ScheduleStatus.PAUSED,
+    }
+    deletable_status = schedule.status in {
+        ScheduleStatus.DRAFT,
+        ScheduleStatus.ACTIVE,
+        ScheduleStatus.PAUSED,
+        ScheduleStatus.FAILED,
+    }
+    attempt_conflict = row.unsafe_attempt_count > 0
+    processing_conflict = row.processing_run_count > 0
+    current_required = schedule.status in {ScheduleStatus.DRAFT, ScheduleStatus.ACTIVE}
+    current_consistent = (
+        schedule.next_run_at is not None
+        and row.current_run_count == 1
+        and row.current_pending_count == 1
+    )
+    current_conflict = current_required and not current_consistent
+    common_conflict = attempt_conflict or processing_conflict or current_conflict
+
+    can_edit = editable_status and not common_conflict
+    if schedule.status is ScheduleStatus.PAUSED:
+        can_edit = can_edit and recurring and schedule.next_run_at is None
+    else:
+        can_edit = bool(
+            can_edit
+            and schedule.next_run_at is not None
+            and schedule.next_run_at >= now + timedelta(minutes=5)
+        )
+
+    can_pause = bool(
+        schedule.status is ScheduleStatus.ACTIVE
+        and recurring
+        and current_consistent
+        and not attempt_conflict
+        and not processing_conflict
+    )
+    can_resume = bool(
+        schedule.status is ScheduleStatus.PAUSED
+        and recurring
+        and schedule.next_run_at is None
+        and row.pending_run_count <= 1
+        and row.non_pristine_pending_count == 0
+        and not attempt_conflict
+        and not processing_conflict
+    )
+    can_delete = deletable_status and not attempt_conflict and not processing_conflict
+    if schedule.status is ScheduleStatus.PAUSED:
+        can_delete = can_delete and recurring and schedule.next_run_at is None
+    elif schedule.status is ScheduleStatus.FAILED:
+        can_delete = can_delete and schedule.schedule_type is ScheduleType.ONCE
+    if current_required:
+        can_delete = can_delete and current_consistent
+
+    if attempt_conflict:
+        reason = ScheduleActionReason.ATTEMPT_CONFLICT
+    elif (
+        processing_conflict
+        or current_conflict
+        or (
+            schedule.status is ScheduleStatus.PAUSED
+            and (row.pending_run_count > 1 or row.non_pristine_pending_count > 0)
+        )
+    ):
+        reason = ScheduleActionReason.RUN_CONFLICT
+    elif (
+        editable_status
+        and schedule.status is not ScheduleStatus.PAUSED
+        and current_consistent
+        and schedule.next_run_at is not None
+        and schedule.next_run_at < now + timedelta(minutes=5)
+    ):
+        reason = ScheduleActionReason.TIME_WINDOW
+    elif not any((can_edit, can_pause, can_resume, can_delete)):
+        reason = ScheduleActionReason.STATUS_OR_TYPE
+    else:
+        reason = ScheduleActionReason.AVAILABLE
+    return ScheduleActionAvailability(
+        can_edit=can_edit,
+        can_pause=can_pause,
+        can_resume=can_resume,
+        can_delete=can_delete,
+        reason_code=reason,
+        observed_version=schedule.version,
     )

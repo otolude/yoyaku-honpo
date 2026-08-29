@@ -22,6 +22,7 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     ScheduleView,
 )
 from discord_ai_reminder_bot.bot.post_presenter import (
+    DETAIL_EXPIRED_GUIDANCE,
     EMBED_FIELD_LIMIT,
     EMBED_FIELD_NAME_LIMIT,
     EMBED_FIELD_VALUE_LIMIT,
@@ -33,6 +34,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_schedule_embed,
     deleted_schedule_embed,
     edited_schedule_embed,
+    expired_schedule_detail_embed,
     paused_schedule_embed,
     resumed_schedule_embed,
     schedule_autocomplete_choice,
@@ -64,6 +66,7 @@ def view(
         local_time=time(9, 15) if schedule_type is not ScheduleType.ONCE else None,
         weekday=0 if schedule_type is ScheduleType.WEEKLY else None,
         end_date=date(2026, 8, 31) if schedule_type is not ScheduleType.ONCE else None,
+        version=1,
     )
 
 
@@ -493,6 +496,20 @@ def test_delete_preview_escapes_reason_and_shows_confirmation_without_mutation_c
     assert "下のボタン" in text
     assert len(embed.fields) <= EMBED_FIELD_LIMIT
     assert len(embed) <= EMBED_TOTAL_LIMIT
+
+
+def test_detail_never_displays_internal_version() -> None:
+    item = view()
+    embed = schedule_detail_embed(item)
+    assert all("version" not in field.name.casefold() for field in embed.fields)
+    assert all("バージョン" not in field.name for field in embed.fields)
+
+
+def test_expired_detail_keeps_fields_and_adds_fixed_guidance() -> None:
+    original = schedule_detail_embed(view())
+    expired = expired_schedule_detail_embed(original)
+    assert DETAIL_EXPIRED_GUIDANCE in expired.description
+    assert expired.fields == original.fields
 
 
 def test_delete_embeds_show_missing_reason_as_unentered() -> None:

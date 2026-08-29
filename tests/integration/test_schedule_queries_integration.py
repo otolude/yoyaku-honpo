@@ -1,9 +1,10 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
@@ -18,6 +19,7 @@ from discord_ai_reminder_bot.domain.enums import (
 )
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    OperationLog,
     Schedule,
     ScheduleRun,
 )
@@ -135,6 +137,26 @@ async def add_current_run(
     session.add(run)
     await session.flush()
     if attempt_status is not None:
+        send_started = (
+            NOW
+            if attempt_status
+            in {
+                DeliveryAttemptStatus.SENDING,
+                DeliveryAttemptStatus.SUCCEEDED,
+                DeliveryAttemptStatus.UNKNOWN,
+            }
+            else None
+        )
+        finished_at = (
+            NOW
+            if attempt_status
+            in {
+                DeliveryAttemptStatus.SUCCEEDED,
+                DeliveryAttemptStatus.FAILED,
+                DeliveryAttemptStatus.UNKNOWN,
+            }
+            else None
+        )
         session.add(
             DeliveryAttempt(
                 schedule_run_id=run.id,
@@ -142,7 +164,8 @@ async def add_current_run(
                 status=attempt_status.value,
                 claimed_by=worker_id,
                 claimed_at=NOW,
-                send_started_at=(NOW if attempt_status is DeliveryAttemptStatus.SENDING else None),
+                send_started_at=send_started,
+                finished_at=finished_at,
             )
         )
         await session.flush()
@@ -165,6 +188,23 @@ async def autocomplete(
         current=current,
         channel_ids=channel_ids,
         now=NOW,
+    )
+
+
+async def schedule_detail(
+    session: AsyncSession,
+    schedule: Schedule,
+    *,
+    administrator: bool = False,
+    requester_user_id: int = CREATOR_ID,
+    now: datetime = NOW,
+):
+    return await service_for(session).get_schedule_detail(
+        guild_id=GUILD_ID,
+        requester_user_id=requester_user_id,
+        administrator=administrator,
+        public_id=str(schedule.public_id),
+        now=now,
     )
 
 
@@ -538,3 +578,284 @@ async def test_autocomplete_fixed_searches_and_read_only_snapshot(db_session: As
     assert {item.public_id for item in by_channel_names} == {daily_public_id, weekly_public_id}
     assert len(by_channel_names) == 2
     assert (reloaded.version, reloaded.updated_at, reloaded.content) == before
+
+
+@pytest.mark.parametrize(
+    ("status", "schedule_type", "expected"),
+    [
+        (ScheduleStatus.DRAFT, ScheduleType.ONCE, (True, False, False, True)),
+        (ScheduleStatus.DRAFT, ScheduleType.DAILY, (True, False, False, True)),
+        (ScheduleStatus.DRAFT, ScheduleType.WEEKLY, (True, False, False, True)),
+        (ScheduleStatus.ACTIVE, ScheduleType.ONCE, (True, False, False, True)),
+        (ScheduleStatus.ACTIVE, ScheduleType.DAILY, (True, True, False, True)),
+        (ScheduleStatus.ACTIVE, ScheduleType.WEEKLY, (True, True, False, True)),
+        (ScheduleStatus.PAUSED, ScheduleType.DAILY, (True, False, True, True)),
+        (ScheduleStatus.PAUSED, ScheduleType.WEEKLY, (True, False, True, True)),
+        (ScheduleStatus.FAILED, ScheduleType.ONCE, (False, False, False, True)),
+        (ScheduleStatus.COMPLETED, ScheduleType.ONCE, (False, False, False, False)),
+        (ScheduleStatus.ENDED, ScheduleType.DAILY, (False, False, False, False)),
+        (ScheduleStatus.ENDED, ScheduleType.WEEKLY, (False, False, False, False)),
+        (ScheduleStatus.DELETED, ScheduleType.ONCE, (False, False, False, False)),
+        (ScheduleStatus.DELETED, ScheduleType.DAILY, (False, False, False, False)),
+        (ScheduleStatus.DELETED, ScheduleType.WEEKLY, (False, False, False, False)),
+    ],
+)
+async def test_detail_action_availability_for_every_valid_state_and_type(
+    db_session: AsyncSession,
+    status: ScheduleStatus,
+    schedule_type: ScheduleType,
+    expected: tuple[bool, bool, bool, bool],
+) -> None:
+    schedule = autocomplete_schedule(
+        status=status,
+        schedule_type=schedule_type,
+        next_run_at=NOW + timedelta(minutes=10),
+    )
+    db_session.add(schedule)
+    if status in {ScheduleStatus.DRAFT, ScheduleStatus.ACTIVE, ScheduleStatus.PAUSED}:
+        await add_current_run(db_session, schedule)
+    await db_session.flush()
+
+    result = await schedule_detail(db_session, schedule)
+
+    assert result is not None
+    assert (
+        result.actions.can_edit,
+        result.actions.can_pause,
+        result.actions.can_resume,
+        result.actions.can_delete,
+    ) == expected
+    assert result.schedule.version == result.actions.observed_version == schedule.version
+
+
+async def test_detail_action_run_attempt_and_time_boundaries(db_session: AsyncSession) -> None:
+    healthy = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    missing = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    terminal = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    processing = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    claimed = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    sending = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    unknown = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    boundary = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=5))
+    inside = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=5, microseconds=-1))
+    db_session.add_all(
+        [healthy, missing, terminal, processing, claimed, sending, unknown, boundary, inside]
+    )
+    await add_current_run(db_session, healthy)
+    await add_current_run(db_session, terminal, status=RunStatus.SUCCEEDED)
+    await add_current_run(db_session, processing, status=RunStatus.PROCESSING)
+    await add_current_run(db_session, claimed, attempt_status=DeliveryAttemptStatus.CLAIMED)
+    await add_current_run(db_session, sending, attempt_status=DeliveryAttemptStatus.SENDING)
+    await add_current_run(db_session, unknown, attempt_status=DeliveryAttemptStatus.UNKNOWN)
+    await add_current_run(db_session, boundary)
+    await add_current_run(db_session, inside)
+    await db_session.flush()
+
+    observed = {
+        item.public_id: await schedule_detail(db_session, item)
+        for item in [
+            healthy,
+            missing,
+            terminal,
+            processing,
+            claimed,
+            sending,
+            unknown,
+            boundary,
+            inside,
+        ]
+    }
+
+    assert observed[healthy.public_id] is not None
+    assert observed[healthy.public_id].actions.can_pause
+    for item in (missing, terminal, processing, claimed, sending, unknown):
+        result = observed[item.public_id]
+        assert result is not None
+        assert not any(
+            (
+                result.actions.can_edit,
+                result.actions.can_pause,
+                result.actions.can_resume,
+                result.actions.can_delete,
+            )
+        )
+    assert observed[boundary.public_id] is not None
+    assert observed[boundary.public_id].actions.can_edit
+    assert observed[inside.public_id] is not None
+    assert not observed[inside.public_id].actions.can_edit
+    assert observed[inside.public_id].actions.can_delete
+
+
+async def test_detail_paused_resume_requires_pristine_pending(db_session: AsyncSession) -> None:
+    pristine = autocomplete_schedule(
+        status=ScheduleStatus.PAUSED,
+        schedule_type=ScheduleType.DAILY,
+    )
+    retry = autocomplete_schedule(
+        status=ScheduleStatus.PAUSED,
+        schedule_type=ScheduleType.DAILY,
+    )
+    multiple = autocomplete_schedule(
+        status=ScheduleStatus.PAUSED,
+        schedule_type=ScheduleType.WEEKLY,
+    )
+    db_session.add_all([pristine, retry, multiple])
+    await add_current_run(db_session, pristine)
+    retry_run = await add_current_run(db_session, retry)
+    retry_run.attempt_count = 1
+    retry_run.next_attempt_at = retry_run.scheduled_for + timedelta(minutes=1)
+    await add_current_run(db_session, multiple)
+    await db_session.flush()
+    db_session.add(
+        ScheduleRun(
+            schedule_id=multiple.id,
+            scheduled_for=NOW + timedelta(hours=2),
+            status=RunStatus.PENDING.value,
+            attempt_count=0,
+            next_attempt_at=NOW + timedelta(hours=2),
+            updated_at=NOW,
+        )
+    )
+    await db_session.flush()
+
+    pristine_detail = await schedule_detail(db_session, pristine)
+    retry_detail = await schedule_detail(db_session, retry)
+    multiple_detail = await schedule_detail(db_session, multiple)
+
+    assert pristine_detail is not None and pristine_detail.actions.can_resume
+    assert retry_detail is not None and not retry_detail.actions.can_resume
+    assert retry_detail.actions.can_edit and retry_detail.actions.can_delete
+    assert multiple_detail is not None and not multiple_detail.actions.can_resume
+
+
+async def test_detail_creator_admin_guild_and_detached_dto_boundaries(
+    db_session: AsyncSession,
+) -> None:
+    other = autocomplete_schedule(creator_user_id=OTHER_CREATOR_ID)
+    other_guild = autocomplete_schedule(guild_id=OTHER_GUILD_ID)
+    db_session.add_all([other, other_guild])
+    await add_current_run(db_session, other)
+    await add_current_run(db_session, other_guild)
+    await db_session.flush()
+
+    denied = await schedule_detail(db_session, other)
+    admin = await schedule_detail(db_session, other, administrator=True)
+    wrong_guild = await schedule_detail(db_session, other_guild, administrator=True)
+
+    assert denied is None
+    assert admin is not None and admin.schedule.creator_user_id == OTHER_CREATOR_ID
+    assert wrong_guild is None
+    assert admin.schedule.public_id == other.public_id
+    assert admin.actions.observed_version == other.version
+
+
+async def test_detail_query_is_fully_read_only(db_session: AsyncSession) -> None:
+    schedule = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    db_session.add(schedule)
+    run = await add_current_run(db_session, schedule, attempt_status=DeliveryAttemptStatus.FAILED)
+    await db_session.flush()
+    attempt = (
+        await db_session.execute(
+            select(DeliveryAttempt).where(DeliveryAttempt.schedule_run_id == run.id)
+        )
+    ).scalar_one()
+    before = {
+        "schedule": (schedule.version, schedule.updated_at, schedule.status, schedule.next_run_at),
+        "run": (
+            run.status,
+            run.attempt_count,
+            run.next_attempt_at,
+            run.updated_at,
+        ),
+        "attempt": (attempt.status, attempt.finished_at, attempt.error_code),
+    }
+    operation_count = await db_session.scalar(select(func.count(OperationLog.id)))
+    schedule_id = schedule.id
+    run_id = run.id
+    attempt_id = attempt.id
+
+    result = await schedule_detail(db_session, schedule)
+    db_session.expire_all()
+    reloaded_schedule = (
+        await db_session.execute(select(Schedule).where(Schedule.id == schedule_id))
+    ).scalar_one()
+    reloaded_run = (
+        await db_session.execute(select(ScheduleRun).where(ScheduleRun.id == run_id))
+    ).scalar_one()
+    reloaded_attempt = (
+        await db_session.execute(select(DeliveryAttempt).where(DeliveryAttempt.id == attempt_id))
+    ).scalar_one()
+
+    assert result is not None
+    assert result.schedule.content == "never returned body"
+    assert (
+        reloaded_schedule.version,
+        reloaded_schedule.updated_at,
+        reloaded_schedule.status,
+        reloaded_schedule.next_run_at,
+    ) == before["schedule"]
+    assert (
+        reloaded_run.status,
+        reloaded_run.attempt_count,
+        reloaded_run.next_attempt_at,
+        reloaded_run.updated_at,
+    ) == before["run"]
+    assert (
+        reloaded_attempt.status,
+        reloaded_attempt.finished_at,
+        reloaded_attempt.error_code,
+    ) == before["attempt"]
+    assert await db_session.scalar(select(func.count(OperationLog.id))) == operation_count
+
+
+async def test_detail_query_does_not_block_worker_row_lock(test_engine: AsyncEngine) -> None:
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    schedule = autocomplete_schedule(next_run_at=NOW + timedelta(minutes=10))
+    async with factory.begin() as setup:
+        setup.add(schedule)
+        await setup.flush()
+        run = ScheduleRun(
+            schedule_id=schedule.id,
+            scheduled_for=schedule.next_run_at,
+            status=RunStatus.PENDING.value,
+            attempt_count=0,
+            next_attempt_at=schedule.next_run_at,
+            updated_at=NOW,
+        )
+        setup.add(run)
+        await setup.flush()
+        schedule_id = schedule.id
+        run_id = run.id
+        public_id = schedule.public_id
+
+    locked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_worker_lock() -> None:
+        async with factory.begin() as worker:
+            await worker.execute(
+                select(ScheduleRun).where(ScheduleRun.id == run_id).with_for_update()
+            )
+            locked.set()
+            await release.wait()
+
+    worker_task = asyncio.create_task(hold_worker_lock())
+    try:
+        await asyncio.wait_for(locked.wait(), timeout=2)
+        detail = await asyncio.wait_for(
+            ScheduleQueryService(factory).get_schedule_detail(
+                guild_id=GUILD_ID,
+                requester_user_id=CREATOR_ID,
+                administrator=False,
+                public_id=str(public_id),
+                now=NOW,
+            ),
+            timeout=1,
+        )
+        assert detail is not None and detail.actions.can_pause
+    finally:
+        release.set()
+        await asyncio.wait_for(worker_task, timeout=2)
+        async with factory.begin() as cleanup:
+            await cleanup.execute(delete(ScheduleRun).where(ScheduleRun.id == run_id))
+            await cleanup.execute(delete(Schedule).where(Schedule.id == schedule_id))

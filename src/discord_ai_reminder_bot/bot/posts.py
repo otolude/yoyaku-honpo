@@ -39,6 +39,7 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     MAX_PAGE_NUMBER,
     InvalidScheduleQueryError,
     ScheduleAutocompleteOperation,
+    ScheduleDetail,
     SchedulePage,
     ScheduleQueryService,
     parse_public_id,
@@ -56,6 +57,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     created_schedule_embed,
     deleted_schedule_embed,
     edited_schedule_embed,
+    expired_schedule_detail_embed,
     expired_schedule_list_embed,
     once_schedule_confirmation_embed,
     paused_schedule_embed,
@@ -65,6 +67,11 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     schedule_detail_embed,
     schedule_list_embed,
     schedule_select_option,
+)
+from discord_ai_reminder_bot.bot.post_views import (
+    ScheduleDetailContext,
+    ScheduleDetailView,
+    ScheduleListOrigin,
 )
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -221,18 +228,9 @@ class ScheduleListView(discord.ui.View):
         self.closed = False
         self._render_controls(page)
 
-    def _render_controls(self, page: SchedulePage, *, detail: bool = False) -> None:
+    def _render_controls(self, page: SchedulePage) -> None:
         self.clear_items()
         self.page = page.page
-        if detail:
-            button = discord.ui.Button(
-                label="一覧へ戻る",
-                style=discord.ButtonStyle.secondary,
-                custom_id="post_list_back",
-            )
-            button.callback = self._back
-            self.add_item(button)
-            return
         previous = discord.ui.Button(
             label="前へ",
             style=discord.ButtonStyle.secondary,
@@ -260,9 +258,6 @@ class ScheduleListView(discord.ui.View):
 
     async def _next(self, interaction: discord.Interaction) -> None:
         await self.commands._move_list_page(self, interaction, self.page + 1)
-
-    async def _back(self, interaction: discord.Interaction) -> None:
-        await self.commands._move_list_page(self, interaction, self.page)
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         actor = authorized_actor(
@@ -301,6 +296,7 @@ class ScheduleDeletionConfirmView(discord.ui.View):
         self.actor_user_id = actor_user_id
         self.action_lock = asyncio.Lock()
         self.finished = False
+        self.closed = False
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         actor = authorized_actor(
@@ -369,6 +365,7 @@ class OnceScheduleConfirmView(discord.ui.View):
         self.actor_user_id = actor_user_id
         self.action_lock = asyncio.Lock()
         self.finished = False
+        self.closed = False
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         actor = authorized_actor(
@@ -413,11 +410,20 @@ class ResumeTimeModal(discord.ui.Modal, title="本日分の投稿時刻を指定
     def __init__(self, view: ResumeChoiceView) -> None:
         super().__init__(timeout=120.0, custom_id="post_resume_time_modal")
         self.resume_view = view
+        self.closed = False
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await self.resume_view.commands._submit_resume_time(
-            self.resume_view, interaction, str(self.local_time.value)
-        )
+        try:
+            await self.resume_view.commands._submit_resume_time(
+                self.resume_view, interaction, str(self.local_time.value)
+            )
+        finally:
+            self.closed = True
+            self.resume_view.commands._resume_modals.discard(self)
+
+    async def on_timeout(self) -> None:
+        self.closed = True
+        self.resume_view.commands._resume_modals.discard(self)
 
 
 class ResumeChoiceView(discord.ui.View):
@@ -437,6 +443,7 @@ class ResumeChoiceView(discord.ui.View):
         self.actor_user_id = actor_user_id
         self.action_lock = asyncio.Lock()
         self.finished = False
+        self.closed = False
         if not rescue_allowed:
             self.immediate_button.disabled = True
             self.time_button.disabled = True
@@ -480,7 +487,14 @@ class ResumeChoiceView(discord.ui.View):
                 interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self.commands._logger
             )
             return
-        await interaction.response.send_modal(ResumeTimeModal(self))
+        modal = ResumeTimeModal(self)
+        self.commands._resume_modals.add(modal)
+        try:
+            await interaction.response.send_modal(modal)
+        except Exception:  # noqa: BLE001 - Discord details remain private
+            self.commands._resume_modals.discard(modal)
+            modal.stop()
+            self.commands._logger.error("schedule_resume_modal_response_failed")
 
     @discord.ui.button(
         label="キャンセル", style=discord.ButtonStyle.secondary, custom_id="post_resume_cancel"
@@ -543,7 +557,9 @@ class PostCommands(app_commands.Group):
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
         self._create_views: set[OnceScheduleConfirmView] = set()
         self._resume_views: set[ResumeChoiceView] = set()
+        self._resume_modals: set[ResumeTimeModal] = set()
         self._list_views: set[ScheduleListView] = set()
+        self._detail_views: set[ScheduleDetailView] = set()
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
@@ -736,22 +752,40 @@ class PostCommands(app_commands.Group):
         if actor is None:
             return
         try:
-            schedule = await self._queries.show_schedule(
+            detail = await self._queries.get_schedule_detail(
                 guild_id=self._configured_guild_id,
                 requester_user_id=actor.user_id,
                 administrator=actor.administrator,
                 public_id=public_id,
+                now=self._clock.now(),
             )
         except InvalidScheduleQueryError:
-            schedule = None
+            detail = None
         except Exception:  # noqa: BLE001 - database details must not reach Discord or logs
             self._logger.error("schedule_show_failed")
             await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
             return
-        if schedule is None:
+        if detail is None:
             await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             return
-        await self._respond_embed(interaction, lambda: schedule_detail_embed(schedule))
+        try:
+            embed = schedule_detail_embed(detail.schedule)
+            detail_view = self._build_detail_view(
+                interaction=interaction,
+                actor_user_id=actor.user_id,
+                detail=detail,
+                embed=embed,
+            )
+        except Exception:  # noqa: BLE001 - presentation and context failures remain private
+            self._logger.error("schedule_presentation_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await respond_ephemeral(
+            interaction,
+            embed=embed,
+            view=detail_view if detail_view.has_components else None,
+            logger=self._logger,
+        )
 
     @show_command.autocomplete("public_id")
     async def show_public_id_autocomplete(
@@ -1441,6 +1475,7 @@ class PostCommands(app_commands.Group):
         views = tuple(self._delete_views)
         self._delete_views.clear()
         for view in views:
+            view.closed = True
             view.finished = True
             view.stop()
         if views:
@@ -1556,30 +1591,185 @@ class PostCommands(app_commands.Group):
                 await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
                 return
             try:
-                schedule = await self._queries.show_schedule(
+                detail = await self._queries.get_schedule_detail(
                     guild_id=self._configured_guild_id,
                     requester_user_id=actor.user_id,
                     administrator=actor.administrator,
                     public_id=public_id,
+                    now=self._clock.now(),
                 )
-                if schedule is None:
+                if detail is None:
                     await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
                     return
-                embed = schedule_detail_embed(schedule)
-                placeholder = SchedulePage((), view.page, 0)
-                view._render_controls(placeholder, detail=True)
+                embed = schedule_detail_embed(detail.schedule)
+                detail_view = self._build_detail_view(
+                    interaction=view.initial_interaction,
+                    actor_user_id=actor.user_id,
+                    detail=detail,
+                    embed=embed,
+                    list_origin=ScheduleListOrigin(
+                        status=view.status,
+                        schedule_type=view.schedule_type,
+                        page=view.page,
+                    ),
+                )
                 await interaction.response.edit_message(
                     content=None,
                     embed=embed,
-                    view=view,
+                    view=detail_view,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-                view.current_embed = embed
+                view.finished = True
+                view.closed = True
+                view.stop()
+                self._list_views.discard(view)
+                self._detail_views.add(detail_view)
             except InvalidScheduleQueryError:
                 await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
             except Exception:  # noqa: BLE001 - no private query/Discord details
                 self._logger.error("schedule_list_selection_failed")
                 await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+
+    def _build_detail_view(
+        self,
+        *,
+        interaction: discord.Interaction,
+        actor_user_id: int,
+        detail: ScheduleDetail,
+        embed: discord.Embed,
+        list_origin: ScheduleListOrigin | None = None,
+    ) -> ScheduleDetailView:
+        context = ScheduleDetailContext(
+            public_id=detail.schedule.public_id,
+            expected_version=detail.schedule.version,
+            actor_user_id=actor_user_id,
+            actions=detail.actions,
+            list_origin=list_origin,
+        )
+        return ScheduleDetailView(
+            commands=self,
+            interaction=interaction,
+            context=context,
+            embed=embed,
+        )
+
+    async def _detail_interaction_allowed(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> bool:
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self._configured_guild_id,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        if actor is not None and actor.user_id == view.context.actor_user_id:
+            return True
+        await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+        return False
+
+    async def _return_to_list(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                return
+            actor = authorized_actor(
+                interaction,
+                configured_guild_id=self._configured_guild_id,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            if actor is None or actor.user_id != view.context.actor_user_id:
+                await respond_ephemeral(interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger)
+                return
+            origin = view.context.list_origin
+            if origin is None:
+                await respond_ephemeral(interaction, NOT_FOUND_MESSAGE, logger=self._logger)
+                return
+            try:
+                detail = await self._queries.get_schedule_detail(
+                    guild_id=self._configured_guild_id,
+                    requester_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    public_id=str(view.context.public_id),
+                    now=self._clock.now(),
+                )
+                if detail is None:
+                    await respond_ephemeral(
+                        interaction, PERMISSION_DENIED_MESSAGE, logger=self._logger
+                    )
+                    return
+                result = await self._queries.get_schedule_page(
+                    guild_id=self._configured_guild_id,
+                    requester_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    status=origin.status,
+                    page=origin.page,
+                    schedule_type=origin.schedule_type,
+                    clamp=True,
+                )
+                embed = schedule_list_embed(
+                    result.schedules,
+                    page=result.page,
+                    status_filter=origin.status,
+                    schedule_type_filter=origin.schedule_type,
+                    total_count=result.total_count,
+                    total_pages=result.total_pages,
+                )
+                list_view = ScheduleListView(
+                    commands=self,
+                    interaction=view.initial_interaction,
+                    actor_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    status=origin.status,
+                    schedule_type=origin.schedule_type,
+                    page=result,
+                    embed=embed,
+                )
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=embed,
+                    view=list_view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                view.finished = True
+                view.closed = True
+                view.stop()
+                self._detail_views.discard(view)
+                self._list_views.add(list_view)
+            except Exception:  # noqa: BLE001 - query and Discord details remain private
+                self._logger.error("schedule_detail_back_failed")
+                await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+
+    async def _expire_detail(self, view: ScheduleDetailView) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed:
+                return
+            view.finished = True
+            view.timed_out = True
+            view.disable_components()
+            expired_embed = expired_schedule_detail_embed(view.current_embed)
+            try:
+                await view.initial_interaction.edit_original_response(
+                    content=None,
+                    embed=expired_embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - Discord details remain private
+                self._logger.error("schedule_detail_timeout_response_failed")
+            finally:
+                view.stop()
+                self._detail_views.discard(view)
+
+    async def close_detail_views(self) -> None:
+        views = tuple(self._detail_views)
+        self._detail_views.clear()
+        for view in views:
+            view.closed = True
+            view.finished = True
+            view.stop()
+        if views:
+            await asyncio.gather(*(view.wait() for view in views), return_exceptions=True)
 
     async def _expire_list(self, view: ScheduleListView) -> None:
         async with view.action_lock:
@@ -1624,17 +1814,27 @@ class PostCommands(app_commands.Group):
         resume_views = tuple(self._resume_views)
         self._resume_views.clear()
         for view in create_views:
+            view.closed = True
             view.finished = True
             view.stop()
         for view in resume_views:
+            view.closed = True
             view.finished = True
             view.stop()
+        resume_modals = tuple(self._resume_modals)
+        self._resume_modals.clear()
+        for modal in resume_modals:
+            modal.closed = True
+            modal.stop()
         await self.close_delete_views()
         await self.close_list_views()
+        await self.close_detail_views()
         if create_views:
             await asyncio.gather(*(view.wait() for view in create_views), return_exceptions=True)
         if resume_views:
             await asyncio.gather(*(view.wait() for view in resume_views), return_exceptions=True)
+        if resume_modals:
+            await asyncio.gather(*(modal.wait() for modal in resume_modals), return_exceptions=True)
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(

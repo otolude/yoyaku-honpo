@@ -83,6 +83,29 @@ class ScheduleAutocompleteRow:
     display_at: datetime | None
 
 
+@dataclass(frozen=True)
+class ScheduleActionDetailRow:
+    """Read-only schedule detail and action-boundary observation."""
+
+    public_id: uuid.UUID
+    channel_id: int
+    creator_user_id: int
+    schedule_type: str
+    status: str
+    content: str | None
+    next_run_at: datetime | None
+    local_time: time | None
+    weekday: int | None
+    end_date: date | None
+    version: int
+    current_run_count: int
+    current_pending_count: int
+    pending_run_count: int
+    non_pristine_pending_count: int
+    processing_run_count: int
+    unsafe_attempt_count: int
+
+
 def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[tuple[ScheduleRun]]:
     """Build the PostgreSQL-only due-run locking statement."""
     now = require_utc(now)
@@ -304,6 +327,109 @@ class ScheduleRepository:
         if schedule is None:
             raise RepositoryNotFoundError("schedule was not found")
         return schedule
+
+    async def get_action_detail(
+        self, *, guild_id: int, public_id: uuid.UUID
+    ) -> ScheduleActionDetailRow:
+        """Return one immutable action observation without locks or ORM leakage."""
+        current_run_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.scheduled_for == Schedule.next_run_at,
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        current_pending_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.scheduled_for == Schedule.next_run_at,
+                ScheduleRun.status == RunStatus.PENDING.value,
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        pending_run_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.status == RunStatus.PENDING.value,
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        has_attempt = (
+            select(DeliveryAttempt.id)
+            .where(DeliveryAttempt.schedule_run_id == ScheduleRun.id)
+            .exists()
+        )
+        non_pristine_pending_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.status == RunStatus.PENDING.value,
+                or_(
+                    ScheduleRun.attempt_count != 0,
+                    ScheduleRun.next_attempt_at != ScheduleRun.scheduled_for,
+                    ScheduleRun.claimed_by.is_not(None),
+                    ScheduleRun.claimed_at.is_not(None),
+                    ScheduleRun.lease_expires_at.is_not(None),
+                    has_attempt,
+                ),
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        processing_run_count = (
+            select(func.count(ScheduleRun.id))
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                ScheduleRun.status == RunStatus.PROCESSING.value,
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        unsafe_attempt_count = (
+            select(func.count(DeliveryAttempt.id))
+            .join(ScheduleRun, ScheduleRun.id == DeliveryAttempt.schedule_run_id)
+            .where(
+                ScheduleRun.schedule_id == Schedule.id,
+                DeliveryAttempt.status.in_(
+                    (
+                        DeliveryAttemptStatus.CLAIMED.value,
+                        DeliveryAttemptStatus.SENDING.value,
+                        DeliveryAttemptStatus.UNKNOWN.value,
+                    )
+                ),
+            )
+            .correlate(Schedule)
+            .scalar_subquery()
+        )
+        statement = select(
+            Schedule.public_id,
+            Schedule.channel_id,
+            Schedule.creator_user_id,
+            Schedule.schedule_type,
+            Schedule.status,
+            Schedule.content,
+            Schedule.next_run_at,
+            Schedule.local_time,
+            Schedule.weekday,
+            Schedule.end_date,
+            Schedule.version,
+            current_run_count,
+            current_pending_count,
+            pending_run_count,
+            non_pristine_pending_count,
+            processing_run_count,
+            unsafe_attempt_count,
+        ).where(Schedule.guild_id == guild_id, Schedule.public_id == public_id)
+        row = (await self._session.execute(statement)).one_or_none()
+        if row is None:
+            raise RepositoryNotFoundError("schedule was not found")
+        return ScheduleActionDetailRow(*row)
 
     async def autocomplete_schedules(
         self,

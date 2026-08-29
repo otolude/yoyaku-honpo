@@ -27,13 +27,21 @@ from discord_ai_reminder_bot.application.schedule_pause import (
     ScheduleStateChangeUnavailable,
 )
 from discord_ai_reminder_bot.application.schedule_queries import (
+    ScheduleActionAvailability,
+    ScheduleActionReason,
     ScheduleAutocompleteView,
+    ScheduleDetail,
     SchedulePage,
     ScheduleView,
 )
 from discord_ai_reminder_bot.bot.post_presenter import (
+    DETAIL_EXPIRED_GUIDANCE,
     LIST_EXPIRED_GUIDANCE,
     LIST_OPERATION_GUIDANCE,
+)
+from discord_ai_reminder_bot.bot.post_views import (
+    DETAIL_BACK_CUSTOM_ID,
+    ScheduleListOrigin,
 )
 from discord_ai_reminder_bot.bot.posts import (
     CREATE_CANCELLED_MESSAGE,
@@ -49,8 +57,10 @@ from discord_ai_reminder_bot.bot.posts import (
     FULLWIDTH_DATETIME_INPUT_MESSAGE,
     INTERNAL_ERROR_MESSAGE,
     NOT_FOUND_MESSAGE,
+    PERMISSION_DENIED_MESSAGE,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
     PostCommands,
+    ResumeChoiceView,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
@@ -84,6 +94,7 @@ def interaction(*, administrator: bool = False, done: bool = False) -> MagicMock
     value.edit_original_response = AsyncMock()
     value.response.defer = AsyncMock()
     value.response.edit_message = AsyncMock()
+    value.response.send_modal = AsyncMock()
     value.response.autocomplete = AsyncMock()
     value.extras = {}
     return value
@@ -101,6 +112,21 @@ def view(*, content: str | None = "本文", status: ScheduleStatus = ScheduleSta
         local_time=None,
         weekday=None,
         end_date=None,
+        version=1,
+    )
+
+
+def detail(schedule: ScheduleView) -> ScheduleDetail:
+    return ScheduleDetail(
+        schedule=schedule,
+        actions=ScheduleActionAvailability(
+            can_edit=True,
+            can_pause=False,
+            can_resume=False,
+            can_delete=True,
+            reason_code=ScheduleActionReason.AVAILABLE,
+            observed_version=schedule.version,
+        ),
     )
 
 
@@ -743,7 +769,7 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
         SchedulePage((selected,), 1, 1),
         SchedulePage((selected,), 1, 1),
     ]
-    queries.show_schedule.return_value = selected
+    queries.get_schedule_detail.return_value = detail(selected)
     group = commands(queries)
     original = interaction()
     await group.list_command.callback(group, original, None, 1)
@@ -751,12 +777,266 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
 
     clicked = interaction()
     await group._show_list_selection(list_view, clicked, str(selected.public_id))
+    detail_view = clicked.response.edit_message.await_args.kwargs["view"]
     assert clicked.response.edit_message.await_args.kwargs["embed"].title == "予約詳細"
-    assert [item.label for item in list_view.children] == ["一覧へ戻る"]
+    assert [item.label for item in detail_view.children] == ["一覧へ戻る"]
+    assert detail_view.context.expected_version == selected.version
+    assert list_view.is_finished()
+    assert list_view not in group._list_views
+    assert detail_view in group._detail_views
 
     back = interaction()
-    await group._move_list_page(list_view, back, 1)
+    await group._return_to_list(detail_view, back)
     assert back.response.edit_message.await_args.kwargs["embed"].title == "予約一覧"
+    assert detail_view.is_finished()
+    assert detail_view not in group._detail_views
+    assert back.response.edit_message.await_args.kwargs["view"] in group._list_views
+
+
+@pytest.mark.asyncio
+async def test_direct_show_builds_detail_context_but_sends_no_empty_view() -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(selected)
+    group = commands(queries)
+    value = interaction()
+
+    await group.show_command.callback(group, value, str(selected.public_id))
+
+    queries.get_schedule_detail.assert_awaited_once_with(
+        guild_id=GUILD_ID,
+        requester_user_id=USER_ID,
+        administrator=False,
+        public_id=str(selected.public_id),
+        now=NOW,
+    )
+    kwargs = value.response.send_message.await_args.kwargs
+    assert kwargs["embed"].title == "予約詳細"
+    assert "view" not in kwargs
+    built = group._build_detail_view(
+        interaction=value,
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=kwargs["embed"],
+    )
+    assert not built.has_components
+    assert built.context.public_id == selected.public_id
+    assert built.context.expected_version == selected.version
+    assert built.timeout == 900.0
+    assert not group._detail_views
+
+
+@pytest.mark.asyncio
+async def test_detail_back_preserves_filters_page_and_clamps_latest_list() -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_page.side_effect = [
+        SchedulePage((selected,), 4, 31),
+        SchedulePage((selected,), 2, 11),
+    ]
+    queries.get_schedule_detail.return_value = detail(selected)
+    group = commands(queries)
+    original = interaction()
+    status = app_commands.Choice(name="有効", value=ScheduleStatus.ACTIVE.value)
+    await group.list_command.callback(group, original, status, 4)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    list_view.schedule_type = ScheduleType.WEEKLY
+
+    selected_interaction = interaction()
+    await group._show_list_selection(list_view, selected_interaction, str(selected.public_id))
+    detail_view = selected_interaction.response.edit_message.await_args.kwargs["view"]
+    back = interaction()
+    await group._return_to_list(detail_view, back)
+
+    assert queries.get_schedule_page.await_args.kwargs == {
+        "guild_id": GUILD_ID,
+        "requester_user_id": USER_ID,
+        "administrator": False,
+        "status": ScheduleStatus.ACTIVE,
+        "page": 4,
+        "schedule_type": ScheduleType.WEEKLY,
+        "clamp": True,
+    }
+    latest_view = back.response.edit_message.await_args.kwargs["view"]
+    assert latest_view.page == 2
+    assert latest_view.status is ScheduleStatus.ACTIVE
+    assert latest_view.schedule_type is ScheduleType.WEEKLY
+
+
+@pytest.mark.asyncio
+async def test_detail_timeout_keeps_disabled_back_without_database_access() -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_page.return_value = SchedulePage((selected,), 1, 1)
+    queries.get_schedule_detail.return_value = detail(selected)
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    group = commands(queries, session=session)
+    original = interaction()
+    await group.list_command.callback(group, original, None, 1)
+    list_view = original.response.send_message.await_args.kwargs["view"]
+    chosen = interaction()
+    await group._show_list_selection(list_view, chosen, str(selected.public_id))
+    detail_view = chosen.response.edit_message.await_args.kwargs["view"]
+    queries.reset_mock()
+
+    await group._expire_detail(detail_view)
+    await group._expire_detail(detail_view)
+
+    assert detail_view.finished and detail_view.timed_out and detail_view.is_finished()
+    assert detail_view.children[0].disabled
+    assert detail_view.children[0].custom_id == DETAIL_BACK_CUSTOM_ID
+    assert detail_view not in group._detail_views
+    queries.get_schedule_detail.assert_not_awaited()
+    queries.get_schedule_page.assert_not_awaited()
+    session.__aenter__.assert_not_awaited()
+    kwargs = original.edit_original_response.await_args.kwargs
+    assert kwargs["view"] is detail_view
+    assert DETAIL_EXPIRED_GUIDANCE in kwargs["embed"].description
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_detail_timeout_failure_logs_only_fixed_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    original = interaction()
+    secret = "sensitive-detail-timeout-value"
+    original.edit_original_response.side_effect = RuntimeError(secret)
+    detail_view = group._build_detail_view(
+        interaction=original,
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
+    )
+    group._detail_views.add(detail_view)
+
+    with caplog.at_level(logging.ERROR):
+        await detail_view.on_timeout()
+
+    assert "schedule_detail_timeout_response_failed" in caplog.text
+    assert secret not in caplog.text
+    assert "RuntimeError" not in caplog.text
+    assert detail_view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_detail_rejects_other_user_dm_wrong_guild_and_permission_loss() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    original = interaction()
+    detail_view = group._build_detail_view(
+        interaction=original,
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
+    )
+    invalid = []
+    other = interaction()
+    other.user.id = USER_ID + 1
+    invalid.append(other)
+    dm = interaction()
+    dm.guild = None
+    dm.guild_id = None
+    invalid.append(dm)
+    wrong_guild = interaction()
+    wrong_guild.guild.id = GUILD_ID + 1
+    wrong_guild.guild_id = GUILD_ID + 1
+    invalid.append(wrong_guild)
+    lost_role = interaction()
+    lost_role.user.roles = []
+    invalid.append(lost_role)
+
+    for value in invalid:
+        assert await detail_view.interaction_check(value) is False
+        assert value.response.send_message.await_args.kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_detail_back_rechecks_schedule_ownership_and_prevents_double_action() -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = None
+    group = commands(queries)
+    original = interaction()
+    detail_view = group._build_detail_view(
+        interaction=original,
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
+    )
+    first = interaction()
+    await group._return_to_list(detail_view, first)
+    assert first.response.send_message.await_args.args == (PERMISSION_DENIED_MESSAGE,)
+    queries.get_schedule_page.assert_not_awaited()
+
+    queries.get_schedule_detail.return_value = detail(selected)
+    queries.get_schedule_page.return_value = SchedulePage((selected,), 1, 1)
+    await group._return_to_list(detail_view, interaction())
+    duplicate = interaction()
+    await group._return_to_list(detail_view, duplicate)
+    assert duplicate.response.send_message.await_args.args == (NOT_FOUND_MESSAGE,)
+    queries.get_schedule_page.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_detail_custom_id_is_fixed_and_close_collects_view() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+        list_origin=ScheduleListOrigin(status=None, schedule_type=None, page=1),
+    )
+    group._detail_views.add(detail_view)
+    custom_id = detail_view.children[0].custom_id
+    assert custom_id == DETAIL_BACK_CUSTOM_ID
+    for forbidden in (
+        str(selected.public_id),
+        str(GUILD_ID),
+        str(USER_ID),
+        str(selected.version),
+        selected.content,
+    ):
+        assert forbidden not in custom_id
+
+    await group.close_confirmation_views()
+    await group.close_confirmation_views()
+    assert detail_view.closed and detail_view.finished and detail_view.is_finished()
+    assert not group._detail_views
+
+
+@pytest.mark.asyncio
+async def test_close_collects_open_resume_modal_and_parent_view() -> None:
+    group = commands(AsyncMock())
+    parent = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(uuid.uuid7()),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+    )
+    group._resume_views.add(parent)
+    clicked = interaction()
+
+    await parent.time_button.callback(clicked)
+
+    modal = clicked.response.send_modal.await_args.args[0]
+    assert modal in group._resume_modals
+    await group.close_confirmation_views()
+    await group.close_confirmation_views()
+    assert parent.closed and parent.finished and parent.is_finished()
+    assert modal.closed and modal.is_finished()
+    assert not group._resume_views
+    assert not group._resume_modals
 
 
 @pytest.mark.asyncio
@@ -899,7 +1179,7 @@ async def test_close_collects_list_view_wait_task() -> None:
 @pytest.mark.asyncio
 async def test_show_missing_invalid_and_unauthorized_share_safe_response() -> None:
     queries = AsyncMock()
-    queries.show_schedule.return_value = None
+    queries.get_schedule_detail.return_value = None
     group = commands(queries)
     for public_id in (str(uuid.uuid7()), "invalid"):
         value = interaction()
@@ -910,7 +1190,7 @@ async def test_show_missing_invalid_and_unauthorized_share_safe_response() -> No
 @pytest.mark.asyncio
 async def test_show_uses_followup_when_interaction_already_responded() -> None:
     queries = AsyncMock()
-    queries.show_schedule.return_value = view(status=ScheduleStatus.DELETED)
+    queries.get_schedule_detail.return_value = detail(view(status=ScheduleStatus.DELETED))
     group = commands(queries)
     value = interaction(done=True)
     await group.show_command.callback(group, value, str(uuid.uuid7()))

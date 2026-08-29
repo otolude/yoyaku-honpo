@@ -970,6 +970,16 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 
 候補DTOはpublic UUID、channel ID、creator ID、種別、状態、表示日時だけを持つ。Bot層は前後空白と先頭`#`1個を除去してcasefoldし、設定guildのキャッシュ済みTextChannel一覧から完全・前方・部分一致するIDを解決する。実行者の`view_channel`権限を確認し、別guildと非TextChannelを除外する。NFKC、曖昧検索、REST `fetch_channel`は使わず、危険文字や長すぎる入力は空候補とする。Choice生成はSession終了後に`guild.get_channel`だけで表示名を再解決し、本文、内部DB ID、Discord message ID、worker ID、例外情報はApplication DTOとChoiceへ渡さない。
 
+### 23.1 予約詳細View基盤
+
+`ScheduleQueryService.get_schedule_detail`はSchedule表示値と正のversion、操作可否観測を1つのread-only SELECTで取得し、Session終了後も利用できる不変`ScheduleDetail`へ変換する。相関subqueryでcurrent run件数・pending件数・pristine違反・processing・claimed/sending/unknown attemptを数え、状態・種別・`now + 5分`と組み合わせて4操作の表示用可否を保守的に算出する。SELECT FOR UPDATE、flush、commit、明示rollback、ORMのBot層返却は行わない。
+
+`ScheduleDetailView`はcanonical UUIDv7、観測version、操作者ID、可否DTOと、一覧由来の場合だけstatus・schedule_type・pageを保持する。Session、transaction、内部DB ID、本文、guild IDは保持せず、custom IDは固定値だけを使う。第1段階で描画する部品は一覧由来の「一覧へ戻る」だけで、直接showでは空Viewを送らない。
+
+一覧から詳細へ移るときは同じephemeralメッセージを編集し、旧`ScheduleListView`をstopしてregistryから除去してから新しい詳細Viewを登録する。戻るときは予約所有境界と最新一覧を短いread Sessionで再確認し、保存したfilter・type・pageを使ってclamp付きで新しい一覧Viewへ移管する。両Viewを同時にregistryへ残さない。
+
+詳細Viewは900秒、`asyncio.Lock`、finished/closed/timed_outを持つ。timeoutではDBへ触れず、現在のEmbedを維持して固定案内を追記し、表示中の部品をdisabledにしたまま元メッセージへ残す。応答失敗は固定イベントだけを記録し、必ずstopしてregistryから除去する。Bot closeは一覧・詳細・作成・削除・再開Viewと開いている再開時刻Modalをstopし、各waitを`gather(return_exceptions=True)`で回収する。persistent View登録と再起動復元は行わない。
+
 検索は固定語彙、17～20桁のchannel ID、canonical UUID形式の前方一致に限定する。完全UUIDはUUIDv7を検証する。日時、channel名、本文、曖昧・自然言語検索は行わない。
 
 ### 23.1 AI文章作成
