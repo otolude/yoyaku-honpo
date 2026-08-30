@@ -75,9 +75,10 @@ python -m discord_ai_reminder_bot.infrastructure.database.health
 Schemaを明示的に適用・確認します。Botは自動Migrationしません。
 
 ```bash
-alembic upgrade head
-alembic current
-alembic check
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev --confirm development:discord_bot_dev:upgrade upgrade head
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev check
 ```
 
 通常テストと静的検査を実行します。
@@ -106,8 +107,8 @@ source .venv/bin/activate
 docker compose up -d postgres
 docker compose ps
 python -m discord_ai_reminder_bot.infrastructure.database.health
-alembic current
-alembic heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
 python -m discord_ai_reminder_bot
 ```
 
@@ -132,13 +133,15 @@ git status --short --branch
 ```bash
 docker compose --profile test up -d postgres_test
 docker compose --profile test ps
-DATABASE_URL="${TEST_DATABASE_URL:?TEST_DATABASE_URLをテストDBへ設定してください}" alembic upgrade head
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target test --expected-database discord_bot_test --confirm test:discord_bot_test:upgrade upgrade head
 TEST_DATABASE_URL="${TEST_DATABASE_URL:?TEST_DATABASE_URLをテストDBへ設定してください}" python -m pytest tests/integration
 docker compose --profile test stop postgres_test
 docker compose --profile test rm -f postgres_test
 ```
 
-`TEST_DATABASE_URL`は`.env.example`のローカルテスト専用接続先を安全に設定し、値を表示しないでください。本番資格情報をコマンド履歴に残してはいけません。停止・削除対象は`postgres_test`だけです。開発用`postgres`と`postgres_data`には触れず、プロジェクト全体やVolumeをまとめて削除するCompose操作は使用しません。
+Migrationラッパーが読む`TEST_DATABASE_URL`は実行プロセスの環境へ安全に設定し、値を表示したりコマンド引数へ載せたりしないでください。ラッパーはtestで`DATABASE_URL`や`.env`へfallbackしません。本番資格情報をコマンド履歴に残してはいけません。停止・削除対象は`postgres_test`だけです。開発用`postgres`と`postgres_data`には触れず、プロジェクト全体やVolumeをまとめて削除するCompose操作は使用しません。
+
+Migrationの正式経路は`python -m discord_ai_reminder_bot.infrastructure.database.migrate`だけです。Alembic CLIの直接実行とoffline SQL生成は禁止します。`current`と`check`にもtargetと期待DB名が必要で、`upgrade`、`downgrade`、`stamp`、`autogenerate`は`target:database:operation`と完全一致する確認値がなければ接続前に拒否されます。productionは実DB名を明示できる運用環境が確定するまで実行できません。
 
 ## `/post`コマンド
 

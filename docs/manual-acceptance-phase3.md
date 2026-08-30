@@ -6,7 +6,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 実施者: Codex（自動テスト）
 - 証跡: 重点テスト322件、通常pytest 815件成功／297件skip、専用PostgreSQL込み全pytest 1112件成功
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
-- 集計: 確認済み 66件／未確認 0件（合計66件）
+- 集計: 確認済み 74件／未確認 0件（合計74件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -131,3 +131,14 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - [x] 既存cleanup loopへJob30日・bucket90日を個別rollback可能なtransactionで接続し、pending／processingとSchedule blockerを維持する。
 
 本番DIは外部通信しない`DisabledNameGenerator`だけで、`AI_NAME_GENERATION_ENABLED=false`が初期値である。2B-2完了時点でも外部AI機能は利用できず、実Discord受入は行わない。
+
+## Migration接続先安全性 自動隔離受入
+
+- [x] Migration targetをtest／development／productionの閉じた値とし、未設定、空、空白、大文字違い、bool風、不明値をfail-closedで拒否する。
+- [x] testは`discord_bot_test`と実行プロセスの`TEST_DATABASE_URL`だけ、developmentは`discord_bot_dev`と既存開発設定だけ、productionは明示DB名と実行プロセスの`DATABASE_URL`だけを使用し、環境間fallbackを行わない。
+- [x] Pythonラッパーはheads／history、current／check、upgrade／downgrade／stamp、autogenerateを分類し、書込・生成操作では`target:database:operation`の完全一致確認を接続前に要求する。
+- [x] Alembic CLI直接実行、未知command、判定不能なprogrammatic invocation、offline modeを`alembic/env.py`で拒否し、`TEST_DATABASE_URL`が存在するだけでは許可しない。
+- [x] URL上のDB名を早期確認し、接続後の`SELECT current_database()`完全一致と読取transaction終了後だけMigration contextを開始する。
+- [x] URL、password、user、host、portをラッパーの通常出力・例外へ露出せず、秘密URLをcommand引数やsubprocessへ渡さない。
+- [x] 専用PostgreSQLでcurrent／check／upgradeと実DB名不一致のDDL前拒否を検証し、拒否前後のRevision、schema、主要8表件数を不変に保つ。
+- [x] Bot起動時schema verification、pytest test DB fixture、既存Revision固有downgrade guardを維持し、DBモデルとMigration Revisionを変更しない。

@@ -21,6 +21,8 @@ Phase 3は次の順序で進める。
 
 Phase 3の受入は[Phase 3受入表](manual-acceptance-phase3.md)でPhase 1・Phase 2と分離して管理する。第1段階、2A、2B-1、2B-2は隔離受入済みである。2Cは実装開始時にProvider、価格、プライバシー条件を再確認する。
 
+2B-2後の運用安全修正として、Migrationの正式経路をPythonラッパーへ統一し、`alembic/env.py`にもtarget、期待DB名、操作確認、接続後`current_database()`の最終ガードを追加する。test／development／productionのURL選択を分離し、直接Alembic CLI、offline mode、接続先不一致をDDL前に拒否する。
+
 ## 3. AI予約名の境界
 
 AIの用途は、現在の投稿本文から最大32文字の短い予約名を1件生成することだけに限定する。生成名では改行と制御文字を禁止する。

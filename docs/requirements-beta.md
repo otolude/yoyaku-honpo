@@ -374,6 +374,13 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 
 ## 12. セキュリティ
 
+- DB schema変更の正式経路はPython Migrationラッパーとし、Alembic CLI直接実行とoffline modeを禁止する。
+- DB接続を伴うMigration操作は、実行ごとにtargetと期待DB名を明示し、URL上のDB名に加えて接続後の`current_database()`が完全一致するまでDDLを開始しない。
+- testは`discord_bot_test`、developmentは`discord_bot_dev`だけを許可する。productionは実DB名を明示できない場合にfail-closedとし、名前を推測しない。
+- `upgrade`、`downgrade`、`stamp`、`autogenerate`は`target:database:operation`に完全一致する確認値を要求する。`current`と`check`は確認値を要求しないがDB identity照合を省略しない。
+- testは実行プロセスの`TEST_DATABASE_URL`だけ、productionは実行プロセスの`DATABASE_URL`だけを使用し、別環境や`.env`へfallbackしない。developmentだけは既存の`DATABASE_URL`／`.env`を使用できる。
+- Migrationの通常ログとエラーへURL、user、host、port、passwordを出さない。Bot起動時の読み取り専用schema verificationと既存Revision固有downgrade guardは維持する。
+
 - Discord Botトークン、データベースのパスワードなどの秘密情報をGitへコミットしない。
 - ローカル環境では `.env` を使用し、Gitには秘密情報を含まない `.env.example` だけを置く。
 - 対象DiscordサーバーID、許可ロールID、Bot運営者ユーザーID、運営者通知チャンネルIDを環境変数で指定する。

@@ -3,7 +3,10 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from discord_ai_reminder_bot.infrastructure.database import models as database_models
 from discord_ai_reminder_bot.infrastructure.database.base import Base
+
+_ = database_models
 
 
 def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
@@ -33,6 +36,20 @@ def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
     assert revisions[3].down_revision == "ffc99a7e1d4f"
     assert revisions[4].revision == "ffc99a7e1d4f"
     assert revisions[4].down_revision is None
+
+
+def test_alembic_environment_has_connected_database_guard_and_rejects_offline() -> None:
+    environment = Path("alembic/env.py").read_text(encoding="utf-8")
+    safety = Path(
+        "src/discord_ai_reminder_bot/infrastructure/database/migration_safety.py"
+    ).read_text(encoding="utf-8")
+    assert "SELECT current_database()" in safety
+    assert "actual_database != expected_database" in safety
+    assert environment.index("await verify_connected_database") < environment.index(
+        "connection.run_sync(do_run_migrations)"
+    )
+    assert "offline migration mode is not permitted" in environment
+    assert "invocation_from_environment" in environment
 
 
 def test_completed_action_revision_has_safe_downgrade_guard() -> None:

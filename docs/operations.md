@@ -83,10 +83,10 @@ source .venv/bin/activate
 docker compose config
 docker compose up -d postgres
 python -m discord_ai_reminder_bot.infrastructure.database.health
-alembic upgrade head
-alembic current
-alembic heads
-alembic check
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev --confirm development:discord_bot_dev:upgrade upgrade head
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev check
 python -m discord_ai_reminder_bot
 ```
 
@@ -118,8 +118,8 @@ source .venv/bin/activate
 docker compose up -d postgres
 docker compose ps
 python -m discord_ai_reminder_bot.infrastructure.database.health
-alembic current
-alembic heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
 python -m discord_ai_reminder_bot
 ```
 
@@ -150,30 +150,34 @@ git status --short --branch
 
 BotはMigrationを自動適用しない。DBのrevisionが単一のscript headと一致しない、revisionが複数ある、未知のrevisionである場合は起動を中止する。
 
+Migrationの正式経路はPythonラッパーだけである。ラッパーと`alembic/env.py`は、target、期待DB名、操作確認を独立検証し、接続後の`SELECT current_database()`が期待DB名と完全一致するまでMigration contextを開始しない。testは`discord_bot_test`、developmentは`discord_bot_dev`だけを許可する。productionは実DB名の明示が必須であり、未確定の名前を推測しない。
+
+`MIGRATION_TARGET_ENV`、`MIGRATION_EXPECTED_DATABASE`、`MIGRATION_APPLY_CONFIRMATION`は直接CLIに対する最終ガード用で、`.env`から暗黙に読み込ませない。正式ラッパーでは同じ値を`--target`、`--expected-database`、`--confirm`として実行ごとに明示する。test URLは実行プロセスの`TEST_DATABASE_URL`だけ、development URLは既存の`DATABASE_URL`／`.env`、production URLは実行プロセスの`DATABASE_URL`だけから選ぶ。URL、user、host、port、passwordを通常ログやコマンド引数へ出さない。
+
 1. Botを停止したままにする。
 2. `.env`を表示せず、対象環境と接続先が正しいか別の安全な管理手段で確認する。
 3. 本番相当環境なら先に[バックアップ](#16-バックアップ)を取得する。
 4. 状態を読み取る。
 
 ```bash
-alembic current
-alembic history
-alembic heads
-alembic check
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate history
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev check
 ```
 
 5. Revision鎖と変更手順をレビューする。
 6. 承認された接続先にだけ適用する。
 
 ```bash
-alembic upgrade head
-alembic current
-alembic check
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev --confirm development:discord_bot_dev:upgrade upgrade head
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev check
 ```
 
 7. Botを再起動する。
 
-安易な`alembic stamp`、過去Revisionの書換え、手動DDL、`alembic_version`の直接更新を行わない。
+Alembic CLIを直接実行しない。offline modeは禁止する。`downgrade`と`stamp`は通常運用で使用せず、既存Revision固有guardを含む個別手順の承認と、操作に束縛された確認値がある場合だけラッパー内部で許可する。過去Revisionの書換え、手動DDL、`alembic_version`の直接更新も行わない。
 
 ## 9. PostgreSQL障害
 
@@ -316,7 +320,7 @@ chmod 600 "$backup_file.sha256"
 
 ```bash
 pg_restore --dbname="$RESTORE_DATABASE_URL" --exit-on-error --no-owner "$BACKUP_FILE"
-DATABASE_URL="$RESTORE_DATABASE_URL" alembic current
+DATABASE_URL="$RESTORE_DATABASE_URL" python -m discord_ai_reminder_bot.infrastructure.database.migrate --target production --expected-database "$RESTORE_EXPECTED_DATABASE" current
 ```
 
 6. Botを接続しないまま、テーブル件数と制約を読み取り専用で確認する。
@@ -326,7 +330,7 @@ psql "$RESTORE_DATABASE_URL" -c "SELECT 'schedules' AS table_name, count(*) FROM
 psql "$RESTORE_DATABASE_URL" -c "SELECT contype, count(*) FROM pg_constraint WHERE connamespace = 'public'::regnamespace GROUP BY contype ORDER BY contype;"
 ```
 
-7. `alembic current`が期待headであること、テーブル件数がバックアップ記録と整合すること、CHECK・FK・UNIQUEが存在することを確認する。
+7. Migrationラッパーの`current`が期待headであること、テーブル件数がバックアップ記録と整合すること、CHECK・FK・UNIQUEが存在することを確認する。
 8. 復元テストの結果を記録し、初めて運用上の切替判断へ進む。
 
 `pg_restore --clean`、drop、truncate、stamp、手動DDLをこの一般手順へ追加しない。
@@ -388,7 +392,7 @@ View、Button、SelectとModal内入力部品のcustom IDは固定値を維持�
 - 複数Botプロセスを場当たり的に同時起動する。
 - unknownの投稿・通知を自動または無確認で再送する。
 - `.env`、token、DATABASE_URL、投稿本文、例外全文を表示・共有する。
-- `alembic stamp`、過去Revision書換え、手動DDL、`alembic_version`直接更新を行う。
+- Alembic CLI直接実行、offline mode、無承認の`stamp`、過去Revision書換え、手動DDL、`alembic_version`直接更新を行う。
 - Schedule、Run、Attemptの状態を手動SQLで修復する。
 - 運用中DBへバックアップを直接restoreする。
 - 接続先未確認でdrop、truncate、`pg_restore --clean`を行う。

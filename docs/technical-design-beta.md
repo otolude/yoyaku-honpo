@@ -828,6 +828,16 @@ Phase 1ではPrivileged Members Intentを原則使用しない。スラッシュ
 
 設定は起動時に一度読み込み、不足、不正な数値、重複ロール、対象外タイムゾーンを検出したらDiscordへ接続せず終了する。秘密値を設定オブジェクトの文字列表現やログへ出さない。
 
+### 18.1 Migration接続先の二層ガード
+
+正式なDB schema変更は`python -m discord_ai_reminder_bot.infrastructure.database.migrate`からAlembic内部APIを呼ぶ。ラッパーは閉じたcommandだけをparseし、target、期待DB名、操作に束縛された確認値を検証してから、秘密URLをsubprocessや引数へ渡さずAlembic `Config.attributes`へメモリ内で渡す。
+
+`alembic/env.py`はラッパーattributesを再検証する。Alembic CLIが直接実行された場合は実commandを分類し、`.env`から暗黙取得しない`MIGRATION_TARGET_ENV`、`MIGRATION_EXPECTED_DATABASE`、`MIGRATION_APPLY_CONFIRMATION`を要求する。判定不能なprogrammatic invocation、未知command、offline modeは拒否する。
+
+testは実行プロセスの`TEST_DATABASE_URL`だけ、developmentは既存の`DATABASE_URL`／`.env`、productionは実行プロセスの`DATABASE_URL`だけを使用する。URL解析によるDB名確認は早期拒否に使うが、最終認可は接続後の`SELECT current_database()`と期待DB名の完全一致で行う。その読取transactionを終了してからAlembic Migration contextを開始するため、不一致時にDDLへ到達しない。
+
+`heads`と`history`はDB非接続、`current`と`check`はDB identity確認付き読取、`upgrade`、`downgrade`、`stamp`は確認値必須のDB書込、`autogenerate`は専用確認値必須のファイル生成＋DB introspectionとして分類する。既存Revisionの個別downgrade guard、Bot起動時の`verify_schema_revision`、pytestのtest DB identity確認は独立した防壁として維持する。
+
 ## 19. ログ設計
 
 Python標準 `logging` を使用する。開発環境は人が読みやすい形式、本番環境は1行JSON形式とする。
