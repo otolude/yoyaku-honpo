@@ -43,6 +43,8 @@ _UPDATABLE_SCHEDULE_FIELDS = {
     "channel_id",
     "status",
     "content",
+    "display_name",
+    "display_name_source",
     "next_run_at",
     "local_time",
     "weekday",
@@ -81,6 +83,10 @@ class ScheduleAutocompleteRow:
     schedule_type: str
     status: str
     display_at: datetime | None
+    local_time: time | None = None
+    weekday: int | None = None
+    display_name: str | None = None
+    display_name_source: str = "unset"
 
 
 @dataclass(frozen=True)
@@ -104,6 +110,8 @@ class ScheduleActionDetailRow:
     non_pristine_pending_count: int
     processing_run_count: int
     unsafe_attempt_count: int
+    display_name: str | None = None
+    display_name_source: str = "unset"
 
 
 def build_due_runs_claim_statement(*, now: datetime, batch_size: int) -> Select[tuple[ScheduleRun]]:
@@ -425,6 +433,8 @@ class ScheduleRepository:
             non_pristine_pending_count,
             processing_run_count,
             unsafe_attempt_count,
+            Schedule.display_name,
+            Schedule.display_name_source,
         ).where(Schedule.guild_id == guild_id, Schedule.public_id == public_id)
         row = (await self._session.execute(statement)).one_or_none()
         if row is None:
@@ -476,6 +486,10 @@ class ScheduleRepository:
             Schedule.schedule_type,
             Schedule.status,
             Schedule.next_run_at,
+            Schedule.local_time,
+            Schedule.weekday,
+            Schedule.display_name,
+            Schedule.display_name_source,
         ).where(
             Schedule.guild_id == guild_id,
             Schedule.status.in_(allowed_statuses[operation]),

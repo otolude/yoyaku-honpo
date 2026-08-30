@@ -11,7 +11,7 @@ from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource, ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.exceptions import RepositoryNotFoundError
 from discord_ai_reminder_bot.infrastructure.database.models import Schedule
@@ -43,6 +43,10 @@ class ScheduleAutocompleteView:
     schedule_type: ScheduleType
     status: ScheduleStatus
     display_at: datetime | None
+    local_time: time | None = None
+    weekday: int | None = None
+    display_name: str | None = None
+    display_name_source: DisplayNameSource = DisplayNameSource.UNSET
 
 
 class InvalidScheduleQueryError(ValueError):
@@ -70,6 +74,8 @@ class ScheduleView:
     weekday: int | None
     end_date: date | None
     version: int
+    display_name: str | None = None
+    display_name_source: DisplayNameSource = DisplayNameSource.UNSET
 
     def __post_init__(self) -> None:
         if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version <= 0:
@@ -176,7 +182,13 @@ class ScheduleQueryService:
                     creator_user_id=row.creator_user_id,
                     schedule_type=ScheduleType(row.schedule_type),
                     status=ScheduleStatus(row.status),
+                    display_name=row.display_name,
+                    display_name_source=DisplayNameSource(
+                        row.display_name_source or DisplayNameSource.UNSET.value
+                    ),
                     display_at=row.display_at,
+                    local_time=row.local_time,
+                    weekday=row.weekday,
                 )
                 for row in rows
             )
@@ -314,6 +326,10 @@ class ScheduleQueryService:
                 schedule_type=ScheduleType(row.schedule_type),
                 status=ScheduleStatus(row.status),
                 content=row.content,
+                display_name=row.display_name,
+                display_name_source=DisplayNameSource(
+                    row.display_name_source or DisplayNameSource.UNSET.value
+                ),
                 next_run_at=row.next_run_at,
                 local_time=row.local_time,
                 weekday=row.weekday,
@@ -399,6 +415,10 @@ def _to_view(schedule: Schedule) -> ScheduleView:
         schedule_type=ScheduleType(schedule.schedule_type),
         status=ScheduleStatus(schedule.status),
         content=schedule.content,
+        display_name=schedule.display_name,
+        display_name_source=DisplayNameSource(
+            schedule.display_name_source or DisplayNameSource.UNSET.value
+        ),
         next_run_at=schedule.next_run_at,
         local_time=schedule.local_time,
         weekday=schedule.weekday,

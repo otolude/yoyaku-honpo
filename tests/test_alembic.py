@@ -20,13 +20,15 @@ def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
         "notification_attempts",
     }
     revisions = list(scripts.walk_revisions())
-    assert len(revisions) == 3
-    assert revisions[0].revision == "8e5b2f1c4a90"
-    assert revisions[0].down_revision == "bf82b90bcd5e"
-    assert revisions[1].revision == "bf82b90bcd5e"
-    assert revisions[1].down_revision == "ffc99a7e1d4f"
-    assert revisions[2].revision == "ffc99a7e1d4f"
-    assert revisions[2].down_revision is None
+    assert len(revisions) == 4
+    assert revisions[0].revision == "6c9d4e7f2a10"
+    assert revisions[0].down_revision == "8e5b2f1c4a90"
+    assert revisions[1].revision == "8e5b2f1c4a90"
+    assert revisions[1].down_revision == "bf82b90bcd5e"
+    assert revisions[2].revision == "bf82b90bcd5e"
+    assert revisions[2].down_revision == "ffc99a7e1d4f"
+    assert revisions[3].revision == "ffc99a7e1d4f"
+    assert revisions[3].down_revision is None
 
 
 def test_completed_action_revision_has_safe_downgrade_guard() -> None:
@@ -45,4 +47,13 @@ def test_notification_outbox_revision_has_safe_backfill_and_downgrade_guard() ->
     assert "scheduled_at = created_at" in revision
     assert "SELECT 1 FROM notification_attempts" in revision
     assert "contains non-legacy lifecycle data" in revision
+    assert "RAISE EXCEPTION" in revision
+
+
+def test_schedule_display_name_revision_has_backfill_and_safe_downgrade_guard() -> None:
+    revision = Path("alembic/versions/6c9d4e7f2a10_add_schedule_display_names.py").read_text(
+        encoding="utf-8"
+    )
+    assert "display_name = NULL, display_name_source = 'unset'" in revision
+    assert "contains persisted display names" in revision
     assert "RAISE EXCEPTION" in revision

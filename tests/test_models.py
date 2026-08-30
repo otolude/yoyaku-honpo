@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from discord_ai_reminder_bot.infrastructure.database.base import Base
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DELIVERY_ATTEMPT_STATUSES,
+    DISPLAY_NAME_SOURCES,
     NOTIFICATION_STATUSES,
     OPERATION_ACTIONS,
     RUN_STATUSES,
@@ -132,6 +133,10 @@ def test_schedule_nullability_and_lengths_match_design() -> None:
 
     assert table.c.content.nullable is True
     assert table.c.content.type.length == 2000
+    assert table.c.display_name.nullable is True
+    assert table.c.display_name.type.length == 32
+    assert table.c.display_name_source.nullable is False
+    assert table.c.display_name_source.type.length == 8
     assert table.c.next_run_at.nullable is True
     assert table.c.local_time.nullable is True
     assert table.c.weekday.nullable is True
@@ -142,6 +147,7 @@ def test_schedule_nullability_and_lengths_match_design() -> None:
 
 
 def test_state_constants_match_technical_design() -> None:
+    assert DISPLAY_NAME_SOURCES == ("ai", "manual", "unset")
     assert SCHEDULE_STATUSES == (
         "draft",
         "active",
@@ -195,7 +201,13 @@ def test_major_check_constraints_exist() -> None:
         "ck_schedules_recurrence_fields_valid",
         "ck_schedules_status_matches_schedule_type",
         "ck_schedules_terminal_at_matches_status",
+        "ck_schedules_display_name_source_valid",
+        "ck_schedules_display_name_matches_source",
     }
+
+
+def test_schedule_display_name_has_no_search_index() -> None:
+    assert all("display_name" not in name for name in index_names("schedules"))
     assert constraint_names("schedule_runs", CheckConstraint) >= {
         "ck_schedule_runs_attempt_count_valid",
         "ck_schedule_runs_finished_at_matches_status",

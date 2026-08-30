@@ -16,9 +16,10 @@ Discordへテキストを予約投稿するBotです。Phase 1とPhase 2は受�
 - 日本語のDiscord Embed表示
 - 予約ID Autocomplete
 - `/post show`の通常Autocompleteから削除済み予約を除外（canonical UUID直接入力と削除済み一覧からの参照は可能）
+- 最大32文字の手動予約名、AIなしの決定的フォールバック名、一覧・詳細・候補への安全な名前表示
 - 予約詳細Viewからの編集、一時停止、再開、削除
 
-AI文章生成、AI予約名、文体の保存・反映、PAY.JP、サブスクリプション管理、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは将来構想です。現在利用できる機能ではありません。
+AIによる予約名生成、AI文章生成、文体の保存・反映、PAY.JP、サブスクリプション管理、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは将来構想です。現在利用できる機能ではありません。
 
 詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)、[Phase 3受入](docs/manual-acceptance-phase3.md)を参照してください。
 

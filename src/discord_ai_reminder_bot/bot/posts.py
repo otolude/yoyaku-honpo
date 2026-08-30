@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,12 @@ from discord_ai_reminder_bot.application.schedule_editing import (
     ScheduleEditNoChanges,
     ScheduleEditUnavailable,
     ScheduleEditVersionConflict,
+)
+from discord_ai_reminder_bot.application.schedule_naming import (
+    ScheduleNameEditUnavailable,
+    ScheduleNameNoChanges,
+    ScheduleNameVersionConflict,
+    ScheduleNamingService,
 )
 from discord_ai_reminder_bot.application.schedule_pause import (
     ResumeMode,
@@ -98,6 +105,20 @@ from discord_ai_reminder_bot.domain.schedule_deletion import (
     validate_required_delete_reason,
 )
 
+DETAIL_EDIT_MODAL_PREFIX = "post_detail_edit_modal"
+DETAIL_NAME_EDIT_MODAL_PREFIX = "post_detail_name_edit_modal"
+DETAIL_DELETE_REASON_MODAL_PREFIX = "post_detail_delete_reason"
+RESUME_TIME_MODAL_PREFIX = "post_resume_time_modal"
+
+
+def _modal_custom_id(prefix: str) -> str:
+    """Create a non-identifying per-instance dispatch key within Discord's limit."""
+    custom_id = f"{prefix}:{secrets.token_hex(16)}"
+    if len(custom_id) > 100:
+        raise ValueError("modal custom_id exceeds Discord's limit")
+    return custom_id
+
+
 NOT_FOUND_MESSAGE = "指定された予約は見つからないか、表示する権限がありません。"
 INVALID_INPUT_MESSAGE = "入力内容を確認してください。"
 EDIT_REQUEST_REQUIRED_MESSAGE = (
@@ -127,6 +148,11 @@ EDIT_UNAVAILABLE_MESSAGE = "指定された予約は見つからないか、編�
 EDIT_NO_CHANGES_MESSAGE = "実際に変更される項目がありません。"
 DETAIL_EDIT_NO_CHANGES_MESSAGE = "変更内容がありません。"
 DETAIL_EDITED_MESSAGE = "予約を編集しました。"
+DETAIL_NAME_EDITED_MESSAGE = "予約名を変更しました。"
+DETAIL_NAME_NO_CHANGES_MESSAGE = "予約名に変更はありません。"
+DETAIL_NAME_PERMISSION_LOST_MESSAGE = (
+    "現在の権限ではこの予約を編集できません。/post showを再実行してください。"
+)
 EDIT_TYPE_OPTIONS_MESSAGE = (
     "予約種別に使用できない編集項目があります。予約種別を変更する場合は、現在の予約を削除し、"
     "希望する種別で新しく作成してください。"
@@ -218,7 +244,7 @@ class ScheduleEditModal(discord.ui.Modal):
         super().__init__(
             title=titles[detail_view.context.schedule_type],
             timeout=900.0,
-            custom_id="post_detail_edit_modal",
+            custom_id=_modal_custom_id(DETAIL_EDIT_MODAL_PREFIX),
         )
         self.commands = commands
         self.detail_view = detail_view
@@ -309,6 +335,56 @@ class ScheduleEditModal(discord.ui.Modal):
     def _release(self) -> None:
         self.closed = True
         self.commands._edit_modals.discard(self)
+        self.stop()
+
+
+class ScheduleNameEditModal(discord.ui.Modal, title="予約名を編集"):
+    """One-field name editor retaining no Session or transaction."""
+
+    def __init__(self, *, commands: PostCommands, detail_view: ScheduleDetailView) -> None:
+        super().__init__(
+            timeout=900.0,
+            custom_id=_modal_custom_id(DETAIL_NAME_EDIT_MODAL_PREFIX),
+        )
+        self.commands = commands
+        self.detail_view = detail_view
+        self.action_lock = asyncio.Lock()
+        self.finished = False
+        self.closed = False
+        self.display_name = discord.ui.TextInput(
+            label="予約名（空欄で解除）",
+            custom_id="post_detail_display_name",
+            default=detail_view.context.display_name or "",
+            required=False,
+            max_length=32,
+        )
+        self.add_item(self.display_name)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        async with self.action_lock:
+            if self.finished or self.closed:
+                return
+            self.finished = True
+            try:
+                await self.commands._submit_detail_name_edit(self, interaction)
+            finally:
+                self._release()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
+        self.commands._logger.error("schedule_detail_name_edit_modal_error")
+        try:
+            await respond_ephemeral(
+                interaction, INTERNAL_ERROR_MESSAGE, logger=self.commands._logger
+            )
+        finally:
+            self._release()
+
+    async def on_timeout(self) -> None:
+        self._release()
+
+    def _release(self) -> None:
+        self.closed = True
+        self.commands._name_edit_modals.discard(self)
         self.stop()
 
 
@@ -518,7 +594,10 @@ class DeleteReasonModal(discord.ui.Modal, title="削除理由を入力"):
     )
 
     def __init__(self, *, commands: PostCommands, detail_view: ScheduleDetailView) -> None:
-        super().__init__(timeout=900.0, custom_id="post_detail_delete_reason")
+        super().__init__(
+            timeout=900.0,
+            custom_id=_modal_custom_id(DETAIL_DELETE_REASON_MODAL_PREFIX),
+        )
         self.commands = commands
         self.detail_view = detail_view
         self.action_lock = asyncio.Lock()
@@ -533,17 +612,27 @@ class DeleteReasonModal(discord.ui.Modal, title="削除理由を入力"):
             try:
                 reason = validate_required_delete_reason(str(self.reason.value))
             except InvalidDeleteReasonError:
-                self.finished = False
                 await respond_ephemeral(
                     interaction, DELETE_REASON_INPUT_MESSAGE, logger=self.commands._logger
                 )
-                return
-            await self.commands._continue_detail_delete(self.detail_view, interaction, reason)
-            self.closed = True
-            self.stop()
-            self.commands._delete_reason_modals.discard(self)
+            else:
+                await self.commands._continue_detail_delete(self.detail_view, interaction, reason)
+            finally:
+                self._release()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
+        self.commands._logger.error("schedule_detail_delete_reason_modal_error")
+        try:
+            await respond_ephemeral(
+                interaction, INTERNAL_ERROR_MESSAGE, logger=self.commands._logger
+            )
+        finally:
+            self._release()
 
     async def on_timeout(self) -> None:
+        self._release()
+
+    def _release(self) -> None:
         self.closed = True
         self.stop()
         self.commands._delete_reason_modals.discard(self)
@@ -616,21 +705,42 @@ class ResumeTimeModal(discord.ui.Modal, title="本日分の投稿時刻を指定
     local_time = discord.ui.TextInput(label="時刻（半角HH:MM）", min_length=5, max_length=5)
 
     def __init__(self, view: ResumeChoiceView) -> None:
-        super().__init__(timeout=120.0, custom_id="post_resume_time_modal")
+        super().__init__(
+            timeout=120.0,
+            custom_id=_modal_custom_id(RESUME_TIME_MODAL_PREFIX),
+        )
         self.resume_view = view
+        self.action_lock = asyncio.Lock()
+        self.finished = False
         self.closed = False
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        async with self.action_lock:
+            if self.finished or self.closed:
+                return
+            self.finished = True
+            try:
+                await self.resume_view.commands._submit_resume_time(
+                    self.resume_view, interaction, str(self.local_time.value)
+                )
+            finally:
+                self._release()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
+        self.resume_view.commands._logger.error("schedule_resume_time_modal_error")
         try:
-            await self.resume_view.commands._submit_resume_time(
-                self.resume_view, interaction, str(self.local_time.value)
+            await respond_ephemeral(
+                interaction, INTERNAL_ERROR_MESSAGE, logger=self.resume_view.commands._logger
             )
         finally:
-            self.closed = True
-            self.resume_view.commands._resume_modals.discard(self)
+            self._release()
 
     async def on_timeout(self) -> None:
+        self._release()
+
+    def _release(self) -> None:
         self.closed = True
+        self.stop()
         self.resume_view.commands._resume_modals.discard(self)
 
 
@@ -698,7 +808,6 @@ class ResumeChoiceView(discord.ui.View):
                     interaction, STATE_CHANGE_UNAVAILABLE_MESSAGE, logger=self.commands._logger
                 )
                 return
-            self.commands._retire_resume_modals()
             modal = ResumeTimeModal(self)
             self.commands._resume_modals.add(modal)
             try:
@@ -772,6 +881,7 @@ class PostCommands(app_commands.Group):
         self._resume_modals: set[ResumeTimeModal] = set()
         self._delete_reason_modals: set[DeleteReasonModal] = set()
         self._edit_modals: set[ScheduleEditModal] = set()
+        self._name_edit_modals: set[ScheduleNameEditModal] = set()
         self._list_views: set[ScheduleListView] = set()
         self._detail_views: set[ScheduleDetailView] = set()
 
@@ -1961,6 +2071,10 @@ class PostCommands(app_commands.Group):
             local_time=detail.schedule.local_time,
             weekday=detail.schedule.weekday,
             end_date=detail.schedule.end_date,
+            display_name=detail.schedule.display_name,
+            display_name_source=detail.schedule.display_name_source,
+            name_editable=detail.schedule.status
+            in {ScheduleStatus.DRAFT, ScheduleStatus.ACTIVE, ScheduleStatus.PAUSED},
             list_origin=list_origin,
         )
         return ScheduleDetailView(
@@ -2109,7 +2223,6 @@ class PostCommands(app_commands.Group):
             if actor is None:
                 return
             if actor.administrator and actor.user_id != view.context.creator_user_id:
-                self._retire_delete_reason_modals()
                 modal = DeleteReasonModal(commands=self, detail_view=view)
                 self._delete_reason_modals.add(modal)
                 try:
@@ -2137,7 +2250,6 @@ class PostCommands(app_commands.Group):
             modal = ScheduleEditModal(
                 commands=self, detail_view=view, default_channel=default_channel
             )
-            self._retire_edit_modals()
             self._edit_modals.add(modal)
             try:
                 await interaction.response.send_modal(modal)
@@ -2145,26 +2257,82 @@ class PostCommands(app_commands.Group):
                 modal._release()
                 self._logger.error("schedule_detail_edit_modal_response_failed")
 
-    def _retire_edit_modals(self) -> None:
-        modals = tuple(self._edit_modals)
-        self._edit_modals.clear()
-        for modal in modals:
-            modal.closed = True
-            modal.stop()
+    async def _edit_name_from_detail(
+        self, view: ScheduleDetailView, interaction: discord.Interaction
+    ) -> None:
+        async with view.action_lock:
+            if view.finished or view.closed or not view.context.name_editable:
+                await respond_ephemeral(interaction, EDIT_UNAVAILABLE_MESSAGE, logger=self._logger)
+                return
+            actor = await self._detail_actor(view, interaction)
+            if actor is None:
+                return
+            modal = ScheduleNameEditModal(commands=self, detail_view=view)
+            self._name_edit_modals.add(modal)
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:  # noqa: BLE001
+                modal._release()
+                self._logger.error("schedule_detail_name_edit_modal_response_failed")
 
-    def _retire_delete_reason_modals(self) -> None:
-        modals = tuple(self._delete_reason_modals)
-        self._delete_reason_modals.clear()
-        for modal in modals:
-            modal.closed = True
-            modal.stop()
-
-    def _retire_resume_modals(self) -> None:
-        modals = tuple(self._resume_modals)
-        self._resume_modals.clear()
-        for modal in modals:
-            modal.closed = True
-            modal.stop()
+    async def _submit_detail_name_edit(
+        self, modal: ScheduleNameEditModal, interaction: discord.Interaction
+    ) -> None:
+        view = modal.detail_view
+        actor = authorized_actor(
+            interaction,
+            configured_guild_id=self._configured_guild_id,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        if actor is None or actor.user_id != view.context.actor_user_id:
+            self._retire_detail_source(view)
+            await respond_ephemeral(
+                interaction, DETAIL_NAME_PERMISSION_LOST_MESSAGE, logger=self._logger
+            )
+            return
+        value = modal.display_name.value
+        if not isinstance(value, str):
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        try:
+            await interaction.response.defer()
+        except Exception:  # noqa: BLE001
+            self._logger.error("schedule_detail_name_edit_defer_failed")
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                await ScheduleNamingService(session).edit_manual_name(
+                    guild_id=self._configured_guild_id,
+                    public_id=str(view.context.public_id),
+                    actor_user_id=actor.user_id,
+                    administrator=actor.administrator,
+                    submitted_name=value,
+                    edited_at=self._clock.now(),
+                    expected_version=view.context.expected_version,
+                )
+        except ScheduleNameVersionConflict:
+            await self._refresh_detail(view, interaction, actor, DETAIL_CONFLICT_MESSAGE)
+            return
+        except ScheduleNameNoChanges:
+            await self._refresh_detail(view, interaction, actor, DETAIL_NAME_NO_CHANGES_MESSAGE)
+            return
+        except ScheduleNameEditUnavailable:
+            await self._refresh_detail(
+                view,
+                interaction,
+                actor,
+                EDIT_UNAVAILABLE_MESSAGE,
+                inaccessible_content=DETAIL_NAME_PERMISSION_LOST_MESSAGE,
+            )
+            return
+        except ValueError:
+            await respond_ephemeral(interaction, INVALID_INPUT_MESSAGE, logger=self._logger)
+            return
+        except Exception:  # noqa: BLE001
+            self._logger.error("schedule_detail_name_edit_failed")
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE, logger=self._logger)
+            return
+        await self._refresh_detail(view, interaction, actor, DETAIL_NAME_EDITED_MESSAGE)
 
     async def _submit_detail_edit(
         self, modal: ScheduleEditModal, interaction: discord.Interaction
@@ -2379,6 +2547,7 @@ class PostCommands(app_commands.Group):
         content: str,
         *,
         response_edit: bool = False,
+        inaccessible_content: str | None = None,
     ) -> None:
         context = (
             source.context if isinstance(source, ScheduleDetailView) else source.detail_context
@@ -2394,6 +2563,19 @@ class PostCommands(app_commands.Group):
                 now=self._clock.now(),
             )
             if detail is None:
+                if inaccessible_content is not None:
+                    self._retire_detail_source(source)
+                    arguments = {
+                        "content": inaccessible_content,
+                        "embed": None,
+                        "view": None,
+                        "allowed_mentions": discord.AllowedMentions.none(),
+                    }
+                    if response_edit:
+                        await interaction.response.edit_message(**arguments)
+                    else:
+                        await interaction.edit_original_response(**arguments)
+                    return
                 raise InvalidScheduleQueryError
             embed = schedule_detail_embed(detail.schedule)
             refreshed = self._build_detail_view(
@@ -2564,6 +2746,11 @@ class PostCommands(app_commands.Group):
         for modal in edit_modals:
             modal.closed = True
             modal.stop()
+        name_edit_modals = tuple(self._name_edit_modals)
+        self._name_edit_modals.clear()
+        for modal in name_edit_modals:
+            modal.closed = True
+            modal.stop()
         await self.close_delete_views()
         await self.close_list_views()
         await self.close_detail_views()
@@ -2579,6 +2766,10 @@ class PostCommands(app_commands.Group):
             )
         if edit_modals:
             await asyncio.gather(*(modal.wait() for modal in edit_modals), return_exceptions=True)
+        if name_edit_modals:
+            await asyncio.gather(
+                *(modal.wait() for modal in name_edit_modals), return_exceptions=True
+            )
 
     async def _actor_or_respond(self, interaction: discord.Interaction) -> InteractionActor | None:
         actor = authorized_actor(

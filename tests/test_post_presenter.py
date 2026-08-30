@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, time
 
 import pytest
@@ -42,7 +43,7 @@ from discord_ai_reminder_bot.bot.post_presenter import (
     schedule_list_embed,
     schedule_select_option,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource, ScheduleStatus, ScheduleType
 
 NOW = datetime(2026, 8, 20, 10, 30, tzinfo=UTC)
 
@@ -292,6 +293,7 @@ def test_create_embed_structure_draft_and_full_public_id() -> None:
     assert f"`{public_id}`" in text
     assert "2026-08-20 19:30 JST" in text
     assert [field.name for field in embed.fields[1:]] == [
+        "🏷️ 予約名",
         "📍 投稿先",
         "🗓️ 投稿予定",
         "📝 本文",
@@ -349,7 +351,8 @@ def test_list_ten_items_stays_within_all_embed_limits_and_order() -> None:
     assert positions == sorted(positions)
     assert all("📍 投稿先：" in field.value for field in embed.fields)
     assert all("🗓️ 投稿予定：" in field.value for field in embed.fields)
-    assert all("📝 本文：" in field.value for field in embed.fields)
+    assert all("🏷️ 予約名：" in field.value for field in embed.fields)
+    assert all("📝 本文：" not in field.value for field in embed.fields)
     assert all("🆔 予約ID：" in field.value for field in embed.fields)
 
 
@@ -427,15 +430,78 @@ def test_terminal_without_next_run_omits_datetime_from_list_and_show(
     assert "次回：" not in all_text(listed) + all_text(detailed)
 
 
-def test_list_preview_collapses_lines_escapes_markup_mentions_and_truncates() -> None:
+def test_list_name_escapes_markup_mentions_and_never_contains_body() -> None:
     secret_tail = "do-not-show-full-body"
     content = "@everyone **first**\n`second` <@12345678901234567> " + secret_tail
-    embed = schedule_list_embed([view(content=content)], page=1, status_filter=None)
+    schedule = replace(
+        view(content=content),
+        display_name="@everyone **name**",
+        display_name_source=DisplayNameSource.MANUAL,
+    )
+    embed = schedule_list_embed([schedule], page=1, status_filter=None)
     text = all_text(embed)
-    assert "\n`second`" not in text
-    assert "\\*\\*first\\*\\*" in text
+    assert "\\*\\*name\\*\\*" in text
     assert "@\u200beveryone" in text
+    assert content not in text
     assert secret_tail not in text
+
+
+def test_detail_select_autocomplete_and_create_success_show_name_without_body_leak() -> None:
+    secret_body = "private-body-canary"
+    schedule = replace(
+        view(content=secret_body),
+        display_name="@everyone **公開名**",
+        display_name_source=DisplayNameSource.MANUAL,
+    )
+    detail_embed = schedule_detail_embed(schedule)
+    detail_text = all_text(detail_embed)
+    assert "🏷️ 予約名" in detail_text
+    assert "@\u200beveryone \\*\\*公開名\\*\\*" in detail_text
+    assert "private\\-body\\-canary" in detail_text
+
+    option = schedule_select_option(schedule, channel_name="channel")
+    autocomplete = schedule_autocomplete_choice(
+        ScheduleAutocompleteView(
+            public_id=schedule.public_id,
+            channel_id=schedule.channel_id,
+            creator_user_id=schedule.creator_user_id,
+            schedule_type=schedule.schedule_type,
+            status=schedule.status,
+            display_at=schedule.next_run_at,
+            display_name=schedule.display_name,
+            display_name_source=schedule.display_name_source,
+        ),
+        channel_name="channel",
+    )
+    assert "公開名" in option.label and "公開名" in autocomplete.name
+    assert secret_body not in option.label and secret_body not in autocomplete.name
+    assert len(option.label) <= 100 and len(autocomplete.name) <= 100
+    assert "ID …" in option.label and "ID …" in autocomplete.name
+
+    created = created_schedule_embed(
+        CreatedOnceSchedule(
+            public_id=schedule.public_id,
+            channel_id=schedule.channel_id,
+            status=schedule.status,
+            content=secret_body,
+            scheduled_for=NOW,
+            display_name="作成名",
+            display_name_source=DisplayNameSource.MANUAL,
+        )
+    )
+    assert "作成名" in all_text(created)
+
+
+def test_name_presenters_fail_safe_on_control_characters_and_long_channel() -> None:
+    schedule = replace(
+        view(),
+        display_name="bad\nname\u200b",
+        display_name_source=DisplayNameSource.MANUAL,
+    )
+    option = schedule_select_option(schedule, channel_name="@everyone **" + "x" * 200)
+    assert "bad" not in option.label
+    assert "単発予約" in option.label
+    assert len(option.label) <= 100
 
 
 def test_show_two_thousand_markup_characters_stays_within_limits() -> None:

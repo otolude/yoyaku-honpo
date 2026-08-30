@@ -15,6 +15,7 @@ from discord_ai_reminder_bot.application.schedule_editing import (
     ScheduleEditUnavailable,
     ScheduleEditVersionConflict,
 )
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
     OperationLog,
@@ -38,6 +39,8 @@ async def add_schedule(
     local_time: time | None = None,
     weekday: int | None = None,
     end_date: date | None = None,
+    display_name: str | None = None,
+    display_name_source: str = "unset",
 ) -> tuple[Schedule, ScheduleRun | None]:
     next_at = next_at or NOW + timedelta(hours=1)
     recurring = schedule_type != "once"
@@ -49,6 +52,8 @@ async def add_schedule(
         schedule_type=schedule_type,
         status=status,
         content=content,
+        display_name=display_name,
+        display_name_source=display_name_source,
         next_run_at=next_at if status in {"active", "draft"} else None,
         local_time=(local_time or time(10)) if recurring else None,
         weekday=(weekday if weekday is not None else 2) if schedule_type == "weekly" else None,
@@ -148,6 +153,42 @@ async def test_consecutive_edits_use_latest_version_and_noop_does_not_increment(
     )
     assert schedule.version == 3
     assert schedule.content is None and schedule.end_date is None
+
+
+@pytest.mark.parametrize("clear_content", [False, True])
+async def test_manual_name_survives_content_change_and_clear(
+    db_session: AsyncSession, clear_content: bool
+) -> None:
+    schedule, _ = await add_schedule(
+        db_session,
+        display_name="手動名",
+        display_name_source=DisplayNameSource.MANUAL.value,
+    )
+    values = EditValues(clear_content=True) if clear_content else EditValues(content="changed")
+    await edit(db_session, schedule, values)
+    assert schedule.display_name == "手動名"
+    assert schedule.display_name_source == DisplayNameSource.MANUAL.value
+
+
+async def test_ai_name_is_cleared_on_content_change_without_generation_job(
+    db_session: AsyncSession,
+) -> None:
+    schedule, _ = await add_schedule(
+        db_session,
+        display_name="古いAI名",
+        display_name_source=DisplayNameSource.AI.value,
+    )
+    await edit(db_session, schedule, EditValues(content="changed"))
+    assert schedule.display_name is None
+    assert schedule.display_name_source == DisplayNameSource.UNSET.value
+    operation = (
+        await db_session.scalars(
+            select(OperationLog).where(OperationLog.schedule_id == schedule.id)
+        )
+    ).one()
+    assert operation.changes["display_name_changed"] is True
+    assert operation.changes["display_name_source"] == {"from": "ai", "to": "unset"}
+    assert "古いAI名" not in str(operation.changes)
 
 
 async def test_once_content_channel_and_time_edit_replaces_run_and_audits(

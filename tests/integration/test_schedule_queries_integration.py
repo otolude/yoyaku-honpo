@@ -387,6 +387,10 @@ async def test_autocomplete_dto_and_choices_exclude_body_internal_id_and_other_g
         "schedule_type",
         "status",
         "display_at",
+        "local_time",
+        "weekday",
+        "display_name",
+        "display_name_source",
     }
     value.response.send_message.assert_not_awaited()
     value.followup.send.assert_not_awaited()

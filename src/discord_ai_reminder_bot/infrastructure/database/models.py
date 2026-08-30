@@ -29,6 +29,7 @@ from discord_ai_reminder_bot.domain.enums import (
     DeleteKind,
     DeliveryAttemptStatus,
     DeliveryErrorKind,
+    DisplayNameSource,
     NotificationAttemptStatus,
     NotificationErrorKind,
     NotificationRecipientType,
@@ -44,6 +45,7 @@ from discord_ai_reminder_bot.infrastructure.database.base import Base
 
 SCHEDULE_TYPES = enum_values(ScheduleType)
 SCHEDULE_STATUSES = enum_values(ScheduleStatus)
+DISPLAY_NAME_SOURCES = enum_values(DisplayNameSource)
 RUN_STATUSES = enum_values(RunStatus)
 DELIVERY_ATTEMPT_STATUSES = enum_values(DeliveryAttemptStatus)
 DELIVERY_ERROR_KINDS = enum_values(DeliveryErrorKind)
@@ -55,6 +57,12 @@ NOTIFICATION_RECIPIENT_TYPES = enum_values(NotificationRecipientType)
 NOTIFICATION_STATUSES = enum_values(NotificationStatus)
 NOTIFICATION_ATTEMPT_STATUSES = enum_values(NotificationAttemptStatus)
 NOTIFICATION_ERROR_KINDS = enum_values(NotificationErrorKind)
+DISPLAY_NAME_FORMAT_CHARACTERS_SQL = (
+    r"U&'[\00AD\0600-\0605\061C\06DD\070F\0890-\0891\08E2\180E"
+    r"\200B-\200F\202A-\202E\2060-\2064\2066-\206F\FEFF\FFF9-\FFFB"
+    r"\+0110BD\+0110CD\+013430-\+01343F\+01BCA0-\+01BCA3"
+    r"\+01D173-\+01D17A\+0E0001\+0E0020-\+0E007F]'"
+)
 
 
 def sql_values(values: tuple[str, ...]) -> str:
@@ -79,6 +87,20 @@ class Schedule(Base):
         CheckConstraint(
             "content IS NULL OR char_length(content) BETWEEN 1 AND 2000",
             name="content_length_valid",
+        ),
+        CheckConstraint(
+            f"display_name_source IN ({sql_values(DISPLAY_NAME_SOURCES)})",
+            name="display_name_source_valid",
+        ),
+        CheckConstraint(
+            "(display_name_source = 'unset' AND display_name IS NULL) OR "
+            "(display_name_source IN ('ai', 'manual') "
+            "AND display_name IS NOT NULL "
+            "AND char_length(display_name) BETWEEN 1 AND 32 "
+            "AND display_name = btrim(display_name) "
+            "AND display_name !~ '[[:cntrl:]]' "
+            f"AND display_name !~ {DISPLAY_NAME_FORMAT_CHARACTERS_SQL})",
+            name="display_name_matches_source",
         ),
         CheckConstraint(
             "(status = 'draft' AND content IS NULL) "
@@ -139,6 +161,13 @@ class Schedule(Base):
     schedule_type: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    display_name_source: Mapped[str] = mapped_column(
+        String(8),
+        nullable=False,
+        default=DisplayNameSource.UNSET.value,
+        server_default=text("'unset'"),
+    )
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     local_time: Mapped[time | None] = mapped_column(Time(timezone=False), nullable=True)
     weekday: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

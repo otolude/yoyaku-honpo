@@ -423,7 +423,7 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 
 ## 12.4 Phase 3とPhase 2後の将来計画
 
-以下はPhase 2の完了条件に含めないPhase 3の要件である。`/post show`の削除済み候補除外だけはPhase 3第1段階として実装済みであり、AI予約名以降は未実装の将来計画である。後続段階の実装時に要件、設計、Migration、プライバシー、受入項目を改めて確定する。第1段階ではDBモデルとMigrationを変更しない。
+以下はPhase 2の完了条件に含めないPhase 3の要件である。`/post show`の削除済み候補除外と、Providerを使用しない予約名基盤2Aは実装済みである。AIによる生成、費用制御、Provider接続は未実装の将来計画であり、実装時に要件、設計、Migration、プライバシー、受入項目を改めて確定する。
 
 ### `/post show`の削除済み候補
 
@@ -441,7 +441,12 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - `ai`の状態で本文が変更された場合は古いAI名を解除して再生成を1回だけ試す。失敗時は`unset`とし、古いAI名を残さない。
 - AI生成名は親Scheduleの一部として保存し、親Scheduleと同時に削除する。AI入力とAI応答の履歴は保存しない。
 - 利用者ごとの文体・文脈・過去投稿を学習する機能、利用者プロファイル、過去投稿検索、Embedding、ベクトルDB、ファインチューニング、恒久的な学習データセットを作成しない。
-- 将来のDB候補として`schedules.display_name`と`schedules.display_name_source`を検討するが、現時点では追加しない。
+- 2Aでは`schedules.display_name VARCHAR(32)`と`schedules.display_name_source VARCHAR(8)`を追加する。既存行と名前解除は`NULL/unset`、有効な手動編集は`manual`とし、将来のAI生成名だけを`ai`とする。
+- 共通詳細Viewの独立Modalから、draft、active、pausedの予約名を所有者または同guild管理者が編集できる。空欄は解除、同値はno-opとし、実変更だけversionと本文を含まないOperationLogを更新する。
+- View、Button、SelectとModal内入力部品は用途別の固定custom IDを維持する。discord.pyのModal dispatchは外側custom IDだけをキーにするため、外側Modalだけは用途別固定prefixと32桁の非識別ランダムnonceを組み合わせ、100文字以内とする。nonceへ予約・利用者・guild・channel・version・本文・名前・理由・秘密情報を含めない。同種Modalを複数同時保持し、新規Modalを開く操作で別端末、別詳細、別予約、別利用者のModalを停止しない。
+- Modalはsubmit、timeout、error時に自分自身だけをregistryから解除し、同一Modalの二重submitをロックと終了状態で防ぐ。閉じる操作はDiscordから通知されないため有限timeoutで回収し、Bot closeではregistry内の全Modalをsnapshotしてstop・wait回収する。
+- 名前Modalはsubmit時のInteractionからguild、許可ロール、所有者・管理者境界を再検証する。詳細表示後に権限を失い、最新詳細を安全に再取得できない場合は旧Viewを解除し、他人予約のEmbedや本文、名前、投稿先、UUIDを再表示せず、`現在の権限ではこの予約を編集できません。/post showを再実行してください。`だけを`AllowedMentions.none()`付きで返す。defer済みの場合も元のephemeral応答をこの固定案内へ更新し、想定される認可拒否をERRORにしない。
+- 本文変更時はmanual名を維持し、ai名だけ即座に解除する。2Aでは再生成処理を開始しない。
 
 ### 非AIフォールバック
 

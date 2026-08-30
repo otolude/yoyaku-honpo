@@ -9,7 +9,12 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
-from discord_ai_reminder_bot.domain.enums import RunStatus, ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import (
+    DisplayNameSource,
+    RunStatus,
+    ScheduleStatus,
+    ScheduleType,
+)
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
 from discord_ai_reminder_bot.domain.recurrence import first_daily_run, first_weekly_run, require_utc
 from discord_ai_reminder_bot.domain.schedule_creation import (
@@ -31,6 +36,8 @@ class CreatedOnceSchedule:
     status: ScheduleStatus
     content: str | None
     scheduled_for: datetime
+    display_name: str | None = None
+    display_name_source: DisplayNameSource = DisplayNameSource.UNSET
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,8 @@ class CreatedRecurringSchedule:
     weekday: int | None
     end_date: date | None
     next_run_at: datetime
+    display_name: str | None = None
+    display_name_source: DisplayNameSource = DisplayNameSource.UNSET
 
 
 class DuplicateScheduleWarning(Exception):
@@ -90,6 +99,8 @@ class OnceScheduleCreationService:
                 schedule_type=ScheduleType.ONCE.value,
                 status=status.value,
                 content=content,
+                display_name=None,
+                display_name_source=DisplayNameSource.UNSET.value,
                 next_run_at=scheduled_for,
                 version=1,
             )
@@ -111,6 +122,8 @@ class OnceScheduleCreationService:
             channel_id=channel_id,
             status=status,
             content=content,
+            display_name=None,
+            display_name_source=DisplayNameSource.UNSET,
             scheduled_for=scheduled_for,
         )
 
@@ -170,6 +183,8 @@ class RecurringScheduleCreationService:
                 schedule_type=schedule_type.value,
                 status=status.value,
                 content=content,
+                display_name=None,
+                display_name_source=DisplayNameSource.UNSET.value,
                 next_run_at=next_run_at,
                 local_time=local_time,
                 weekday=weekday,
@@ -196,6 +211,8 @@ class RecurringScheduleCreationService:
             schedule_type=schedule_type,
             status=status,
             content=content,
+            display_name=None,
+            display_name_source=DisplayNameSource.UNSET,
             local_time=local_time,
             weekday=weekday,
             end_date=end_date,

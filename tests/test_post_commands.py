@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -31,6 +32,12 @@ from discord_ai_reminder_bot.application.schedule_editing import (
     ScheduleEditUnavailable,
     ScheduleEditVersionConflict,
 )
+from discord_ai_reminder_bot.application.schedule_naming import (
+    EditedScheduleName,
+    ScheduleNameEditUnavailable,
+    ScheduleNameNoChanges,
+    ScheduleNameVersionConflict,
+)
 from discord_ai_reminder_bot.application.schedule_pause import (
     PausedSchedule,
     ResumedSchedule,
@@ -52,6 +59,7 @@ from discord_ai_reminder_bot.bot.post_views import (
     DETAIL_BACK_CUSTOM_ID,
     DETAIL_DELETE_CUSTOM_ID,
     DETAIL_EDIT_CUSTOM_ID,
+    DETAIL_NAME_EDIT_CUSTOM_ID,
     DETAIL_PAUSE_CUSTOM_ID,
     DETAIL_RESUME_CUSTOM_ID,
     ScheduleListOrigin,
@@ -68,8 +76,14 @@ from discord_ai_reminder_bot.bot.posts import (
     DELETE_REASON_REQUIRED_MESSAGE,
     DELETE_UNAVAILABLE_MESSAGE,
     DETAIL_CONFLICT_MESSAGE,
+    DETAIL_DELETE_REASON_MODAL_PREFIX,
     DETAIL_EDIT_CHANNEL_MESSAGE,
+    DETAIL_EDIT_MODAL_PREFIX,
     DETAIL_EDIT_NO_CHANGES_MESSAGE,
+    DETAIL_NAME_EDIT_MODAL_PREFIX,
+    DETAIL_NAME_EDITED_MESSAGE,
+    DETAIL_NAME_NO_CHANGES_MESSAGE,
+    DETAIL_NAME_PERMISSION_LOST_MESSAGE,
     DETAIL_PAUSED_MESSAGE,
     DETAIL_RESUMED_MESSAGE,
     EDIT_NO_CHANGES_MESSAGE,
@@ -81,16 +95,19 @@ from discord_ai_reminder_bot.bot.posts import (
     NOT_FOUND_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     RESUME_TIME_MESSAGE,
+    RESUME_TIME_MODAL_PREFIX,
     STATE_CHANGE_UNAVAILABLE_MESSAGE,
     DeleteReasonModal,
     InteractionActor,
     PostCommands,
     ResumeChoiceView,
+    ResumeTimeModal,
     ScheduleDeletionConfirmView,
     ScheduleEditModal,
+    ScheduleNameEditModal,
 )
 from discord_ai_reminder_bot.domain.clock import FixedClock
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource, ScheduleStatus, ScheduleType
 
 GUILD_ID = 100
 USER_ID = 300
@@ -468,7 +485,10 @@ async def test_create_defers_then_commits_and_uses_interaction_identity(
     assert arguments["scheduled_for"] == datetime(2026, 8, 20, 10, 30, tzinfo=UTC)
     embed = value.edit_original_response.await_args.kwargs["embed"]
     assert embed.title == "単発予約を作成しました"
-    assert "line 1 line 2" in embed.fields[3].value
+    assert "単発予約 8/20 19:30" in next(
+        field.value for field in embed.fields if field.name == "🏷️ 予約名"
+    )
+    assert "line 1 line 2" in next(field.value for field in embed.fields if field.name == "📝 本文")
 
 
 @pytest.mark.asyncio
@@ -894,7 +914,12 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
     await group._show_list_selection(list_view, clicked, str(selected.public_id))
     detail_view = clicked.response.edit_message.await_args.kwargs["view"]
     assert clicked.response.edit_message.await_args.kwargs["embed"].title == "予約詳細"
-    assert [item.label for item in detail_view.children] == ["編集", "削除", "一覧へ戻る"]
+    assert [item.label for item in detail_view.children] == [
+        "編集",
+        "予約名を編集",
+        "削除",
+        "一覧へ戻る",
+    ]
     assert detail_view.context.expected_version == selected.version
     assert list_view.is_finished()
     assert list_view not in group._list_views
@@ -911,10 +936,10 @@ async def test_list_selection_shows_detail_and_back_refreshes() -> None:
 @pytest.mark.parametrize(
     ("pause", "resume", "delete", "labels", "delete_disabled"),
     [
-        (True, False, True, ["編集", "一時停止", "削除"], False),
-        (False, True, True, ["編集", "再開", "削除"], False),
-        (False, False, True, ["編集", "削除"], False),
-        (False, False, False, ["編集", "削除"], True),
+        (True, False, True, ["編集", "予約名を編集", "一時停止", "削除"], False),
+        (False, True, True, ["編集", "予約名を編集", "再開", "削除"], False),
+        (False, False, True, ["編集", "予約名を編集", "削除"], False),
+        (False, False, False, ["編集", "予約名を編集", "削除"], True),
     ],
 )
 def test_detail_action_buttons_follow_read_only_availability(
@@ -936,6 +961,22 @@ def test_detail_action_buttons_follow_read_only_availability(
     assert detail_view.children[-1].disabled is delete_disabled
     assert all(str(selected.public_id) not in str(item.custom_id) for item in detail_view.children)
     assert detail_view.children[0].disabled is True
+    assert detail_view.children[1].disabled is False
+
+
+def test_detail_name_edit_button_is_disabled_for_terminal_status() -> None:
+    selected = replace(view(), status=ScheduleStatus.COMPLETED)
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail_with_actions(selected, delete=False),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    name_edit = next(
+        item for item in detail_view.children if item.custom_id == DETAIL_NAME_EDIT_CUSTOM_ID
+    )
+    assert name_edit.disabled is True
 
 
 @pytest.mark.parametrize(
@@ -988,6 +1029,753 @@ def test_detail_edit_modal_has_type_specific_v2_labels_and_defaults(
             False,
             False,
         ]
+
+
+def test_detail_name_edit_modal_is_independent_and_uses_persisted_name_default() -> None:
+    selected = replace(view(), display_name="現在名", display_name_source=DisplayNameSource.AI)
+    group = commands(AsyncMock())
+    detail_view = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleNameEditModal(commands=group, detail_view=detail_view)
+    assert modal.timeout == 900.0
+    assert len(modal.children) == 1
+    assert modal.display_name.default == "現在名"
+    assert modal.display_name.required is False
+    assert modal.display_name.max_length == 32
+
+
+@pytest.mark.asyncio
+async def test_detail_name_edit_sets_manual_name_and_refreshes_latest_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = view()
+    refreshed = replace(
+        selected,
+        display_name="新しい名前",
+        display_name_source=DisplayNameSource.MANUAL,
+        version=2,
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(refreshed)
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleNameEditModal(commands=group, detail_view=parent)
+    modal.display_name._value = "  新しい名前  "
+    service = AsyncMock()
+    service.edit_manual_name.return_value = EditedScheduleName(
+        public_id=selected.public_id,
+        display_name="新しい名前",
+        display_name_source=DisplayNameSource.MANUAL,
+        version=2,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    submitted = interaction(administrator=True)
+
+    await group._submit_detail_name_edit(modal, submitted)
+
+    service.edit_manual_name.assert_awaited_once_with(
+        guild_id=GUILD_ID,
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        administrator=True,
+        submitted_name="  新しい名前  ",
+        edited_at=NOW,
+        expected_version=1,
+    )
+    assert submitted.response.defer.await_args.kwargs == {}
+    assert submitted.edit_original_response.await_args.kwargs["content"] == (
+        DETAIL_NAME_EDITED_MESSAGE
+    )
+    latest = next(iter(group._detail_views))
+    assert latest.context.display_name == "新しい名前"
+    assert latest.context.expected_version == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (ScheduleNameNoChanges(), DETAIL_NAME_NO_CHANGES_MESSAGE),
+        (ScheduleNameVersionConflict(), DETAIL_CONFLICT_MESSAGE),
+    ],
+)
+async def test_detail_name_edit_noop_and_conflict_refresh_latest_detail(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, message: str
+) -> None:
+    selected = view()
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(selected)
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    modal = ScheduleNameEditModal(commands=group, detail_view=parent)
+    modal.display_name._value = ""
+    service = AsyncMock()
+    service.edit_manual_name.side_effect = error
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    submitted = interaction()
+    await group._submit_detail_name_edit(modal, submitted)
+    assert submitted.edit_original_response.await_args.kwargs["content"] == message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    ["other-user", "dm", "wrong-guild", "role-loss", "admin-loss"],
+)
+async def test_name_modal_submit_rechecks_actor_guild_role_and_admin_boundary(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    creator_id = USER_ID + 1 if boundary == "admin-loss" else USER_ID
+    selected = replace(view(), creator_user_id=creator_id, version=17)
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = None
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=boundary == "admin-loss"),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="古い詳細"),
+    )
+    group._detail_views.add(parent)
+    modal = ScheduleNameEditModal(commands=group, detail_view=parent)
+    modal.display_name._value = "拒否される名前"
+    group._name_edit_modals.add(modal)
+    service = AsyncMock()
+    service.edit_manual_name.side_effect = ScheduleNameEditUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    submitted = interaction(administrator=False)
+    if boundary == "other-user":
+        submitted.user.id = USER_ID + 1
+    elif boundary == "dm":
+        submitted.guild = None
+        submitted.guild_id = None
+    elif boundary == "wrong-guild":
+        submitted.guild.id = GUILD_ID + 1
+        submitted.guild_id = GUILD_ID + 1
+    elif boundary == "role-loss":
+        submitted.user.roles = []
+
+    await modal.on_submit(submitted)
+
+    assert parent.closed and parent.finished and parent.is_finished()
+    assert parent not in group._detail_views
+    assert modal.closed and modal.is_finished() and modal not in group._name_edit_modals
+    if boundary == "admin-loss":
+        service.edit_manual_name.assert_awaited_once()
+        assert service.edit_manual_name.await_args.kwargs["administrator"] is False
+        submitted.response.defer.assert_awaited_once_with()
+        response = submitted.edit_original_response
+    else:
+        service.edit_manual_name.assert_not_awaited()
+        submitted.response.defer.assert_not_awaited()
+        response = submitted.response.send_message
+    assert response.await_args.args in ((), (DETAIL_NAME_PERMISSION_LOST_MESSAGE,))
+    kwargs = response.await_args.kwargs
+    assert kwargs.get("content", DETAIL_NAME_PERMISSION_LOST_MESSAGE) == (
+        DETAIL_NAME_PERMISSION_LOST_MESSAGE
+    )
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    if boundary == "admin-loss":
+        assert kwargs["embed"] is None and kwargs["view"] is None
+    response_text = f"{response.await_args.args} {kwargs}"
+    for forbidden in (str(selected.public_id), str(selected.version), selected.content):
+        assert forbidden not in response_text
+
+
+@pytest.mark.asyncio
+async def test_name_modal_reopen_double_submit_timeout_and_bot_close_are_safe() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    button = next(item for item in parent.children if item.custom_id == DETAIL_NAME_EDIT_CUSTOM_ID)
+    first = interaction()
+    await button.callback(first)
+    first_modal = first.response.send_modal.await_args.args[0]
+    second = interaction()
+    await button.callback(second)
+    second_modal = second.response.send_modal.await_args.args[0]
+    assert not first_modal.closed and not first_modal.is_finished()
+    assert {first_modal, second_modal} <= group._name_edit_modals
+
+    group._submit_detail_name_edit = AsyncMock()  # type: ignore[method-assign]
+    await second_modal.on_submit(interaction())
+    await second_modal.on_submit(interaction())
+    group._submit_detail_name_edit.assert_awaited_once()
+    third = interaction()
+    await button.callback(third)
+    third_modal = third.response.send_modal.await_args.args[0]
+    await third_modal.on_timeout()
+    assert third_modal.closed and parent.closed is False
+    fourth = interaction()
+    await button.callback(fourth)
+    fourth_modal = fourth.response.send_modal.await_args.args[0]
+    await group.close_confirmation_views()
+    assert first_modal.closed and first_modal.is_finished()
+    assert fourth_modal.closed and fourth_modal.is_finished()
+
+
+def test_outer_modal_custom_ids_use_distinct_non_identifying_nonces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nonces = iter(
+        ("a" * 32, "b" * 32, "c" * 32, "d" * 32, "e" * 32, "f" * 32, "ab" * 16, "cd" * 16)
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.secrets.token_hex",
+        lambda unused: next(nonces),
+    )
+    secret_body = "本文secret-value"
+    secret_name = "予約名secret-value"
+    selected = replace(view(), content=secret_body, display_name=secret_name, version=47)
+    group = commands(AsyncMock())
+    first_detail = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    other = replace(selected, public_id=uuid.uuid7(), creator_user_id=USER_ID + 1)
+    second_detail = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID + 1,
+        detail=detail(other),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    resume_one = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(selected.public_id),
+        actor_user_id=USER_ID,
+        rescue_allowed=True,
+    )
+    resume_two = ResumeChoiceView(
+        commands=group,
+        interaction=interaction(),
+        public_id=str(other.public_id),
+        actor_user_id=USER_ID + 1,
+        rescue_allowed=True,
+    )
+    pairs = [
+        (
+            DETAIL_EDIT_MODAL_PREFIX,
+            ScheduleEditModal(commands=group, detail_view=first_detail, default_channel=None),
+            ScheduleEditModal(commands=group, detail_view=second_detail, default_channel=None),
+        ),
+        (
+            DETAIL_NAME_EDIT_MODAL_PREFIX,
+            ScheduleNameEditModal(commands=group, detail_view=first_detail),
+            ScheduleNameEditModal(commands=group, detail_view=second_detail),
+        ),
+        (
+            DETAIL_DELETE_REASON_MODAL_PREFIX,
+            DeleteReasonModal(commands=group, detail_view=first_detail),
+            DeleteReasonModal(commands=group, detail_view=second_detail),
+        ),
+        (
+            RESUME_TIME_MODAL_PREFIX,
+            ResumeTimeModal(resume_one),
+            ResumeTimeModal(resume_two),
+        ),
+    ]
+    forbidden = (
+        str(selected.public_id),
+        str(other.public_id),
+        str(USER_ID),
+        str(GUILD_ID),
+        str(selected.channel_id),
+        str(selected.version),
+        secret_body,
+        secret_name,
+        "監査理由secret-value",
+        "token-secret-value",
+    )
+    for prefix, first, second in pairs:
+        assert first.custom_id != second.custom_id
+        for modal in (first, second):
+            assert len(modal.custom_id) <= 100
+            assert re.fullmatch(rf"{prefix}:[0-9a-f]{{32}}", modal.custom_id)
+            assert all(value not in modal.custom_id for value in forbidden)
+
+    assert first_detail.context.content == secret_body
+    assert first_detail.context.display_name == secret_name
+    assert (
+        next(
+            item.custom_id
+            for item in pairs[1][1].walk_children()
+            if isinstance(item, discord.ui.TextInput)
+        )
+        == "post_detail_display_name"
+    )
+    assert {
+        item.custom_id
+        for item in pairs[0][1].walk_children()
+        if getattr(item, "custom_id", None) is not None
+    } == {
+        "post_detail_edit_channel",
+        "post_detail_edit_scheduled_at",
+        "post_detail_edit_content",
+    }
+    assert pairs[2][1].reason.custom_id == pairs[2][2].reason.custom_id
+    assert pairs[3][1].local_time.custom_id == pairs[3][2].local_time.custom_id
+
+
+@pytest.mark.asyncio
+async def test_real_view_store_keeps_two_name_modals_dispatchable_independently() -> None:
+    group = commands(AsyncMock())
+    first_schedule = view()
+    second_schedule = replace(
+        first_schedule,
+        public_id=uuid.uuid7(),
+        creator_user_id=USER_ID + 1,
+    )
+    first_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(first_schedule),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    second_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID + 1,
+        detail=detail(second_schedule),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    first = ScheduleNameEditModal(commands=group, detail_view=first_parent)
+    second = ScheduleNameEditModal(commands=group, detail_view=second_parent)
+    first.on_submit = AsyncMock()  # type: ignore[method-assign]
+    second.on_submit = AsyncMock()  # type: ignore[method-assign]
+    store = ViewStore(MagicMock())
+    store.add_view(first)
+    store.add_view(second)
+    assert store._modals == {first.custom_id: first, second.custom_id: second}
+
+    components = [
+        {
+            "type": discord.ComponentType.action_row.value,
+            "components": [
+                {
+                    "type": discord.ComponentType.text_input.value,
+                    "custom_id": "post_detail_display_name",
+                    "value": "新しい名前",
+                }
+            ],
+        }
+    ]
+    second_submit = interaction()
+    store.dispatch_modal(second.custom_id, second_submit, components, {})  # type: ignore[arg-type]
+    for _ in range(10):
+        if second.on_submit.await_count:
+            break
+        await asyncio.sleep(0)
+    second.on_submit.assert_awaited_once_with(second_submit)
+    assert first.custom_id in store._modals
+    assert second.custom_id not in store._modals
+
+    first_submit = interaction()
+    store.dispatch_modal(first.custom_id, first_submit, components, {})  # type: ignore[arg-type]
+    for _ in range(10):
+        if first.on_submit.await_count:
+            break
+        await asyncio.sleep(0)
+    first.on_submit.assert_awaited_once_with(first_submit)
+    assert first.custom_id not in store._modals
+
+
+@pytest.mark.asyncio
+async def test_real_view_store_keeps_other_modal_types_dispatchable_independently() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    first_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    second_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(replace(selected, public_id=uuid.uuid7())),
+        embed=discord.Embed(title="予約詳細"),
+    )
+
+    def resume_parent(public_id: uuid.UUID) -> ResumeChoiceView:
+        return ResumeChoiceView(
+            commands=group,
+            interaction=interaction(),
+            public_id=str(public_id),
+            actor_user_id=USER_ID,
+            rescue_allowed=True,
+        )
+
+    pairs = [
+        (
+            ScheduleEditModal(commands=group, detail_view=first_parent, default_channel=None),
+            ScheduleEditModal(commands=group, detail_view=second_parent, default_channel=None),
+        ),
+        (
+            DeleteReasonModal(commands=group, detail_view=first_parent),
+            DeleteReasonModal(commands=group, detail_view=second_parent),
+        ),
+        (
+            ResumeTimeModal(resume_parent(first_parent.context.public_id)),
+            ResumeTimeModal(resume_parent(second_parent.context.public_id)),
+        ),
+    ]
+    for first, second in pairs:
+        first.on_submit = AsyncMock()  # type: ignore[method-assign]
+        second.on_submit = AsyncMock()  # type: ignore[method-assign]
+        store = ViewStore(MagicMock())
+        store.add_view(first)
+        store.add_view(second)
+
+        second_submit = interaction()
+        store.dispatch_modal(second.custom_id, second_submit, [], {})
+        for _ in range(10):
+            if second.on_submit.await_count:
+                break
+            await asyncio.sleep(0)
+        second.on_submit.assert_awaited_once_with(second_submit)
+        assert first.custom_id in store._modals
+        assert second.custom_id not in store._modals
+
+        first_submit = interaction()
+        store.dispatch_modal(first.custom_id, first_submit, [], {})
+        for _ in range(10):
+            if first.on_submit.await_count:
+                break
+            await asyncio.sleep(0)
+        first.on_submit.assert_awaited_once_with(first_submit)
+        assert not store._modals
+
+
+@pytest.mark.asyncio
+async def test_all_modal_types_release_only_self_and_bot_close_collects_remaining() -> None:
+    selected = view()
+    group = commands(AsyncMock())
+    parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+
+    def resume_parent() -> ResumeChoiceView:
+        return ResumeChoiceView(
+            commands=group,
+            interaction=interaction(),
+            public_id=str(selected.public_id),
+            actor_user_id=USER_ID,
+            rescue_allowed=True,
+        )
+
+    groups = [
+        (
+            group._edit_modals,
+            tuple(
+                ScheduleEditModal(commands=group, detail_view=parent, default_channel=None)
+                for _ in range(3)
+            ),
+        ),
+        (
+            group._name_edit_modals,
+            tuple(ScheduleNameEditModal(commands=group, detail_view=parent) for _ in range(3)),
+        ),
+        (
+            group._delete_reason_modals,
+            tuple(DeleteReasonModal(commands=group, detail_view=parent) for _ in range(3)),
+        ),
+        (
+            group._resume_modals,
+            tuple(ResumeTimeModal(resume_parent()) for _ in range(3)),
+        ),
+    ]
+    store = ViewStore(MagicMock())
+    remaining: list[discord.ui.Modal] = []
+    for registry, modals in groups:
+        timeout_modal, error_modal, close_modal = modals
+        registry.update(modals)
+        for modal in modals:
+            store.add_view(modal)
+
+        await timeout_modal.on_timeout()
+        assert timeout_modal not in registry
+        assert timeout_modal.custom_id not in store._modals
+        assert error_modal.custom_id in store._modals
+        assert close_modal.custom_id in store._modals
+
+        await error_modal.on_error(interaction(), RuntimeError("private-error"))
+        assert error_modal not in registry
+        assert error_modal.custom_id not in store._modals
+        assert close_modal in registry
+        assert close_modal.custom_id in store._modals
+        remaining.append(close_modal)
+
+    await group.close_confirmation_views()
+
+    assert all(modal.closed and modal.is_finished() for modal in remaining)
+    assert not store._modals
+    assert not group._edit_modals
+    assert not group._name_edit_modals
+    assert not group._delete_reason_modals
+    assert not group._resume_modals
+
+
+@pytest.mark.asyncio
+async def test_name_modal_real_view_store_reaches_delayed_version_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = view()
+    latest = replace(
+        selected,
+        display_name="競合後の最新名",
+        display_name_source=DisplayNameSource.MANUAL,
+        version=2,
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = detail(latest)
+    group = commands(queries)
+    first_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    second_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="予約詳細"),
+    )
+    first = ScheduleNameEditModal(commands=group, detail_view=first_parent)
+    second = ScheduleNameEditModal(commands=group, detail_view=second_parent)
+    group._name_edit_modals.update((first, second))
+    service = AsyncMock()
+    service.edit_manual_name.side_effect = [
+        EditedScheduleName(
+            public_id=selected.public_id,
+            display_name="競合後の最新名",
+            display_name_source=DisplayNameSource.MANUAL,
+            version=2,
+        ),
+        ScheduleNameVersionConflict(),
+    ]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    store = ViewStore(MagicMock())
+    store.add_view(first)
+    store.add_view(second)
+
+    def components(value: str) -> list[dict[str, object]]:
+        return [
+            {
+                "type": discord.ComponentType.action_row.value,
+                "components": [
+                    {
+                        "type": discord.ComponentType.text_input.value,
+                        "custom_id": "post_detail_display_name",
+                        "value": value,
+                    }
+                ],
+            }
+        ]
+
+    second_submit = interaction()
+    store.dispatch_modal(
+        second.custom_id,
+        second_submit,
+        components("競合後の最新名"),  # type: ignore[arg-type]
+        {},
+    )
+    for _ in range(20):
+        if second_submit.edit_original_response.await_count:
+            break
+        await asyncio.sleep(0)
+    second_submit.response.defer.assert_awaited_once_with()
+    assert second_submit.edit_original_response.await_args.kwargs["content"] == (
+        DETAIL_NAME_EDITED_MESSAGE
+    )
+    assert first.custom_id in store._modals
+
+    first_submit = interaction()
+    store.dispatch_modal(
+        first.custom_id,
+        first_submit,
+        components("古い画面からの名前"),  # type: ignore[arg-type]
+        {},
+    )
+    for _ in range(20):
+        if first_submit.edit_original_response.await_count:
+            break
+        await asyncio.sleep(0)
+    first_submit.response.defer.assert_awaited_once_with()
+    assert first_submit.edit_original_response.await_args.kwargs["content"] == (
+        DETAIL_CONFLICT_MESSAGE
+    )
+    refreshed_embed = first_submit.edit_original_response.await_args.kwargs["embed"]
+    assert "競合後の最新名" in " ".join(field.value for field in refreshed_embed.fields)
+    assert "古い画面からの名前" not in " ".join(field.value for field in refreshed_embed.fields)
+    assert service.edit_manual_name.await_args_list[0].kwargs["expected_version"] == 1
+    assert service.edit_manual_name.await_args_list[1].kwargs["expected_version"] == 1
+    assert first not in group._name_edit_modals
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["role-loss", "admin-loss"])
+async def test_delayed_name_modal_view_store_submit_rechecks_current_authorization(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    selected = replace(
+        view(),
+        creator_user_id=USER_ID + 1 if boundary == "admin-loss" else USER_ID,
+        version=23,
+    )
+    group = commands(AsyncMock())
+    group._queries.get_schedule_detail.return_value = None
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=boundary == "admin-loss"),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title="古い詳細"),
+    )
+    other_parent = group._build_detail_view(
+        interaction=interaction(),
+        actor_user_id=USER_ID,
+        detail=detail(replace(view(), public_id=uuid.uuid7())),
+        embed=discord.Embed(title="別Modalの詳細"),
+    )
+    delayed = ScheduleNameEditModal(commands=group, detail_view=parent)
+    other_modal = ScheduleNameEditModal(commands=group, detail_view=other_parent)
+    group._name_edit_modals.update((delayed, other_modal))
+    service = AsyncMock()
+    service.edit_manual_name.side_effect = ScheduleNameEditUnavailable
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    store = ViewStore(MagicMock())
+    store.add_view(delayed)
+    store.add_view(other_modal)
+    submitted = interaction(administrator=False)
+    if boundary == "role-loss":
+        submitted.user.roles = []
+    components = [
+        {
+            "type": discord.ComponentType.action_row.value,
+            "components": [
+                {
+                    "type": discord.ComponentType.text_input.value,
+                    "custom_id": "post_detail_display_name",
+                    "value": "遅延送信名",
+                }
+            ],
+        }
+    ]
+
+    store.dispatch_modal(delayed.custom_id, submitted, components, {})  # type: ignore[arg-type]
+    for _ in range(20):
+        response = (
+            submitted.edit_original_response
+            if boundary == "admin-loss"
+            else submitted.response.send_message
+        )
+        if response.await_count:
+            break
+        await asyncio.sleep(0)
+
+    if boundary == "role-loss":
+        service.edit_manual_name.assert_not_awaited()
+        assert submitted.response.send_message.await_args.args == (
+            DETAIL_NAME_PERMISSION_LOST_MESSAGE,
+        )
+    else:
+        service.edit_manual_name.assert_awaited_once()
+        assert service.edit_manual_name.await_args.kwargs["administrator"] is False
+        assert submitted.edit_original_response.await_args.kwargs["content"] == (
+            DETAIL_NAME_PERMISSION_LOST_MESSAGE
+        )
+    assert other_modal.custom_id in store._modals
+    assert delayed.custom_id not in store._modals
+    assert other_modal in group._name_edit_modals
+
+
+@pytest.mark.asyncio
+async def test_name_modal_rejection_exposes_only_fixed_boundary(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "token-private traceback-sentinel database-password"
+    selected = replace(
+        view(content=f"秘密本文 {secret}"),
+        creator_user_id=USER_ID + 1,
+        display_name=f"秘密予約名 {secret}",
+        display_name_source=DisplayNameSource.MANUAL,
+        version=91,
+    )
+    queries = AsyncMock()
+    queries.get_schedule_detail.return_value = None
+    group = commands(queries)
+    parent = group._build_detail_view(
+        interaction=interaction(administrator=True),
+        actor_user_id=USER_ID,
+        detail=detail(selected),
+        embed=discord.Embed(title=f"古い詳細 {secret}"),
+    )
+    modal = ScheduleNameEditModal(commands=group, detail_view=parent)
+    modal.display_name._value = f"拒否入力 {secret}"
+    group._name_edit_modals.add(modal)
+    service = AsyncMock()
+    service.edit_manual_name.side_effect = ScheduleNameEditUnavailable(secret)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.posts.ScheduleNamingService", lambda unused: service
+    )
+    submitted = interaction(administrator=False)
+
+    with caplog.at_level(logging.ERROR, logger="test.posts"):
+        await modal.on_submit(submitted)
+
+    kwargs = submitted.edit_original_response.await_args.kwargs
+    assert kwargs == {
+        "content": DETAIL_NAME_PERMISSION_LOST_MESSAGE,
+        "embed": None,
+        "view": None,
+        "allowed_mentions": kwargs["allowed_mentions"],
+    }
+    assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    exposed = f"{submitted.edit_original_response.await_args} {caplog.text}"
+    for forbidden in (
+        secret,
+        str(selected.public_id),
+        str(selected.version),
+        selected.content,
+        selected.display_name,
+    ):
+        assert forbidden not in exposed
+    assert not [record for record in caplog.records if record.name == "test.posts"]
+    assert modal.closed and modal.is_finished() and modal not in group._name_edit_modals
 
 
 @pytest.mark.asyncio
@@ -1783,7 +2571,8 @@ async def test_closed_edit_modal_can_be_reopened_without_retiring_parent() -> No
     second_modal = second_click.response.send_modal.await_args.args[0]
 
     assert second_modal is not first_modal
-    assert first_modal.closed and first_modal.is_finished()
+    assert not first_modal.closed and not first_modal.is_finished()
+    assert {first_modal, second_modal} <= group._edit_modals
     assert second_modal in group._edit_modals
     assert detail_view in group._detail_views
     assert detail_view.finished is False and detail_view.closed is False
@@ -1793,7 +2582,7 @@ async def test_closed_edit_modal_can_be_reopened_without_retiring_parent() -> No
     await second_modal.on_submit(interaction())
     group._submit_detail_edit.assert_awaited_once()
     await first_modal.on_submit(interaction())
-    group._submit_detail_edit.assert_awaited_once()
+    assert group._submit_detail_edit.await_count == 2
     assert detail_view.finished is False and detail_view.closed is False
     await group.close_confirmation_views()
 
@@ -1839,7 +2628,7 @@ async def test_direct_show_builds_detail_context_and_delete_button() -> None:
     kwargs = value.response.send_message.await_args.kwargs
     assert kwargs["embed"].title == "予約詳細"
     built = kwargs["view"]
-    assert [item.label for item in built.children] == ["編集", "削除"]
+    assert [item.label for item in built.children] == ["編集", "予約名を編集", "削除"]
     assert built.context.public_id == selected.public_id
     assert built.context.expected_version == selected.version
     assert built.timeout is None
@@ -1934,7 +2723,12 @@ async def test_detail_back_uses_changed_service_snapshot_and_recomputes_filtered
     assert latest.schedule_type is ScheduleType.WEEKLY
     assert changed.status is ScheduleStatus.PAUSED and changed.content == "変更後"
     assert changed.version == 2 and selected.version == 1
-    assert "変更後" in returned.response.edit_message.await_args.kwargs["embed"].fields[-1].value
+    assert (
+        "変更後" not in returned.response.edit_message.await_args.kwargs["embed"].fields[-1].value
+    )
+    assert (
+        "名称未設定" in returned.response.edit_message.await_args.kwargs["embed"].fields[-1].value
+    )
     session.__aenter__.assert_not_awaited()
 
 
@@ -2850,6 +3644,8 @@ async def test_detail_show_list_and_failure_paths_keep_content_and_internal_boun
         "schedule_type",
         "status",
         "content",
+        "display_name",
+        "display_name_source",
         "next_run_at",
         "local_time",
         "weekday",
@@ -3058,8 +3854,8 @@ async def test_closed_resume_time_modal_can_be_reopened_without_retiring_parent(
     second_modal = second_click.response.send_modal.await_args.args[0]
 
     assert second_modal is not first_modal
-    assert first_modal.closed and first_modal.is_finished()
-    assert second_modal in group._resume_modals
+    assert not first_modal.closed and not first_modal.is_finished()
+    assert {first_modal, second_modal} <= group._resume_modals
     assert parent.finished is False and parent.closed is False
     assert not parent.is_finished()
     await group.close_confirmation_views()
@@ -3084,8 +3880,8 @@ async def test_closed_delete_reason_modal_can_be_reopened_without_retiring_detai
     second_modal = second_click.response.send_modal.await_args.args[0]
 
     assert second_modal is not first_modal
-    assert first_modal.closed and first_modal.is_finished()
-    assert second_modal in group._delete_reason_modals
+    assert not first_modal.closed and not first_modal.is_finished()
+    assert {first_modal, second_modal} <= group._delete_reason_modals
     assert detail_view.finished is False and detail_view.closed is False
     assert not detail_view.is_finished()
     await group.close_confirmation_views()
@@ -3124,7 +3920,8 @@ async def test_delete_reason_modal_rejects_invalid_input_before_session_and_can_
         assert reason not in submitted.response.send_message.await_args.args[0]
     session_factory.assert_not_called()
     assert parent.finished is False and parent.closed is False and not parent.is_finished()
-    assert modal.finished is False and not modal.is_finished()
+    assert modal.finished and modal.closed and modal.is_finished()
+    assert modal not in group._delete_reason_modals
 
     reopened = interaction(administrator=True)
     await group._delete_from_detail(parent, reopened)
@@ -3165,7 +3962,7 @@ async def test_delete_reason_modal_passes_only_trimmed_valid_reason_to_delete_fl
     group._continue_detail_delete.assert_awaited_once_with(parent, submitted, expected)
     assert modal.closed and modal.is_finished()
     assert modal not in group._delete_reason_modals
-    assert modal.custom_id == "post_detail_delete_reason"
+    assert re.fullmatch(rf"{DETAIL_DELETE_REASON_MODAL_PREFIX}:[0-9a-f]{{32}}", modal.custom_id)
     for component in modal.walk_children():
         custom_id = getattr(component, "custom_id", None)
         if custom_id:

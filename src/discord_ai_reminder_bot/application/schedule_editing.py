@@ -12,6 +12,7 @@ from discord_ai_reminder_bot.application.notification_planning import Notificati
 from discord_ai_reminder_bot.application.schedule_queries import parse_public_id
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
+    DisplayNameSource,
     OperationAction,
     RunStatus,
     ScheduleStatus,
@@ -285,6 +286,14 @@ class ScheduleEditingService:
         )
         schedule.channel_id = channel_id
         schedule.content = content
+        if actual["content"] and schedule.display_name_source == DisplayNameSource.AI.value:
+            changes["display_name_changed"] = True
+            changes["display_name_source"] = {
+                "from": DisplayNameSource.AI.value,
+                "to": DisplayNameSource.UNSET.value,
+            }
+            schedule.display_name = None
+            schedule.display_name_source = DisplayNameSource.UNSET.value
         schedule.local_time = local_time
         schedule.weekday = weekday
         schedule.end_date = end_date

@@ -23,9 +23,10 @@ from discord_ai_reminder_bot.application.schedule_queries import (
     ScheduleAutocompleteView,
     ScheduleView,
 )
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource, ScheduleStatus, ScheduleType
 from discord_ai_reminder_bot.domain.schedule_creation import ParsedOnceSchedule
 from discord_ai_reminder_bot.domain.schedule_deletion import MISSING_DELETE_REASON
+from discord_ai_reminder_bot.domain.schedule_naming import schedule_display_name
 
 EMBED_TOTAL_LIMIT = 6_000
 EMBED_FIELD_LIMIT = 25
@@ -80,6 +81,7 @@ DETAIL_OPERATION_GUIDANCE = "Botが稼働している間は操作できます。
 def created_schedule_embed(created: CreatedOnceSchedule) -> discord.Embed:
     embed = _embed(title="単発予約を作成しました", status=created.status)
     _field(embed, "状態", status_text(created.status), inline=True)
+    _field(embed, "🏷️ 予約名", _created_once_name(created), inline=False)
     _field(embed, "📍 投稿先", channel_text(created.channel_id), inline=True)
     _field(embed, "🗓️ 投稿予定", datetime_text(created.scheduled_for), inline=False)
     _field(embed, "📝 本文", content_preview(created.content), inline=False)
@@ -113,6 +115,7 @@ def created_recurring_schedule_embed(created: CreatedRecurringSchedule) -> disco
     embed = _embed(title=f"{type_label}予約を作成しました", status=created.status)
     _field(embed, "状態", status_text(created.status), inline=True)
     _field(embed, "種別", type_label, inline=True)
+    _field(embed, "🏷️ 予約名", _created_recurring_name(created), inline=False)
     _field(embed, "📍 投稿先", channel_text(created.channel_id), inline=False)
     if created.schedule_type is ScheduleType.WEEKLY:
         _field(embed, "曜日", weekday_text(created.weekday), inline=True)
@@ -343,17 +346,15 @@ def schedule_list_embed(
         return _validated(embed)
     for schedule in schedules:
         name = f"{status_text(schedule.status)}・{TYPE_LABELS[schedule.schedule_type]}"
-        lines = [f"📍 投稿先：{channel_text(schedule.channel_id)}"]
+        lines = [
+            f"🏷️ 予約名：{_schedule_name(schedule)}",
+            f"📍 投稿先：{channel_text(schedule.channel_id)}",
+        ]
         if schedule.next_run_at is not None:
             lines.append(
                 f"🗓️ {datetime_label(schedule.schedule_type)}：{datetime_text(schedule.next_run_at)}"
             )
-        lines.extend(
-            (
-                f"📝 本文：{content_preview(schedule.content)}",
-                f"🆔 予約ID：{public_id_text(schedule.public_id)}",
-            )
-        )
+        lines.append(f"🆔 予約ID：{public_id_text(schedule.public_id)}")
         value = "\n".join(lines)
         _field(embed, name, value, inline=False)
     return _validated(embed)
@@ -364,6 +365,7 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
     embed.description = DETAIL_OPERATION_GUIDANCE
     _field(embed, "状態", status_text(schedule.status), inline=True)
     _field(embed, "種別", TYPE_LABELS[schedule.schedule_type], inline=True)
+    _field(embed, "🏷️ 予約名", _schedule_name(schedule), inline=False)
     _field(embed, "📍 投稿先", channel_text(schedule.channel_id), inline=False)
     if schedule.schedule_type is ScheduleType.WEEKLY:
         _field(embed, "曜日", weekday_text(schedule.weekday), inline=True)
@@ -393,14 +395,21 @@ def schedule_detail_embed(schedule: ScheduleView) -> discord.Embed:
 
 def schedule_select_option(schedule: ScheduleView, *, channel_name: str) -> discord.SelectOption:
     """Build a bounded option that never contains the body or an internal identifier."""
-    safe_channel = " ".join(channel_name.split()) or "不明なチャンネル"
+    safe_channel = _safe_plain_text(channel_name) or "不明なチャンネル"
     timing = _select_timing(schedule)
-    label = (
-        f"{STATUS_ICONS[schedule.status]} {TYPE_LABELS[schedule.schedule_type]}｜"
-        f"{timing}｜#{safe_channel}"
+    fixed = (
+        f"｜{STATUS_ICONS[schedule.status]} {TYPE_LABELS[schedule.schedule_type]}｜"
+        f"{timing}｜#｜ID …{str(schedule.public_id)[-6:]}"
     )
-    if len(label) > SELECT_LABEL_LIMIT:
-        label = label[: SELECT_LABEL_LIMIT - 1] + "…"
+    variable_budget = max(2, SELECT_LABEL_LIMIT - len(fixed))
+    name_budget = min(32, max(1, variable_budget // 2))
+    safe_name = _truncate_plain_text(_schedule_name(schedule), name_budget)
+    channel_budget = max(1, variable_budget - len(safe_name))
+    safe_channel = _truncate_plain_text(safe_channel, channel_budget)
+    label = (
+        f"{safe_name}｜{STATUS_ICONS[schedule.status]} {TYPE_LABELS[schedule.schedule_type]}｜"
+        f"{timing}｜#{safe_channel}｜ID …{str(schedule.public_id)[-6:]}"
+    )
     value = str(schedule.public_id)
     if not label or len(label) > SELECT_LABEL_LIMIT or len(value) > SELECT_VALUE_LIMIT:
         raise ValueError("select option exceeds Discord limits")
@@ -421,10 +430,14 @@ def schedule_autocomplete_choice(
             raise ValueError("autocomplete datetime must be timezone-aware")
         parts.append(schedule.display_at.astimezone(_TOKYO).strftime("%-m/%-d %H:%M"))
     identifier = f"ID …{str(schedule.public_id)[-6:]}"
-    fixed_length = len("｜".join([*parts, "", identifier]))
-    channel_budget = max(1, AUTOCOMPLETE_NAME_LIMIT - fixed_length)
+    fixed_length = len("｜".join(["", *parts, "", identifier]))
+    variable_budget = max(2, AUTOCOMPLETE_NAME_LIMIT - fixed_length)
+    safe_name = _truncate_plain_text(
+        _autocomplete_name(schedule), min(32, max(1, variable_budget // 2))
+    )
+    channel_budget = max(1, variable_budget - len(safe_name))
     safe_channel = _truncate_plain_text(safe_channel, channel_budget)
-    name = "｜".join([*parts, safe_channel, identifier])
+    name = "｜".join([safe_name, *parts, safe_channel, identifier])
     value = str(schedule.public_id)
     if not name or len(name) > AUTOCOMPLETE_NAME_LIMIT or len(value) > SELECT_VALUE_LIMIT:
         raise ValueError("autocomplete choice exceeds Discord limits")
@@ -432,13 +445,7 @@ def schedule_autocomplete_choice(
 
 
 def _safe_autocomplete_channel(channel_name: str, channel_id: int) -> str:
-    normalized = unicodedata.normalize("NFC", channel_name)
-    normalized = "".join(
-        character
-        for character in normalized
-        if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
-    )
-    normalized = " ".join(normalized.split())
+    normalized = _safe_plain_text(channel_name)
     if not normalized:
         normalized = f"ID {str(channel_id)[-8:]}"
     normalized = re.sub(
@@ -449,6 +456,86 @@ def _safe_autocomplete_channel(channel_name: str, channel_id: int) -> str:
     )
     normalized = re.sub(r"<(?=[@#])", "‹", normalized)
     return f"#{escape_user_text(normalized)}"
+
+
+def _safe_plain_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value)
+    normalized = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
+    )
+    return " ".join(normalized.split())
+
+
+def _safe_name(value: str) -> str:
+    normalized = _safe_plain_text(value)
+    return escape_user_text(normalized) if normalized else "名称未設定"
+
+
+def _schedule_name(schedule: ScheduleView) -> str:
+    return _safe_name(
+        _resolved_name(
+            display_name=schedule.display_name,
+            source=schedule.display_name_source,
+            schedule_type=schedule.schedule_type,
+            next_run_at=schedule.next_run_at,
+            local_time=schedule.local_time,
+            weekday=schedule.weekday,
+        )
+    )
+
+
+def _autocomplete_name(schedule: ScheduleAutocompleteView) -> str:
+    return _safe_name(
+        _resolved_name(
+            display_name=schedule.display_name,
+            source=schedule.display_name_source,
+            schedule_type=schedule.schedule_type,
+            next_run_at=schedule.display_at,
+            local_time=schedule.local_time,
+            weekday=schedule.weekday,
+        )
+    )
+
+
+def _created_once_name(created: CreatedOnceSchedule) -> str:
+    return _safe_name(
+        _resolved_name(
+            display_name=created.display_name,
+            source=created.display_name_source,
+            schedule_type=ScheduleType.ONCE,
+            next_run_at=created.scheduled_for,
+            local_time=None,
+            weekday=None,
+        )
+    )
+
+
+def _created_recurring_name(created: CreatedRecurringSchedule) -> str:
+    return _safe_name(
+        _resolved_name(
+            display_name=created.display_name,
+            source=created.display_name_source,
+            schedule_type=created.schedule_type,
+            next_run_at=created.next_run_at,
+            local_time=created.local_time,
+            weekday=created.weekday,
+        )
+    )
+
+
+def _resolved_name(**values) -> str:
+    try:
+        return schedule_display_name(**values)
+    except TypeError, ValueError:
+        return schedule_display_name(
+            **{
+                **values,
+                "display_name": None,
+                "source": DisplayNameSource.UNSET,
+            }
+        )
 
 
 def _truncate_plain_text(value: str, maximum: int) -> str:

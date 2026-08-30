@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING
 import discord
 
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleActionAvailability
-from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.domain.enums import DisplayNameSource, ScheduleStatus, ScheduleType
 
 if TYPE_CHECKING:
     from discord_ai_reminder_bot.bot.posts import PostCommands
 
 DETAIL_BACK_CUSTOM_ID = "post_detail_back"
 DETAIL_EDIT_CUSTOM_ID = "post_detail_edit"
+DETAIL_NAME_EDIT_CUSTOM_ID = "post_detail_name_edit"
 DETAIL_PAUSE_CUSTOM_ID = "post_detail_pause"
 DETAIL_RESUME_CUSTOM_ID = "post_detail_resume"
 DETAIL_DELETE_CUSTOM_ID = "post_detail_delete"
@@ -48,6 +49,9 @@ class ScheduleDetailContext:
     local_time: time | None
     weekday: int | None
     end_date: date | None
+    display_name: str | None = None
+    display_name_source: DisplayNameSource = DisplayNameSource.UNSET
+    name_editable: bool = False
     list_origin: ScheduleListOrigin | None = None
 
     def __post_init__(self) -> None:
@@ -88,6 +92,15 @@ class ScheduleDetailView(discord.ui.View):
         )
         edit.callback = self._edit
         self.add_item(edit)
+        name_edit = discord.ui.Button(
+            label="予約名を編集",
+            emoji="🏷️",
+            style=discord.ButtonStyle.secondary,
+            custom_id=DETAIL_NAME_EDIT_CUSTOM_ID,
+            disabled=not context.name_editable,
+        )
+        name_edit.callback = self._edit_name
+        self.add_item(name_edit)
         if context.actions.can_pause:
             button = discord.ui.Button(
                 label="一時停止",
@@ -136,6 +149,9 @@ class ScheduleDetailView(discord.ui.View):
 
     async def _edit(self, interaction: discord.Interaction) -> None:
         await self.commands._edit_from_detail(self, interaction)
+
+    async def _edit_name(self, interaction: discord.Interaction) -> None:
+        await self.commands._edit_name_from_detail(self, interaction)
 
     async def _resume(self, interaction: discord.Interaction) -> None:
         await self.commands._resume_from_detail(self, interaction)

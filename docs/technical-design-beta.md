@@ -976,11 +976,17 @@ Bot層では5コマンドに薄いcallbackを登録し、共通処理へ操作�
 
 `ScheduleQueryService.get_schedule_detail`はSchedule表示値と正のversion、操作可否観測を1つのread-only SELECTで取得し、Session終了後も利用できる不変`ScheduleDetail`へ変換する。相関subqueryでcurrent run件数・pending件数・pristine違反・processing・claimed/sending/unknown attemptを数え、状態・種別・`now + 5分`と組み合わせて4操作の表示用可否を保守的に算出する。SELECT FOR UPDATE、flush、commit、明示rollback、ORMのBot層返却は行わない。
 
-`ScheduleDetailView`はcanonical UUIDv7、観測version、操作者ID、可否DTOと、一覧由来の場合だけstatus・schedule_type・pageを保持する。Session、transaction、内部DB ID、本文、guild IDは保持せず、custom IDは固定値だけを使う。第2段階では可否DTOに応じた一時停止・再開・削除と、一覧由来の「一覧へ戻る」を描画する。
+`ScheduleDetailView`はcanonical UUIDv7、観測version、操作者ID、可否DTOと、一覧由来の場合だけstatus・schedule_type・pageを保持する。Session、transaction、内部DB ID、本文、guild IDは保持せず、View、Button、Selectのcustom IDは固定値だけを使う。第2段階では可否DTOに応じた一時停止・再開・削除と、一覧由来の「一覧へ戻る」を描画する。
 
 一覧から詳細へ移るときは同じephemeralメッセージを編集し、旧`ScheduleListView`をstopしてregistryから除去してから新しい詳細Viewを登録する。戻るときは予約所有境界と最新一覧を短いread Sessionで再確認し、保存したfilter・type・pageを使ってclamp付きで新しい一覧Viewへ移管する。両Viewを同時にregistryへ残さない。
 
-一覧・詳細Viewは`timeout=None`、`asyncio.Lock`、finished/closedを持つ。discord.py 2.7.1がephemeral初回送信時の`None`を900秒へ変換するため、初回登録中だけ公開timeout値`0.0`を使用してtimeout Task生成を抑止し、登録直後に`None`へ戻す。ViewStoreの内部書換えやMonkey Patchは行わない。同一メッセージ更新前に旧Viewをstopし、固定custom_idのdispatch所有権を新View一つへ移す。Bot closeは一覧・詳細・作成・削除・再開Viewと開いているModalをstopし、各waitを`gather(return_exceptions=True)`で回収する。persistent Viewとして起動時登録せず、再起動復元も行わない。削除されたephemeralメッセージはtimeout応答を試みず、closeまたは遷移でregistryから回収する。
+一覧・詳細Viewは`timeout=None`、`asyncio.Lock`、finished/closedを持つ。discord.py 2.7.1がephemeral初回送信時の`None`を900秒へ変換するため、初回登録中だけ公開timeout値`0.0`を使用してtimeout Task生成を抑止し、登録直後に`None`へ戻す。ViewStoreの内部書換えやMonkey Patchは行わない。同一メッセージ更新前に旧Viewをstopし、固定custom_idのdispatch所有権を新View一つへ移す。
+
+discord.py 2.7.1のModal storeは外側Modal custom IDだけをprocess-wide dispatch keyとして扱う。`ScheduleEditModal`、`ScheduleNameEditModal`、`DeleteReasonModal`、`ResumeTimeModal`の外側custom IDは、用途別固定prefixと`secrets.token_hex(16)`による32桁hex nonceを組み合わせる。100文字以内とし、予約UUID、利用者・guild・channel・内部DB ID、version、本文、名前、理由、秘密情報を含めない。Modal内のTextInput／Select custom IDは既存固定値を維持する。新規Modal作成時に同種Modalを一括停止せず、各instanceをregistryへ保持してsubmit、timeout、error時に自分だけをstop・解除する。×で閉じたModalは通知されないため有限timeoutまで保持し、Bot closeは全Modalをsnapshotしてstopした後、各waitを`gather(return_exceptions=True)`で回収する。nonceにより別端末、別詳細、別予約、別利用者の同種Modalを同時dispatchでき、古いModalの遅延submitを既存expected-version競合処理へ到達させる。
+
+名前Modalはopen時の権限を保持して再利用せず、submit時のInteractionからguild、許可ロール、所有者・管理者境界を再検証する。認可済み入力だけをdeferしてApplication Serviceへ渡し、管理者権限はsubmit時の値を渡す。Serviceが権限喪失を検出した後に最新詳細も取得できない場合は、旧詳細Viewをstop・解除し、defer済みの元ephemeral応答を`現在の権限ではこの予約を編集できません。/post showを再実行してください。`だけへ更新する。`embed=None`、`view=None`、`AllowedMentions.none()`とし、旧Embed、本文、名前、投稿先、UUID、内部version、例外内容を再表示しない。この認可拒否は想定業務境界としてERRORを記録せず、Discord応答自体が失敗した場合だけ既存の固定イベント名で記録する。最新詳細を取得できる通常のversion競合は、従来どおり固定競合案内と最新詳細へ更新する。
+
+Bot closeは一覧・詳細・作成・削除・再開Viewと開いているModalをstopし、各waitを回収する。persistent Viewとして起動時登録せず、再起動復元も行わない。削除されたephemeralメッセージはtimeout応答を試みず、closeまたは遷移でregistryから回収する。
 
 検索は固定語彙、17～20桁のchannel ID、canonical UUID形式の前方一致に限定する。完全UUIDはUUIDv7を検証する。日時、channel名、本文、曖昧・自然言語検索は行わない。
 
@@ -1015,7 +1021,7 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 ## 24. Phase 3とPhase 2後の将来設計
 
-本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1だけはPhase 3第1段階として実装済みであり、24.2以降は未実装の将来設計である。後続段階の実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。第1段階ではDBモデルとAlembic Revisionを変更しない。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1と、24.2のProvider非依存部分である2Aは実装済みである。Provider非依存の生成制御2Bと実Provider接続2Cは未実装であり、実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。
 
 ### 24.1 `/post show`の削除済み候補
 
@@ -1027,11 +1033,11 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 AI予約名の生成はDB transaction外の任意アプリケーションユースケースとして設計する。用途は現在の投稿本文から最大32文字の名前を1件生成することだけに限定し、改行・制御文字を拒否する。AI呼び出し中にSession、transaction、row lockを保持せず、生成失敗を予約作成、編集、投稿の成否から切り離す。
 
-将来の永続化候補は`schedules.display_name VARCHAR(32)`と`schedules.display_name_source`とし、sourceは`ai`、`manual`、`unset`の閉じた値とする。既存行は`display_name = NULL`、`source = unset`へ移行する。`unset`は保存名なし、`ai`と`manual`は安全化済みの1～32文字を必須とするCHECK制約を設計する。AI入力・応答履歴用テーブルは作成しない。
+2Aでは`schedules.display_name VARCHAR(32) NULL`と`display_name_source VARCHAR(8) NOT NULL DEFAULT 'unset'`を追加し、sourceを`ai`、`manual`、`unset`へ閉じる。既存行は`NULL/unset`へ移行する。CHECKとDomain validatorで、unsetはNULL、ai/manualはtrim済み1～32文字とし、改行、制御文字、Unicode category Cc/Cf/Csを拒否する。名前検索index、AI入力・応答履歴用テーブルは作成しない。
 
-`manual`は本文変更後も維持する。`ai`の状態で本文が変更された場合は、本文更新transactionで古い名前を解除して`unset`とし、commit後に新しい本文と観測Schedule versionだけで再生成を1回試す。別の短いtransactionでversionと状態を再検証し、一致時だけ`ai`として保存する。失敗または競合時は古いAI名を復元しない。AI生成名は親Scheduleと同じ保持境界で物理削除する。
+`manual`は本文変更と本文解除後も維持する。`ai`の状態で本文が変更された場合は、本文更新transactionで古い名前を解除して`unset`とする。2Aでは再生成Jobや外部呼び出しを作らない。独立した名前編集serviceはsnapshot取得時とSchedule lock後にexpected version、guild、所有者または管理者、draft/active/paused状態を再検証し、同値をno-opにする。実変更だけversionを増やし、OperationLogには変更フラグとsource遷移だけを保存する。
 
-非AIフォールバックはDBへ保存せず、Scheduleの種別と日時から`単発予約 M/D HH:MM`、`毎日予約 HH:MM`、`毎週予約 曜日 HH:MM`を決定的に構築する。必要な日時がない場合は`名称未設定`とする。一覧、詳細、Autocomplete、確認画面は保存済み名称またはフォールバックを表示するだけでAIを呼ばず、本文の一部を名称として使わない。
+非AIフォールバックはDBへ保存せず、Scheduleの種別とJST日時から`単発予約 M/D HH:MM`、`毎日予約 HH:MM`、`毎週予約 曜日 HH:MM`を決定的に構築する。必要な日時がない場合は`名称未設定`とする。一覧、詳細、Select、Autocomplete、作成成功表示は保存済み名称またはフォールバックを表示するだけでAIを呼ばない。一覧、Select、Autocompleteから本文表示を除去し、名前、状態、種別、日時、投稿先、短縮IDをDiscord上限内で安全に切り詰める。詳細の正式な本文欄は維持する。
 
 AI providerは`infrastructure/ai/`のインターフェース背後へ置き、初期状態では無効にする。利用者ごとの学習、プロファイル、過去投稿検索、Embedding、ベクトルDB、ファインチューニング、学習データセットは実装しない。providerへ渡すのは現在本文と固定生成条件だけとし、Discord ID、利用者ID、channel ID、予約ID、内部ID、過去投稿、履歴を渡さない。APIキー、本文、AI入力全文、AI応答全文を通常ログへ記録しない。
 

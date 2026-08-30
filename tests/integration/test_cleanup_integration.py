@@ -40,6 +40,8 @@ async def _seed_schedule(
             schedule_type="once" if status == "completed" else "daily",
             status=status,
             content="cleanup integration body",
+            display_name="cleanup name",
+            display_name_source="manual",
             next_run_at=None,
             local_time=None if status == "completed" else datetime.min.time(),
             version=1,
@@ -177,6 +179,7 @@ async def test_schedule_and_all_restrict_children_are_deleted_atomically(
         assert result.operation_logs_deleted == 1
         assert result.schedule_runs_deleted == 1
         async with factory() as verifier:
+            # The name columns belong to the parent row and disappear with it.
             assert await verifier.get(Schedule, schedule_id) is None
     finally:
         await _cleanup_seed(factory)

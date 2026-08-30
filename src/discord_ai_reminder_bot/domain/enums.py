@@ -19,6 +19,12 @@ class ScheduleStatus(StrEnum):
     DELETED = "deleted"
 
 
+class DisplayNameSource(StrEnum):
+    AI = "ai"
+    MANUAL = "manual"
+    UNSET = "unset"
+
+
 class RunStatus(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
