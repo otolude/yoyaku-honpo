@@ -433,3 +433,11 @@ OpenAI SDK依存は`pyproject.toml`の2.54 minor範囲を正式`.venv`へ通常�
 将来のAI機能は初期状態で無効とし、明示的に有効化した場合も固定イベントと安全な集計だけを監視する。APIキー、本文、AI入力全文、AI応答全文を通常ログへ記録しない。ログは14日、DBバックアップは日次7世代かつ最大14日保持する方針とし、配置環境決定時に自動削除、アクセス制御、復元後cleanupの具体手順を確定する。
 
 公開前限定テストでは開発環境と分離したDiscord Application、DB、秘密情報を使い、実Discord、権限差、複数利用者競合、長時間稼働、再起動・Recovery、バックアップを確認する。Phase 3受入表はPhase 3実装開始時に別文書として新規作成し、Phase 1・Phase 2の完了証跡へ項目を追加しない。
+
+## 22. ポートフォリオassetの作業境界
+
+Phase 3第6項の詳細は[ポートフォリオ掲載計画](portfolio-plan.md)を正本とする。6Bの画面資料は専用開発guildの合成データで新規撮影し、既存の実Discord受入画像、実利用者本文、実IDを流用しない。撮影前に架空のBot名、利用者名、予約名、本文、channel名を用意し、サイドバー、DM、通知、端末情報、実UUIDが写らない範囲を選ぶ。
+
+公開用assetは復元不能な匿名化とmetadata除去後に再確認し、元画像や編集レイヤーをGitへ含めない。`docs/portfolio/assets/manifest.md`へ合成データ、匿名化方法、確認日、確認者、掲載先だけを記録し、実guild名、Project ID、Organization ID、Discord ID、ローカルパスを記録しない。READMEへは代表画像だけを掲載し、完成前のassetを参照しない。
+
+READMEの再現手順は安全な最短入口に限定し、DB操作、Discord設定、障害対応は本Runbookへリンクする。AI Providerのlive confirmation、APIキー、課金手順をREADMEへ掲載せず、dry-runだけを通常の確認入口とする。6Cでは公開前Git履歴の秘密情報、ライセンス、依存ライセンス、第三者素材、Discord／OpenAIの商標・画面条件を確認する。

@@ -1,6 +1,6 @@
 # Phase 3 受入
 
-Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは自動隔離受入に含めない。
+Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤、Phase 3第6項6Aのポートフォリオ掲載要件を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは自動隔離受入に含めない。
 
 - 実施日: 2026-08-30
 - 実施者: Codex（自動テスト）
@@ -8,13 +8,16 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 集計: 確認済み 99件／未確認 2件（合計101件）
+- 集計: 確認済み 111件／未確認 8件（合計119件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
 - Phase 3第2段階2B-2隔離受入判定: 完了（本番AI機能は利用不能）
 - Phase 3第2段階2C-1隔離受入判定: 完了（実Provider受入は未実施）
 - Phase 3第2段階2C-2安全基盤受入判定: 完了（live実Provider受入は未実施）
+- Phase 3第6項6A隔離受入判定: 完了（12件／12件）
+- Phase 3第6項6B受入判定: 未完了（0件／2件）
+- Phase 3第6項6C受入判定: 未完了（0件／4件、利用者判断を含む）
 
 ## 自動テスト受入
 
@@ -174,7 +177,7 @@ GPT-5.6 LunaとGPT-5.4 nanoはいずれも正式採用前であり、実Provider
 
 この受入は中止せず公開前へ延期する。専用Projectは作成済みだが、内部識別情報は記録しない。Projectでは`gpt-5.6-luna`と`gpt-5.4-nano`だけを許可し、各モデル60,000 TPM・10 RPMとしている。現在は残高0 USD、支払い方法未登録、APIキー未作成、API通信0回、費用発生なしであり、Project作成を正式Provider採用の証跡にはしない。
 
-課金可能な状態を作る前に利用者の明示許可を再取得する。最低プリペイド購入が必要な場合はAuto-rechargeを無効にし、その購入額を実試験のAPI原価と混同しない。固定匿名6 caseをLunaへ6回、別runでGPT-5.4 nano固定snapshotへ6回送信し、両runとも各requestの間隔を60秒以上空ける。retry、fallback、Batch、並列実行、自動保存は行わない。悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、合計4,006,800 JPY microunits（約4.0068円）である。試験後にモデルの使い分けを決め、プラン別モデル・回数・機能は商品仕様策定時に確定する。この延期記録ではチェックを付けず、集計99件／2件／101件を維持する。
+課金可能な状態を作る前に利用者の明示許可を再取得する。最低プリペイド購入が必要な場合はAuto-rechargeを無効にし、その購入額を実試験のAPI原価と混同しない。固定匿名6 caseをLunaへ6回、別runでGPT-5.4 nano固定snapshotへ6回送信し、両runとも各requestの間隔を60秒以上空ける。retry、fallback、Batch、並列実行、自動保存は行わない。悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、合計4,006,800 JPY microunits（約4.0068円）である。試験後にモデルの使い分けを決め、プラン別モデル・回数・機能は商品仕様策定時に確定する。この延期記録によって、実ProviderとARM64 Linux実機の既存2項目のチェック状態は変更しない。
 
 ## 2C 公開前環境受入（2C-1完了条件外）
 
@@ -193,3 +196,36 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 - [x] URL、password、user、host、portをラッパーの通常出力・例外へ露出せず、秘密URLをcommand引数やsubprocessへ渡さない。
 - [x] 専用PostgreSQLでcurrent／check／upgradeと実DB名不一致のDDL前拒否を検証し、拒否前後のRevision、schema、主要8表件数を不変に保つ。
 - [x] Bot起動時schema verification、pytest test DB fixture、既存Revision固有downgrade guardを維持し、DBモデルとMigration Revisionを変更しない。
+
+## Phase 3第6項6A 要件・掲載境界・匿名化基準・成果物範囲
+
+以下は[ポートフォリオ掲載計画](portfolio-plan.md)と関連文書の差分だけで全条件を直接確認した隔離受入である。pytest nodeは文書要件を検証しないため証跡に使用せず、基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`からの文書差分、Git状態、Markdown・リンク・秘密情報検査を証跡とする。成果物が基準へ準拠したことは6B／6Cへ分離する。
+
+- [x] 目的と、採用担当者、技術者、運用・セキュリティ確認者、将来の協力者という対象読者、および日本語本文＋短いEnglish summaryの言語方針を定義する。
+- [x] READMEを短い入口、`docs/portfolio/`を第三者向け要約、既存要件・設計・運用・受入文書を正本とする役割分担を定義する。
+- [x] 掲載範囲と非掲載範囲を定義し、実装済み、自動隔離テスト済み、実Discord確認済み、設計のみ、延期中、未実装、将来計画を区別する表記規則を定義する。
+- [x] 6BのREADME、architecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、匿名化画像という成果物範囲を定義する。
+- [x] 実利用者データと実IDを使わず、専用開発guildの新規合成データで撮影する方針を定義する。
+- [x] 復元不能な焼き込み匿名化、metadata除去、元画像・編集レイヤー・途中画像の非追跡という基準を定義する。
+- [x] asset manifestへ記録する情報と、実guild名・内部ID・秘密等の記録禁止情報を定義する。
+- [x] 構成図へ実ID・接続情報を載せず、現在接続、初期無効、未実装の将来機能を線種とラベルで区別する基準を定義する。
+- [x] READMEの最短セットアップ入口とoperationsの詳細手順を分離し、開発DB・test DB・Migration安全ラッパー・破壊的操作非掲載の基準を定義する。
+- [x] OpenAI初期disabledを維持し、通常READMEへ実Provider live confirmation、APIキー、課金手順を掲載しない基準を定義する。
+- [x] テスト・受入証跡へ時点、commit、環境、証跡区分、限界、固定件数が古くなる可能性を記録し、件数だけで品質を保証しない基準を定義する。
+- [x] 6A／6B／6Cの完了条件と6C監査一覧を定義し、実Provider受入とARM64 Linux実機確認の既存未確認2項目を完了扱いにしない。
+
+## Phase 3第6項6B README・構成図・機能フロー・匿名化画面資料
+
+以下は成果物が実際に完成するまで確認できない。6Aの方針記載や既存テストを代替証跡にしない。
+
+- [ ] 完成版README、短いEnglish summary、`docs/portfolio/`のarchitecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、Mermaid図、実装状態マトリクス、セットアップ案内を作成し、詳細文書へのリンクを確認する。
+- [ ] 専用開発guildの新規匿名合成データだけで画面資料を作成し、公開assetとalt textをmanifestへ対応付ける。既存実Discord受入画像、実利用者データ、元画像、編集レイヤーを成果物へ含めない。
+
+## Phase 3第6項6C 再現確認・秘密情報・ライセンス・公開状態の最終監査
+
+以下は6B成果物完成後の最終監査または利用者判断を必要とするため未確認とする。
+
+- [ ] READMEと全詳細文書のリンク、隔離環境での再現手順、実装主張とコード・Migration・受入証跡の対応を確認する。
+- [ ] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。
+- [ ] 採用LICENSE・著作権表記、dependency license、第三者素材、Discord／OpenAIの商標・画面掲載条件を確認し、Discord画面を掲載するか利用者判断を記録する。
+- [ ] repository visibilityとpublic化時期、SECURITYの連絡先、外部Contribution、Code of Conduct、公開Issue／PR、CI・badgeの利用者判断と実際の公開状態を確認し、最終公開可否を判定する。

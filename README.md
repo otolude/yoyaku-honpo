@@ -25,7 +25,7 @@ OpenAI Responses API向けの予約名Adapterは2C-1の隔離実装まで存在�
 
 正式リリースではサブスクリプション契約を導入することを要件としますが、現段階では決済機能、料金プラン、契約管理、Webhookを実装しておらず、ローカル開発・ポートフォリオ段階で課金しません。PAY.JPは過去からの決済Provider候補であり、正式採用済みではありません。利用者の文体学習、過去投稿学習、Embedding、利用者プロフィール生成は採用しません。
 
-詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)、[Phase 3受入](docs/manual-acceptance-phase3.md)を参照してください。
+詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[ポートフォリオ掲載計画](docs/portfolio-plan.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)、[Phase 3受入](docs/manual-acceptance-phase3.md)を参照してください。ポートフォリオは6Aの要件定義・隔離受入まで完了し、6Bの完成版README、構成図、画面資料はまだ作成していません。
 
 ## Phase 2完了後の方針
 

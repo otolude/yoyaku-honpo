@@ -1,0 +1,240 @@
+# ポートフォリオ掲載計画
+
+## 1. 文書の位置づけ
+
+本書はPhase 3ロードマップ第6項「ポートフォリオを整備する」の6A成果物であり、掲載要件、匿名化基準、6B成果物、6C監査範囲を定義する。完成版README、構成図、機能フロー、画面資料は6Bで作成し、本書では先行作成しない。
+
+基準はcommit `bd2c9be91e8ddeb936a4b37888099d649b177375`時点である。Phase 1は63／63、Phase 2は47／47、Phase 3は6A項目追加前で99／101であり、実OpenAI Provider受入とARM64 Linux実機確認は未確認である。数値は品質を恒久保証するものではなく、その時点の受入記録への索引として扱う。
+
+## 2. 目的と対象読者
+
+ポートフォリオの目的は、転職・案件応募時に第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
+
+対象読者と最初に提示する情報は次のとおりとする。
+
+| 対象読者 | 最初に必要な情報 | 詳細への導線 |
+| --- | --- | --- |
+| 採用担当者・案件担当者 | 課題、主要機能、現在地、代表画面、技術要約 | READMEから機能・検証文書へリンク |
+| エンジニア | レイヤー分離、transaction、Worker、Recovery、情報境界 | architecture、feature-flows、security-and-privacy |
+| 運用・セキュリティ確認者 | 秘密管理、DB分離、Migration安全性、未確認事項 | security-and-privacy、verification、operations |
+| 将来の協力者 | 開発環境、検証入口、未実装範囲、公開準備状況 | README、verification、roadmap |
+
+READMEは短時間で全体像を把握する入口とし、長い設計理由、全状態遷移、全テスト証跡、詳細Runbookは重複掲載せず既存文書または`docs/portfolio/`へ分離する。
+
+## 3. 言語方針
+
+| 案 | 利点 | 負担・リスク | 判定 |
+| --- | --- | --- | --- |
+| 日本語のみ | 現在のUI・文書・主対象読者と一致し、保守負担が最小 | 英語話者が概要を把握しにくい | 採用しない |
+| 日本語本文＋短いEnglish summary | 日本語の正確さを維持し、海外の技術者にも目的・状態・主要技術を短く示せる | 短い概要の同期確認が必要 | 採用 |
+| 日英完全併記 | 幅広い読者へ同じ詳細を提供できる | READMEと詳細文書が倍増し、更新漏れ・意味差のリスクが高い | 現段階では採用しない |
+
+主要言語は日本語とし、6BでREADME冒頭に短いEnglish summaryを置く。英語概要は目的、主要機能、主要技術、ローカル開発中で未公開、AI Provider未稼働という現在地だけを扱う。詳細文書の日英完全併記は、具体的な応募先または利用者需要が判明した場合の将来候補とする。
+
+## 4. 実装状態の表記ルール
+
+掲載する機能・主張には次のいずれかの状態を付け、異なる証跡を一つの「完成」にまとめない。
+
+| 表記 | 意味 |
+| --- | --- |
+| 実装済み | 現在のコードまたはMigrationに機能が存在する |
+| 自動隔離テスト済み | Fake、Mock、実ViewStoreまたは専用PostgreSQLで対象境界を直接検証済み |
+| 実Discord確認済み | 受入文書に実施日・実施者・証跡が記録された実Discord確認 |
+| 設計・文書化のみ | 要件または設計は確定しているが、対応コードはない |
+| 延期中 | 実施予定を維持したまま、明示的な後続ゲートへ移した |
+| 未実装 | 現在のコードに存在しない |
+| 将来計画 | 商品仕様・公開環境等の判断後に実施候補となる |
+
+自動テスト件数だけを品質保証、SLA、可用性、セキュリティ認証の根拠にしない。実Discord確認済みであっても一般公開、本番運用、実利用者利用の証拠にはしない。
+
+## 5. 掲載可能な実装範囲
+
+次の分類は現行コード、Migration、受入文書から直接説明できる範囲である。6Bでは対応する詳細文書または受入証跡へリンクし、表記状態を省略しない。
+
+| 項目 | 掲載状態 | 根拠・制限 |
+| --- | --- | --- |
+| Discord予約投稿、単発・毎日・毎週 | 実装済み、実Discord確認済み | Phase 1受入。単一設定guildのローカル開発 |
+| 一覧・詳細・編集・一時停止・再開・論理削除 | 実装済み、実Discord確認済み | Phase 1・2受入。状態別操作境界あり |
+| owner／administrator／guild／DM認可境界 | 実装済み、自動隔離テスト済み、一部実Discord確認済み | 最新Interactionで再認可。一般公開実績ではない |
+| Autocomplete | 実装済み、実Discord確認済み | 最大25件、安定順、操作別状態。show通常候補からdeletedを除外 |
+| 長寿命ViewとModal lifecycle | 実装済み、自動隔離テスト済み、実Discord確認済み | nonce付き外側Modal、timeout、二重submit、Bot close回収 |
+| PostgreSQL、SQLAlchemy、Alembic | 実装済み、自動隔離テスト済み | Migration head `a41f8c7d2e90`。本番DB運用実績ではない |
+| 投稿Worker、通知Worker、retry、Recovery、cleanup | 実装済み、自動隔離テスト済み、一部実Discord確認済み | 投稿retryとAIの再試行なしを混同しない |
+| OperationLog | 実装済み、自動隔離テスト済み | 名前等の情報境界を含む。監査認証を意味しない |
+| 手動予約名、JSTフォールバック名 | 実装済み、自動隔離テスト済み、実Discord確認済み | フォールバックはDBへ保存せず本文を候補へ出さない |
+| AI予約名Job／Budget／Worker基盤 | 実装済み、自動隔離テスト済み | Provider無効が初期値。顧客Quotaではない |
+| OpenAI Adapter | 実装済み、実SDK＋Mock transportで自動隔離テスト済み | 実API品質・費用・保持は未確認で、正式Provider採用前 |
+| Provider受入安全CLI | 実装済み、無通信の自動隔離テスト済み | 通常READMEにはdry-runだけ掲載可能。liveは延期中 |
+| Migration接続先安全ラッパー | 実装済み、自動隔離テスト済み | test／development／productionをfail-closedで分離 |
+| pytest、Ruff、Migration検証 | 実施証跡あり | 数値には実施時点とcommitを併記し、最新性を再確認する |
+| 情報境界、秘密情報非露出、AllowedMentions | 実装・テスト証跡あり | 認証取得や完全な安全性保証とは表現しない |
+| 正式リリース時のサブスクリプション | 設計・文書化のみ | 導入は正式リリース要件。商品・決済実装はない |
+
+## 6. 非掲載または注意が必要な主張
+
+次を現在の実績として記載しない。
+
+- OpenAI Providerを正式採用済み、またはAI予約名の実API品質を確認済み。
+- AI APIを本番運用中、実利用者データで検証済み、実費を伴う運用実績がある。
+- ARM64 Linux対応確認済み。
+- 24時間常時稼働、一般公開、本番環境構築、実利用者による利用、SLAまたは可用性実績。
+- サブスクリプション販売、PAY.JP正式採用、決済、Plan、Entitlement、顧客Quotaの実装。
+- ゼロコスト運用、販売価格確定、恒久的なAI上限確定。
+- セキュリティ認証、脆弱性が存在しないこと、法令・規約への完全適合。
+- pytest件数のみを根拠とする品質保証。
+
+未確認の実Provider受入とARM64 Linux実機確認は、READMEの現在地とverificationの未確認欄へ明記する。
+
+## 7. 6B成果物と情報配置
+
+6Bでは次を作成する。既存文書を正本とし、ポートフォリオ文書には第三者向けの要約と索引だけを置く。
+
+| 成果物 | 内容 | 正本・重複回避 |
+| --- | --- | --- |
+| `README.md` | 概要、解決する課題、主要機能、代表画像、技術要約、安全設計、検証概要、最短セットアップ入口、現在地、ロードマップ | 詳細仕様を複製せず下記文書と既存文書へリンク |
+| `docs/portfolio/architecture.md` | レイヤー、実行コンポーネント、DB・外部境界、将来境界 | DB列定義や全transaction詳細は技術設計を正本とする |
+| `docs/portfolio/feature-flows.md` | 作成・投稿・通知・Recovery・予約名・Migrationの主要フローと状態遷移 | 全例外条件は要件・技術設計へリンク |
+| `docs/portfolio/security-and-privacy.md` | 認可、情報最小化、秘密管理、AI・Discord境界、既知の限界 | 運用手順はoperationsを正本とする |
+| `docs/portfolio/verification.md` | 受入区分、最新検証時点、commit、コマンド入口、未確認事項 | Phase別受入文書を証跡の正本とする |
+| `docs/portfolio/screenshot-policy.md` | 撮影、匿名化、レビュー、差替え、削除基準 | 本書の基準を作業チェックリストへ具体化 |
+| `docs/portfolio/assets/manifest.md` | 各assetの由来、合成条件、匿名化方法、確認日、掲載先 | 秘密・実ID・元画像へのリンクを含めない |
+| `docs/portfolio/assets/` | 匿名化済み画像だけ | 元画像、編集レイヤー、EXIF付き原本は含めない |
+
+代表画像はREADMEの理解を助ける最小枚数にし、残りは詳細文書へ分離する。Mermaid等のテキスト図を優先し、画像化した図を重複管理しない。badgeは実際に公開・継続実行されるCI、ライセンス、配布状態だけに限定し、6B時点で根拠がなければ追加しない。
+
+## 8. 画像・asset匿名化基準
+
+追跡済みの画像・スクリーンショット・diagramは現在存在しない。過去の実Discord受入画像は出所、写り込み、metadata、再利用許可をGit上で検証できないため、6Bでは使用しない。専用開発guildへ合成データを用意して新規撮影することを必須とし、撮影前匿名化を後編集より優先する。
+
+撮影・掲載時は次を満たす。
+
+- 実利用者データを使わず、架空のBot名、利用者名、予約名、本文、channel名だけを使う。
+- Discord user ID、guild ID、channel ID、message ID、実public UUID、実サーバー名、実URLを露出しない。
+- UUIDが必要なら文書用と明示した架空値を使い、UIが実値を表示する場合は掲載範囲から除外するか復元不能に焼き込む。
+- avatar、username、サーバー名、channel名、サイドバー、DM、通知、他メッセージを撮影前後に確認し、不要領域を切り取る。
+- PC時刻、ホスト名、OS user名、ローカルパス、terminal prompt、履歴を含めない。
+- `.env`、接続URL、APIキー、token、cookie、Project ID、Organization ID、支払い情報を含めない。
+- metadataを除去し、再読込してEXIF等がないことを確認する。
+- ファイル名とalt textにも実ID、秘密、実本文、個人情報を含めない。
+- マスクは完全不透明かつ復元不能な焼き込み形式とし、半透明塗り、別レイヤー、CSSだけの隠蔽に依存しない。
+- 元画像、編集可能レイヤー、撮影途中の画像をGitへ含めない。
+- `manifest.md`へasset path、合成データであること、撮影元の種類、匿名化方法、metadata確認日、確認者、掲載先を記録する。実guild名や内部IDは記録しない。
+
+Discordの名称、UI、商標・ブランド利用条件は6Cまでの調査対象とし、Discord公式画面または公式提携を誤認させる表現、ロゴ改変、不要なロゴ掲載を避ける。法的適合を本書だけで断定しない。
+
+## 9. 構成図・フロー図の安全境界
+
+構成図にはDiscord Interaction、Bot Application、Domain／Application／Infrastructure、PostgreSQL、Schedule worker、Notification worker、Name generation worker、NameGenerator Port、Disabled／OpenAI Adapter、外部AI Provider候補、将来Entitlement境界、Migration安全ラッパー、cleanup／Recoveryを掲載できる。
+
+実host名、IP、port、実DB名、DB user、password、接続URL、container ID、worker UUID、Project ID、Organization ID、APIキー、内部canary、Schedule UUID、Discord IDは掲載しない。構成要素名は論理名とし、サンプル値を実値に見せない。
+
+現在の接続は実線、初期無効または選択可能なAdapterは状態ラベル付き、未実装のEntitlement、顧客Quota、ModelSelectionPolicy、決済、公開環境は破線と「未実装」ラベルで表す。OpenAI Adapterの存在を外部API稼働中と誤認させない。
+
+## 10. 再現手順の基準
+
+READMEには次の最短入口だけを置く。
+
+1. 対応環境がWSL2／Linux、CPython `>=3.14,<3.15`、Docker、Composeであること。
+2. 仮想環境を作成し、`python -m pip install -e '.[dev]'`で依存を導入すること。
+3. `.env.example`を基にローカル`.env`を作り、秘密を表示・commitしないこと。
+4. 開発用PostgreSQLを個別に起動し、Migration安全ラッパーでdevelopment targetと期待DB名を明示すること。
+5. `python -m pytest`、Ruff check、Ruff format checkの入口。
+6. `python -m discord_ai_reminder_bot`によるBot起動入口。
+
+接続値、Discord設定、バックアップ、障害対応、停止、専用test DB、Migrationの操作別confirmationは[運用Runbook](operations.md)へ委ねる。開発DBとtest DBを明確に分け、Alembic CLI直接実行、URLのshellコピー、広範なDocker削除、Volume削除、破壊的DB操作をREADMEのコピー可能な通常手順にしない。
+
+OpenAIは初期disabledと明記する。手動Provider受入CLIは`--dry-run`だけを通常READMEへ掲載でき、live confirmation、APIキー設定、課金・購入手順は掲載しない。Discord設定は必要scope・権限の概要に留め、tokenや実IDを例示しない。WSL2 x86_64での確認とARM64 Linux未確認を区別する。
+
+## 11. テスト・受入証跡の掲載基準
+
+READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確認項目を簡潔に掲載する。詳細は`verification.md`から各Phase受入文書へリンクする。自動テスト、専用PostgreSQL統合テスト、実ViewStore／Fake Interaction、実Discord、人手運用確認を別区分にする。
+
+最新の通常pytest、PostgreSQL込みpytest、Ruff、Migration検証は、6Bまたは6Cで実際に再確認したcommit、実施日、環境とともに掲載する。固定件数を自動更新できない間は「記録時点の値」であることと、コード変更で古くなることを明記する。READMEへ過去の複数件数を並べず、最新概要とverificationへのリンクだけを置く。
+
+テストで保証できないものとして、一般公開時の負荷・可用性、実Provider品質・保持・請求、ARM64 Linux、第三者によるセキュリティ監査、法令・商標適合、利用者体験、SLAを明示する。
+
+## 12. ライセンス・公開準備監査
+
+6A時点のローカル監査結果は次のとおりである。
+
+| 項目 | 状態 | 6B／6Cで必要な判断 |
+| --- | --- | --- |
+| LICENSE／COPYING | 未確認・ファイルなし | 利用者が採用ライセンスを決定し、依存・素材との整合を確認してから追加 |
+| CONTRIBUTING | ファイルなし | 外部contributionを受ける公開形態なら6Cまでに追加要否を決定 |
+| SECURITY.md | ファイルなし | 公開前に脆弱性報告窓口と非公開報告方法を決定。実在しない窓口を書かない |
+| Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
+| Issue／PR template | ファイルなし | 公開後の受付範囲が決まってから要否を決定 |
+| GitHub Actions／CI | 追跡ファイルなし | CI実行実績やbadgeを表示しない。導入は別実装として判断 |
+| dependency license | 未監査 | direct／transitive依存のライセンスとNOTICE要否を6Cまでに監査 |
+| Discord／OpenAIの名称・画面・ロゴ | 未監査 | 最新の商標・ブランド・画面掲載条件を公式情報で確認 |
+| 第三者素材 | 現在なし | 追加assetごとに出典、ライセンス、改変可否をmanifestで管理 |
+| 個人情報・著作権 | 実データ非掲載を要件化 | 合成データ、撮影者権限、UI内素材、本文の権利を6Cで人手確認 |
+| repository visibility | ローカルGitだけでは判定不能 | GitHub上のpublic／privateを利用者が確認 |
+| Git履歴の秘密情報 | 今回は未完了 | 公開前に履歴全体を値非表示の方法で監査し、発見時は公開を止める |
+| `.env`・一時ファイル | `.gitignore`あり、`.env.example`だけ追跡 | 6Cでtracked／untracked／履歴を再監査 |
+
+法的判断は断定せず、「確認済み」「未確認」「利用者判断が必要」を維持する。ライセンス未確定の間は、利用条件が確定しているかのように表示しない。
+
+## 13. 6B作業項目
+
+1. READMEを短い入口へ再設計し、日本語本文と短いEnglish summaryを作る。
+2. 実装済み／未実装／延期中マトリクスを作り、正本へリンクする。
+3. `docs/portfolio/`の5詳細文書とasset manifestを作る。
+4. 秘密を含まないMermaid構成図、主要機能フロー、状態遷移を作る。
+5. 専用開発guildと合成データで代表画面を新規撮影し、匿名化・metadata除去・manifest記録を行う。
+6. READMEの最短再現入口とoperationsの詳細手順を整合させる。
+7. verificationへ検証時点、commit、環境、結果、限界、未確認2件を記録する。
+8. ライセンス、SECURITY、CONTRIBUTING等は利用者判断を得たものだけ追加する。
+
+## 14. 6C監査項目
+
+1. README、詳細文書、図、asset、manifest間のリンクと正本を確認する。
+2. 実装状態の各主張をコード、Migration、テスト、受入記録へ対応付ける。
+3. 実Provider、ARM64、公開、本番、契約・決済を完了扱いしていないことを確認する。
+4. 全画像を目視し、実ID、個人情報、通知、端末情報、秘密、metadata、復元可能なマスクがないことを確認する。
+5. Git追跡対象と履歴を、値を出力しない方法で秘密情報監査する。
+6. 構成図に実インフラ識別情報がなく、未実装境界が破線・ラベルで区別されていることを確認する。
+7. READMEの再現手順を新しい隔離環境で確認し、開発DB・test DB境界と破壊的操作非掲載を確認する。
+8. 最新検証結果の時点、commit、環境、限界を確認する。
+9. dependency license、採用LICENSE、第三者素材、Discord／OpenAIの商標・画面条件を確認する。
+10. repository visibility、SECURITY、CONTRIBUTING、行動規範、template、CI・badgeの利用者判断を記録する。
+11. Markdown、alt text、見出し、表、リンク、秘密情報、差分範囲を機械・目視確認する。
+
+## 15. 6A完了条件と未確定事項
+
+6A文書作成の完了条件は、目的・読者、掲載・非掲載、状態表記、成果物、匿名化、図、再現手順、証跡、法務、6B、6Cの要件が本書に揃い、Phase 3受入表へ機械集計可能な項目として追加されることである。要件定義だけで直接確認できる条件は文書差分監査後に6A隔離受入済みとし、成果物への準拠、最終監査、利用者判断を必要とする条件は6B／6Cへ分離して未確認のまま維持する。
+
+### 15.1 初回16条件の再分類
+
+pytest nodeは6Aの文書要件そのものを検証しないため、A項目に対応するpytest node IDはない。直接証跡は本書の該当節、README、roadmap、requirements、technical design、operations、Phase 3受入表の文書差分とする。Git証跡は、基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`から変更したものがこの7文書だけで、Phase 1・Phase 2受入文書、Python、テスト、DBモデル、Migration、`.env`に差分がなく、画像が追跡されていない状態である。6B／6Cの実物が必要な条件は既存テストを代替証跡にしない。
+
+| No. | 元の条件 | 分類 | 直接証跡・判定 |
+| --- | --- | --- | --- |
+| 1 | 目的・対象読者 | A | 本書2節の目的、4読者と情報導線 |
+| 2 | 掲載・非掲載と状態区分 | A | 本書4～6節、requirementsの掲載要件 |
+| 3 | 復元不能な匿名化方式 | A | 本書8節の焼き込み・半透明等の禁止基準 |
+| 4 | 実利用者データ・実IDを使わない | A | 本書8節、operations 22節 |
+| 5 | 元画像・編集レイヤー等を追跡しない | A | 本書8節の非追跡基準。現時点で追跡画像なし |
+| 6 | asset manifest要件 | A | 本書7～8節の項目・非記録情報 |
+| 7 | 構成図の秘密境界・将来表示 | A | 本書9節、technical design 24.5節 |
+| 8 | 再現手順のDB・Migration安全境界 | A | 本書10節、README／operationsの役割分担 |
+| 9 | AI初期disabled・live手順非掲載 | A | 本書10節、requirementsとoperationsの境界 |
+| 10 | テスト証跡の時点・限界 | A | 本書4節・11節 |
+| 11 | 6B成果物・6C監査・正本関係 | A | 本書7節・13～14節 |
+| 12 | 実Provider・ARM64未確認を隠さない | A | 本書1節・6節・11節、Phase 3受入表 |
+| 13 | 6Bで新規合成データを撮影 | B | 方針は定義済みだが画像未作成。6B成果物完成後に確認 |
+| 14 | 全assetの写り込み・metadata等を確認 | E | asset作成はB、全assetの最終目視・復元可能性監査はCへ分割 |
+| 15 | LICENSE・依存・商標・履歴監査 | C | 現在はいずれも未完了。6Cで実査が必要 |
+| 16 | visibility・公開準備ファイル・CI判断 | E | 現状確認はC、採否・連絡先・公開時期は利用者判断Dへ分割 |
+
+Aの12件は本書と関連文書の整合、ローカルリンク、Markdown、Git差分範囲、秘密情報候補の隔離監査を直接証跡として確認できる。B、C、Dを含む条件は、方針が記載されていても成果物や判断が存在しないため確認済みにしない。
+
+未確定事項は次のとおりである。
+
+- 採用するLICENSEと著作権表示。
+- repositoryをpublicにする時期と現在のvisibility。
+- CONTRIBUTING、SECURITY、Code of Conduct、Issue／PR template、CIの要否と運用主体。
+- Discord／OpenAIの名称、画面、ロゴに関する最新条件。
+- 6Bで撮影する具体的な画面、架空名、撮影担当者、確認担当者。
+- 英語詳細文書が必要となる具体的な応募先・利用者需要。
+- 実Provider受入とARM64 Linux実機確認の実施時期。
