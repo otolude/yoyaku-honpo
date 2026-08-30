@@ -8,7 +8,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 集計: 確認済み 111件／未確認 8件（合計119件）
+- 集計: 確認済み 113件／未確認 7件（合計120件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -16,7 +16,8 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - Phase 3第2段階2C-1隔離受入判定: 完了（実Provider受入は未実施）
 - Phase 3第2段階2C-2安全基盤受入判定: 完了（live実Provider受入は未実施）
 - Phase 3第6項6A隔離受入判定: 完了（12件／12件）
-- Phase 3第6項6B受入判定: 未完了（0件／2件）
+- Phase 3第6項6B-1受入判定: 完了（2件／2件）
+- Phase 3第6項6B-2受入判定: 未完了（0件／1件、画像未作成）
 - Phase 3第6項6C受入判定: 未完了（0件／4件、利用者判断を含む）
 
 ## 自動テスト受入
@@ -214,11 +215,17 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 - [x] テスト・受入証跡へ時点、commit、環境、証跡区分、限界、固定件数が古くなる可能性を記録し、件数だけで品質を保証しない基準を定義する。
 - [x] 6A／6B／6Cの完了条件と6C監査一覧を定義し、実Provider受入とARM64 Linux実機確認の既存未確認2項目を完了扱いにしない。
 
-## Phase 3第6項6B README・構成図・機能フロー・匿名化画面資料
+## Phase 3第6項6B-1 README・構成図・機能フロー
 
-以下は成果物が実際に完成するまで確認できない。6Aの方針記載や既存テストを代替証跡にしない。
+文書成果物そのもの、コード・Migration・受入記録との主張照合、ローカルlink・Mermaid・Markdown・秘密情報検査を直接証跡とする。pytestを文書成果物の代替証跡にしない。
 
-- [ ] 完成版README、短いEnglish summary、`docs/portfolio/`のarchitecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、Mermaid図、実装状態マトリクス、セットアップ案内を作成し、詳細文書へのリンクを確認する。
+- [x] READMEを短い入口へ再構成し、`docs/portfolio/`のarchitecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、Mermaid図、実装状態マトリクス、安全なセットアップ案内を作成する。実装済み・各テスト区分・実Discord確認済み・基盤のみ・未確認・未実装・将来計画を分け、実Provider、ARM64、常時稼働、一般公開、契約・決済を実績にしない。
+- [x] README冒頭の日本語一行サマリと短いEnglish summaryについて、2026-08-30にOtoが最終文面を承認し、READMEへ完全一致で反映する。未公開、AI初期disabled、実Provider未確認を明記し、承認待ち表示を残さない。
+
+## Phase 3第6項6B-2 匿名化画面資料
+
+画像はまだ作成・編集・追加していない。6Aの方針や6B-1のchecklist／manifest形式を、実asset完成の代替証跡にしない。
+
 - [ ] 専用開発guildの新規匿名合成データだけで画面資料を作成し、公開assetとalt textをmanifestへ対応付ける。既存実Discord受入画像、実利用者データ、元画像、編集レイヤーを成果物へ含めない。
 
 ## Phase 3第6項6C 再現確認・秘密情報・ライセンス・公開状態の最終監査

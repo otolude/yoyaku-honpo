@@ -441,3 +441,5 @@ Phase 3第6項の詳細は[ポートフォリオ掲載計画](portfolio-plan.md)
 公開用assetは復元不能な匿名化とmetadata除去後に再確認し、元画像や編集レイヤーをGitへ含めない。`docs/portfolio/assets/manifest.md`へ合成データ、匿名化方法、確認日、確認者、掲載先だけを記録し、実guild名、Project ID、Organization ID、Discord ID、ローカルパスを記録しない。READMEへは代表画像だけを掲載し、完成前のassetを参照しない。
 
 READMEの再現手順は安全な最短入口に限定し、DB操作、Discord設定、障害対応は本Runbookへリンクする。AI Providerのlive confirmation、APIキー、課金手順をREADMEへ掲載せず、dry-runだけを通常の確認入口とする。6Cでは公開前Git履歴の秘密情報、ライセンス、依存ライセンス、第三者素材、Discord／OpenAIの商標・画面条件を確認する。
+
+6B-1の本文成果物は[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ分離し、English summaryは利用者承認済みの最終文面を使用する。画面資料は6B-2まで作成しない。GitHub profile、pin留め、案件媒体からの導線はrepository成果物完成後の別作業とし、氏名、連絡先、稼働条件を本repositoryへ推測で追加しない。

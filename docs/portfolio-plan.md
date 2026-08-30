@@ -2,13 +2,15 @@
 
 ## 1. 文書の位置づけ
 
-本書はPhase 3ロードマップ第6項「ポートフォリオを整備する」の6A成果物であり、掲載要件、匿名化基準、6B成果物、6C監査範囲を定義する。完成版README、構成図、機能フロー、画面資料は6Bで作成し、本書では先行作成しない。
+本書はPhase 3ロードマップ第6項「ポートフォリオを整備する」の6A成果物であり、掲載要件、匿名化基準、6B成果物、6C監査範囲を定義する。6B-1ではREADMEと文章・Mermaid成果物を作成し、6B-2の画面資料と6C監査は分離する。
 
 基準はcommit `bd2c9be91e8ddeb936a4b37888099d649b177375`時点である。Phase 1は63／63、Phase 2は47／47、Phase 3は6A項目追加前で99／101であり、実OpenAI Provider受入とARM64 Linux実機確認は未確認である。数値は品質を恒久保証するものではなく、その時点の受入記録への索引として扱う。
 
 ## 2. 目的と対象読者
 
-ポートフォリオの目的は、転職・案件応募時に第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
+ポートフォリオの目的は、GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募において、第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。対象読者は採用担当者、技術担当者、発注者とする。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
+
+現在は公開前準備中であり、実際のrepository visibilityは6Cで確認する。public化時期は6C監査合格後を候補とし、6B文書整備だけで公開可否を確定しない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
 
 対象読者と最初に提示する情報は次のとおりとする。
 
@@ -177,6 +179,11 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 
 ## 13. 6B作業項目
 
+6Bは次の2段階に分ける。
+
+- 6B-1: README、利用者承認済みEnglish summary、architecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、Mermaid、実装状態matrix、安全なsetup入口を作成する。
+- 6B-2: 本書とscreenshot policyに従って合成データ画像を新規撮影し、alt textとmanifestの実recordを対応付ける。
+
 1. READMEを短い入口へ再設計し、日本語本文と短いEnglish summaryを作る。
 2. 実装済み／未実装／延期中マトリクスを作り、正本へリンクする。
 3. `docs/portfolio/`の5詳細文書とasset manifestを作る。
@@ -238,3 +245,18 @@ Aの12件は本書と関連文書の整合、ローカルリンク、Markdown、
 - 6Bで撮影する具体的な画面、架空名、撮影担当者、確認担当者。
 - 英語詳細文書が必要となる具体的な応募先・利用者需要。
 - 実Provider受入とARM64 Linux実機確認の実施時期。
+
+## 16. 参考資料の採用判断
+
+次の2記事はGitHubポートフォリオの見せ方を考える参考資料としてのみ使用する。記事の文章やtemplateは転載せず、本repositoryの正式仕様、コード、受入結果、利用者指示、法的判断の根拠にはしない。
+
+- [ポートフォリオに関する参考記事](https://freelance-concierge.jp/articles/detail/437/)
+- [ポートフォリオ用のGitHubリポジトリに関する参考記事](https://qiita.com/miruky/items/726d9210cc8666866f86)
+
+採用する考え方は、冒頭で価値を伝える、技術stackを明示する、画面資料への導線を後から追加する、安全なsetup入口を設ける、architectureとdirectory責務を説明する、課題・設計判断・test・error handling・文書化を示す、完成度の高い少数repositoryを優先することである。
+
+LICENSEの自動決定、GitHub Actions、CI badge、GitHub Pages、live demo、Issue／PR template、完全な日英併記、個人連絡先掲載は現段階では採用しない。継続的な開発履歴は実際のcommitと文書で示し、毎日commitすること自体を目的にしない。
+
+## 17. repository完成後の応募導線
+
+6Cと公開判断後の別作業として、GitHub profile READMEへ得意領域と学習・開発中技術を整理し、本repositoryをpin留めする。クラウドワークス等のportfolio欄からGitHubへリンクし、必要に応じてQiita／Zennへ原因調査や設計判断を匿名化してまとめる。氏名、mail、SNS、案件媒体URL、稼働条件を本書から推測して追加せず、連絡導線は利用者が別途決定する。

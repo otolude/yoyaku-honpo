@@ -1131,4 +1131,6 @@ live HTTP clientは公式`https://api.openai.com/v1`を完全一致で固定し�
 
 Phase 3第6項の掲載要件は[ポートフォリオ掲載計画](portfolio-plan.md)を正本とする。READMEを概要と導線、`docs/portfolio/`を第三者向け要約、既存の要件・技術設計・運用・受入文書を詳細な正本として、同じ仕様を複製しない。図では論理コンポーネントだけを使用し、実host、port、DB名、資格情報、内部IDを掲載しない。現在の接続、初期無効、未実装を実線、状態ラベル、破線で区別する。
 
+6B-1の論理構成は[architecture](portfolio/architecture.md)、transaction・Worker・Recovery・AI CAS・Migrationの代表処理は[feature flows](portfolio/feature-flows.md)に記録する。図はMermaid sourceを正本として画像を重複管理せず、将来のEntitlement、顧客Plan／Quota、決済、常時稼働を破線と未実装labelで示す。安全境界と未確認事項は[security and privacy](portfolio/security-and-privacy.md)、検証時点は[verification](portfolio/verification.md)へ分ける。English summaryは利用者承認済みの最終文面を使用し、実Providerや本番運用の実績を補完しない。
+
 画面assetは合成データで新規撮影し、復元不能な匿名化、metadata除去、manifest記録を経た公開用ファイルだけを追跡する。OpenAI Adapterやサブスクリプション要件は実装状態を明示し、実Provider稼働、Plan／Entitlement／Quota、決済、本番配置を現在の構成として描かない。

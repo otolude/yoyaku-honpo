@@ -539,6 +539,8 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 
 Phase 3第6項は6A要件定義、6B成果物作成、6C最終監査に分割する。6Aの正本は[ポートフォリオ掲載計画](portfolio-plan.md)とし、実装済み、自動隔離テスト済み、実Discord確認済み、設計のみ、延期中、未実装、将来計画を区別する。一般公開、本番運用、実Provider、ARM64、契約・決済等の未確認実績を完成扱いにしない。
 
+6Bは本文・Mermaid成果物の6B-1と画像成果物の6B-2に分ける。6B-1はREADMEを短い入口とし、[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ詳細を分離する。短いEnglish summaryは利用者承認済みの最終文面を使用する。6B-2の画像は本文成果物の完成と混同せず、合成データ撮影と人手監査後だけ確認済みにできる。
+
 ポートフォリオは日本語を主言語とし、README冒頭に短いEnglish summaryだけを置く。READMEは概要と入口に限定し、構成、フロー、安全性、検証、画像方針は`docs/portfolio/`へ分離する。実利用者データ、実ID、秘密、接続情報を使用せず、画像は専用開発guildの合成データで新規撮影する。元画像、復元可能なマスク、metadata付きassetをGitへ含めず、公開assetごとにmanifestを作る。
 
 再現手順は開発DBとtest DB、通常BotとAI Provider受入を分離する。OpenAIは初期disabledとし、通常READMEにはProvider受入CLIのdry-runまでしか掲載しない。ライセンス、依存ライセンス、Discord／OpenAIの商標・画面条件、Git履歴の秘密情報は公開前の6Cで確認し、未確認の法的適合を断定しない。
