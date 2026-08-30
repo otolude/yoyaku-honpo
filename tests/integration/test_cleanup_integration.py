@@ -351,7 +351,7 @@ async def test_uncommitted_schedule_delete_is_invisible_and_rollback_restores(
     await repository.set_local_lock_timeout()
     schedule = await repository.lock_next_schedule(retention_cutoff=OLD)
     assert schedule is not None
-    await repository.delete_schedule(schedule=schedule)
+    await repository.delete_schedule(schedule=schedule, retention_cutoff=NOW)
     try:
         async with factory() as observer:
             assert await observer.get(Schedule, schedule_id) is not None

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.name_generation import (
+    NameGenerationRegistrationPolicy,
+    register_generation_job,
+)
 from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.application.schedule_queries import parse_public_id
 from discord_ai_reminder_bot.domain.enums import (
@@ -118,13 +123,22 @@ class _Snapshot:
 class ScheduleEditingService:
     """Edit a schedule without owning commit or rollback."""
 
-    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        configured_guild_id: int | None = None,
+        name_generation_policy: NameGenerationRegistrationPolicy | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
         self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._operations = OperationLogRepository(session)
         self._attempts = DeliveryAttemptRepository(session)
         self._configured_guild_id = configured_guild_id
+        self._name_generation_policy = name_generation_policy or NameGenerationRegistrationPolicy()
+        self._logger = logger
 
     async def edit(
         self,
@@ -331,6 +345,19 @@ class ScheduleEditingService:
                 await NotificationPlanningService(
                     self._session, configured_guild_id=schedule.guild_id
                 ).plan_for_run(schedule=schedule, run=planned_run, event_at=edited_at)
+        if (
+            actual["content"]
+            and content is not None
+            and schedule.display_name_source == DisplayNameSource.UNSET.value
+        ):
+            await register_generation_job(
+                session=self._session,
+                schedule_id=schedule.id,
+                expected_schedule_version=schedule.version,
+                created_at=edited_at,
+                policy=self._name_generation_policy,
+                logger=self._logger,
+            )
         retry_preserved = not replace_run and any(
             run.status == RunStatus.PENDING.value and run.attempt_count > 0 for run in runs
         )

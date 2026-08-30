@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from discord_ai_reminder_bot.domain.cleanup import is_global_notification_due, is_schedule_due
 from discord_ai_reminder_bot.domain.enums import (
     DeliveryAttemptStatus,
+    NameGenerationJobStatus,
     NotificationAttemptStatus,
     NotificationStatus,
     RunStatus,
@@ -19,6 +20,7 @@ from discord_ai_reminder_bot.domain.enums import (
 from discord_ai_reminder_bot.domain.recurrence import require_utc
 from discord_ai_reminder_bot.infrastructure.database.models import (
     DeliveryAttempt,
+    NameGenerationJob,
     NotificationAttempt,
     NotificationLog,
     OperationLog,
@@ -44,6 +46,7 @@ _TERMINAL_NOTIFICATION_STATUSES = tuple(
 
 @dataclass(frozen=True, slots=True)
 class CleanupDeleteCounts:
+    name_generation_jobs: int = 0
     notification_attempts: int = 0
     notification_logs: int = 0
     delivery_attempts: int = 0
@@ -75,6 +78,7 @@ class CleanupRepository:
                 ~self._schedule_has_in_flight_delivery(),
                 ~self._schedule_has_in_flight_notification(),
                 ~self._schedule_has_in_flight_notification_attempt(),
+                ~self._schedule_has_retained_name_generation_job(retention_cutoff),
             )
             .order_by(Schedule.terminal_at.asc(), Schedule.id.asc())
             .limit(1)
@@ -100,12 +104,15 @@ class CleanupRepository:
                     self._schedule_has_in_flight_delivery(),
                     self._schedule_has_in_flight_notification(),
                     self._schedule_has_in_flight_notification_attempt(),
+                    self._schedule_has_retained_name_generation_job(retention_cutoff),
                 )
             ).where(Schedule.id == schedule.id)
         )
         return blockers is False
 
-    async def delete_schedule(self, *, schedule: Schedule) -> CleanupDeleteCounts:
+    async def delete_schedule(
+        self, *, schedule: Schedule, retention_cutoff: datetime
+    ) -> CleanupDeleteCounts:
         """Delete all RESTRICT children in the one mandated order."""
         run_ids = select(ScheduleRun.id).where(ScheduleRun.schedule_id == schedule.id)
         notification_ids = select(NotificationLog.id).where(
@@ -128,12 +135,27 @@ class CleanupRepository:
         operation_logs = await self._delete(
             delete(OperationLog).where(OperationLog.schedule_id == schedule.id)
         )
+        name_generation_jobs = await self._delete(
+            delete(NameGenerationJob).where(
+                NameGenerationJob.schedule_id == schedule.id,
+                NameGenerationJob.status.in_(
+                    (
+                        NameGenerationJobStatus.SUCCEEDED.value,
+                        NameGenerationJobStatus.FAILED.value,
+                        NameGenerationJobStatus.SKIPPED.value,
+                        NameGenerationJobStatus.ABANDONED.value,
+                    )
+                ),
+                NameGenerationJob.finished_at <= require_utc(retention_cutoff),
+            )
+        )
         schedule_runs = await self._delete(
             delete(ScheduleRun).where(ScheduleRun.schedule_id == schedule.id)
         )
         schedules = await self._delete(delete(Schedule).where(Schedule.id == schedule.id))
         await self._session.flush()
         return CleanupDeleteCounts(
+            name_generation_jobs=name_generation_jobs,
             notification_attempts=notification_attempts,
             notification_logs=notification_logs,
             delivery_attempts=delivery_attempts,
@@ -221,6 +243,7 @@ class CleanupRepository:
             ~self._schedule_has_in_flight_delivery(),
             ~self._schedule_has_in_flight_notification(),
             ~self._schedule_has_in_flight_notification_attempt(),
+            ~self._schedule_has_retained_name_generation_job(retention_cutoff),
         )
         return int(await self._session.scalar(statement) or 0)
 
@@ -294,5 +317,21 @@ class CleanupRepository:
                     NotificationAttemptStatus.CLAIMED.value,
                     NotificationAttemptStatus.SENDING.value,
                 )
+            ),
+        )
+
+    @staticmethod
+    def _schedule_has_retained_name_generation_job(retention_cutoff: datetime):
+        return exists().where(
+            NameGenerationJob.schedule_id == Schedule.id,
+            or_(
+                NameGenerationJob.status.in_(
+                    (
+                        NameGenerationJobStatus.PENDING.value,
+                        NameGenerationJobStatus.PROCESSING.value,
+                    )
+                ),
+                NameGenerationJob.finished_at.is_(None),
+                NameGenerationJob.finished_at > require_utc(retention_cutoff),
             ),
         )

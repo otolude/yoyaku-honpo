@@ -1025,7 +1025,7 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 ## 24. Phase 3とPhase 2後の将来設計
 
-本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1と、24.2のProvider非依存部分である2Aは実装済みである。Provider非依存の生成制御2Bと実Provider接続2Cは未実装であり、実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1の永続基盤と安全Policyは実装済みである。2B-2のWorker／Generator実行と実Provider接続2Cは未実装である。
 
 ### 24.1 `/post show`の削除済み候補
 
@@ -1054,6 +1054,14 @@ AI providerは`infrastructure/ai/`のインターフェース背後へ置き、�
 2Bでは、将来`EntitlementPolicy`を差し込めるApplication境界を用意し、`AI設定 → 将来Entitlement → 運営Budget → Job → Generator`の順で判定できるようにする。2B自体は常に無課金、決済Provider未接続、AI初期無効を維持し、Entitlementの差し込み位置だけを設けて決済テーブルや課金処理を混ぜない。Budget scopeは将来Bot全体、guild、契約単位へ拡張可能にするが、顧客プランQuotaは別テーブル・別責務とする。Jobへプラン名、Provider顧客ID、契約IDを保存せず、AI Provider Adapterと決済Provider Adapterを相互依存させない。Provider選定後も費用だけを理由に利用不能なほど低い上限を自動採用せず、通常利用の品質、回数、応答速度を満たしたうえで無駄を抑える。
 
 正式リリース後のAI API、常時稼働サーバー、PostgreSQL・ストレージ、バックアップ、ログ・監視、ネットワーク、決済手数料、税・返金・障害対応の予備費はサブスクリプション収益で賄う。利用状況、原価、解約率、障害率を観測してBudgetと商品Quotaを見直せる構成とし、0円運用や暫定値の永久固定を前提にしない。
+
+#### 24.2.1 2B-1 永続基盤
+
+`name_generation_jobs`はSchedule内部IDと`expected_schedule_version`だけを結び、本文、生成名、prompt、応答、Discord ID、UUID、guild・契約情報を持たない。`UNIQUE(schedule_id, expected_schedule_version)`、Scheduleへの`ON DELETE RESTRICT`、processing全体1件の部分一意index、閉じたlifecycle CHECKを使用する。lock順はSchedule、Job、daily bucket、monthly bucketで固定する。
+
+`name_generation_budget_buckets`はJSTの日次・月次期間、予約回数、JPY microunits、versionだけを保持する。暫定上限はCHECKへ埋め込まず設定から不変`BudgetPolicy`へ渡す。Jobまたはbucketが存在するdowngradeは明示的に拒否する。AI名のCAS保存はSchedule version、source、本文を再検証し、成功しても利用者操作用`Schedule.version`と`updated_at`を増やさない。名前全文を含まないsystem OperationLogだけを追加する。
+
+作成・本文編集はsavepointでJob登録失敗を隔離するが、DB接続全体の障害は基本処理の成功として隠さない。Recoveryとcleanupは再利用可能なApplication Serviceとして実装し、2B-1ではBot lifecycleへ接続しない。2B-2ではDB Session、transaction、row lockを閉じてからGeneratorを呼ぶpoll loopとshutdown回収を追加する。
 
 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerはAIユースケースへ依存しない。AI無効、上限到達、timeout、異常応答、費用集計失敗でも既存の予約処理を継続する。
 

@@ -18,17 +18,21 @@ def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
         "operation_logs",
         "notification_logs",
         "notification_attempts",
+        "name_generation_jobs",
+        "name_generation_budget_buckets",
     }
     revisions = list(scripts.walk_revisions())
-    assert len(revisions) == 4
-    assert revisions[0].revision == "6c9d4e7f2a10"
-    assert revisions[0].down_revision == "8e5b2f1c4a90"
-    assert revisions[1].revision == "8e5b2f1c4a90"
-    assert revisions[1].down_revision == "bf82b90bcd5e"
-    assert revisions[2].revision == "bf82b90bcd5e"
-    assert revisions[2].down_revision == "ffc99a7e1d4f"
-    assert revisions[3].revision == "ffc99a7e1d4f"
-    assert revisions[3].down_revision is None
+    assert len(revisions) == 5
+    assert revisions[0].revision == "a41f8c7d2e90"
+    assert revisions[0].down_revision == "6c9d4e7f2a10"
+    assert revisions[1].revision == "6c9d4e7f2a10"
+    assert revisions[1].down_revision == "8e5b2f1c4a90"
+    assert revisions[2].revision == "8e5b2f1c4a90"
+    assert revisions[2].down_revision == "bf82b90bcd5e"
+    assert revisions[3].revision == "bf82b90bcd5e"
+    assert revisions[3].down_revision == "ffc99a7e1d4f"
+    assert revisions[4].revision == "ffc99a7e1d4f"
+    assert revisions[4].down_revision is None
 
 
 def test_completed_action_revision_has_safe_downgrade_guard() -> None:
@@ -57,3 +61,16 @@ def test_schedule_display_name_revision_has_backfill_and_safe_downgrade_guard() 
     assert "display_name = NULL, display_name_source = 'unset'" in revision
     assert "contains persisted display names" in revision
     assert "RAISE EXCEPTION" in revision
+
+
+def test_name_generation_revision_has_restrict_fk_and_safe_downgrade_guard() -> None:
+    revision = Path("alembic/versions/a41f8c7d2e90_add_name_generation_foundation.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'ondelete="RESTRICT"' in revision
+    assert "SELECT 1 FROM name_generation_jobs" in revision
+    assert "SELECT 1 FROM name_generation_budget_buckets" in revision
+    assert "RAISE EXCEPTION" in revision
+    assert "50" not in revision
+    assert "500" not in revision
+    assert "100000000" not in revision

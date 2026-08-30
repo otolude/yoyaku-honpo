@@ -78,6 +78,28 @@ def test_loads_valid_settings(valid_environment: dict[str, str]) -> None:
     assert settings.notification_batch_size == 20
     assert settings.notification_max_concurrency == 5
     assert settings.notification_processing_timeout_seconds == 120
+    assert settings.ai_name_generation_enabled is False
+    assert settings.name_generation_budget_policy().monthly_cost_limit_microunits == 100_000_000
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("AI_NAME_GENERATION_ENABLED", "1"),
+        ("AI_NAME_GENERATION_MAX_CONCURRENCY", "2"),
+        ("AI_NAME_GENERATION_DAILY_REQUEST_LIMIT", "0"),
+        ("AI_NAME_GENERATION_MONTHLY_REQUEST_LIMIT", "49"),
+        ("AI_NAME_GENERATION_MONTHLY_COST_LIMIT_MICROUNITS", "9223372036854775808"),
+        ("AI_NAME_GENERATION_COST_CURRENCY", "USD"),
+        ("AI_NAME_GENERATION_PROCESSING_LEASE_SECONDS", "9"),
+    ],
+)
+def test_rejects_unsafe_ai_name_generation_settings(
+    valid_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValidationError):
+        load_without_env_file()
 
 
 @pytest.mark.parametrize(

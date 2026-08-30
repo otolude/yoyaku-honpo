@@ -26,10 +26,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from discord_ai_reminder_bot.domain.enums import (
     ActorType,
+    BudgetPeriodType,
     DeleteKind,
     DeliveryAttemptStatus,
     DeliveryErrorKind,
     DisplayNameSource,
+    NameGenerationJobStatus,
+    NameGenerationResultCode,
     NotificationAttemptStatus,
     NotificationErrorKind,
     NotificationRecipientType,
@@ -46,6 +49,9 @@ from discord_ai_reminder_bot.infrastructure.database.base import Base
 SCHEDULE_TYPES = enum_values(ScheduleType)
 SCHEDULE_STATUSES = enum_values(ScheduleStatus)
 DISPLAY_NAME_SOURCES = enum_values(DisplayNameSource)
+NAME_GENERATION_JOB_STATUSES = enum_values(NameGenerationJobStatus)
+NAME_GENERATION_RESULT_CODES = enum_values(NameGenerationResultCode)
+BUDGET_PERIOD_TYPES = enum_values(BudgetPeriodType)
 RUN_STATUSES = enum_values(RunStatus)
 DELIVERY_ATTEMPT_STATUSES = enum_values(DeliveryAttemptStatus)
 DELIVERY_ERROR_KINDS = enum_values(DeliveryErrorKind)
@@ -183,6 +189,111 @@ class Schedule(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NameGenerationJob(Base):
+    """Non-identifying durable coordination record for one content version."""
+
+    __tablename__ = "name_generation_jobs"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "expected_schedule_version"),
+        CheckConstraint(
+            f"status IN ({sql_values(NAME_GENERATION_JOB_STATUSES)})", name="status_valid"
+        ),
+        CheckConstraint(
+            f"result_code IS NULL OR result_code IN ({sql_values(NAME_GENERATION_RESULT_CODES)})",
+            name="result_code_valid",
+        ),
+        CheckConstraint("expected_schedule_version >= 1", name="expected_version_positive"),
+        CheckConstraint("reserved_cost_microunits >= 0", name="reserved_cost_nonnegative"),
+        CheckConstraint(
+            "(status = 'pending' AND claimed_at IS NULL AND lease_expires_at IS NULL "
+            "AND started_at IS NULL AND finished_at IS NULL AND result_code IS NULL) OR "
+            "(status = 'processing' AND claimed_at IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND started_at IS NOT NULL AND finished_at IS NULL AND result_code IS NULL "
+            "AND claimed_at <= started_at AND started_at < lease_expires_at) OR "
+            "(status IN ('succeeded', 'failed', 'skipped', 'abandoned') "
+            "AND finished_at IS NOT NULL AND result_code IS NOT NULL)",
+            name="lifecycle_valid",
+        ),
+        CheckConstraint("updated_at >= created_at", name="updated_after_created"),
+        Index(
+            "ix_name_generation_jobs_pending_created",
+            "created_at",
+            "id",
+            postgresql_where=text("status = 'pending'"),
+        ),
+        Index(
+            "ix_name_generation_jobs_processing_lease",
+            "lease_expires_at",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_name_generation_jobs_terminal_finished", "status", "finished_at"),
+        Index(
+            "uq_name_generation_jobs_single_processing",
+            text("(1)"),
+            unique=True,
+            postgresql_where=text("status = 'processing'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    schedule_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("schedules.id", ondelete="RESTRICT"), nullable=False
+    )
+    expected_schedule_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_code: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class NameGenerationBudgetBucket(Base):
+    """Aggregate operator budget reservation without customer identifiers."""
+
+    __tablename__ = "name_generation_budget_buckets"
+    __table_args__ = (
+        CheckConstraint(
+            f"period_type IN ({sql_values(BUDGET_PERIOD_TYPES)})", name="period_type_valid"
+        ),
+        CheckConstraint(
+            "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
+            name="monthly_period_starts_first",
+        ),
+        CheckConstraint("reserved_request_count >= 0", name="request_count_nonnegative"),
+        CheckConstraint("reserved_cost_microunits >= 0", name="reserved_cost_nonnegative"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("updated_at >= created_at", name="updated_after_created"),
+    )
+
+    period_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    period_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved_request_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    reserved_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
 
 
 class ScheduleRun(Base):

@@ -460,6 +460,8 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 同じSchedule versionにつき最大1回、timeoutは5秒、自動再試行は行わない。
 - 50回／日、500回／月、100円相当／月は、Provider未選定・未接続の開発段階と2B初期実装・隔離テストで使う変更可能な安全設定値とする。販売価格や正式リリース時の恒久上限ではなく、コード定数やDB制約へ変更不能な値として固定しない。2CのProvider選定時と商品仕様策定時に再計算する。
 - 運営者全体のBudgetは設定から`BudgetPolicy`へ渡す。不正値、未設定、価格不明、集計失敗、上限到達時は安全側でAIを呼ばない。顧客プランQuotaは将来の別Policy・別集計とし、2Bでは決済や顧客Quotaを実装しない。
+- 2B-1では`name_generation_jobs`と全体Budget bucketを永続化し、AI有効・Generator利用可能・本文あり・名前unsetの場合だけ作成または本文実変更と同じtransactionでJobを冪等登録する。AI無効、manual名、本文消去、本文以外の編集、no-opでは登録せず、既存予約を自動backfillしない。
+- 2B-1のRecoveryはlease切れprocessingを再呼び出さず`abandoned/startup_abandoned`へ移し、予約済みBudgetを返却しない。Jobは完了後30日、Budget bucketは期間終了後90日保持する。Worker、Generator実行、Bot lifecycle接続は2B-2で実装する。
 - 利用者が実用上問題なく使える品質、回数、応答速度を確保し、そのうえで重複呼び出し、無制限再試行、不要な長文入力・過剰出力、不要な高価格モデル、無期限保存を避ける。コスト削減によって通常利用を困難にしたり、頻繁にフォールバックへ落としたりしない。
 - AI無効、上限到達、timeout、異常応答でも予約の作成、編集、投稿を成功させる。
 - 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerからAIを呼ばない。

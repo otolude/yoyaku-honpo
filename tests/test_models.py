@@ -29,6 +29,8 @@ EXPECTED_TABLES = {
     "operation_logs",
     "notification_logs",
     "notification_attempts",
+    "name_generation_jobs",
+    "name_generation_budget_buckets",
 }
 
 
@@ -51,6 +53,9 @@ def test_metadata_contains_exactly_phase_one_tables() -> None:
 
 def test_internal_primary_keys_are_bigint_identity() -> None:
     for table in Base.metadata.sorted_tables:
+        if table.name == "name_generation_budget_buckets":
+            assert tuple(table.primary_key.columns.keys()) == ("period_type", "period_start")
+            continue
         primary_key = table.c.id
         assert isinstance(primary_key.type, BigInteger)
         assert isinstance(primary_key.server_default, Identity)
@@ -76,6 +81,7 @@ def test_foreign_keys_use_internal_bigint_and_restrict_deletion() -> None:
         ("notification_logs", "schedule_id", "schedules.id"),
         ("notification_logs", "schedule_run_id", "schedule_runs.id"),
         ("notification_attempts", "notification_log_id", "notification_logs.id"),
+        ("name_generation_jobs", "schedule_id", "schedules.id"),
     }
 
     actual: set[tuple[str, str, str]] = set()
@@ -182,6 +188,7 @@ def test_state_constants_match_technical_design() -> None:
         "completed",
         "ended",
         "failed",
+        "name_generated",
     )
 
 

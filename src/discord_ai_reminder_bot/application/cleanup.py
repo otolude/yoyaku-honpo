@@ -19,6 +19,7 @@ from discord_ai_reminder_bot.infrastructure.database.cleanup_repositories import
 @dataclass(frozen=True, slots=True)
 class CleanupResult:
     cleanup_cutoff: datetime
+    name_generation_jobs_deleted: int = 0
     schedules_deleted: int = 0
     global_notifications_deleted: int = 0
     notification_attempts_deleted: int = 0
@@ -34,6 +35,7 @@ class CleanupResult:
 
 @dataclass(slots=True)
 class _MutableCounts:
+    name_generation_jobs_deleted: int = 0
     schedules_deleted: int = 0
     global_notifications_deleted: int = 0
     notification_attempts_deleted: int = 0
@@ -44,6 +46,7 @@ class _MutableCounts:
     internal_errors: int = 0
 
     def add(self, deleted: CleanupDeleteCounts, *, global_notification: bool = False) -> None:
+        self.name_generation_jobs_deleted += deleted.name_generation_jobs
         self.schedules_deleted += deleted.schedules
         self.global_notifications_deleted += int(
             global_notification and deleted.notification_logs == 1
@@ -136,6 +139,7 @@ class CleanupService:
         incomplete = bool(counts.internal_errors or schedules_remaining or globals_remaining)
         return CleanupResult(
             cleanup_cutoff=cleanup_cutoff,
+            name_generation_jobs_deleted=counts.name_generation_jobs_deleted,
             schedules_deleted=counts.schedules_deleted,
             global_notifications_deleted=counts.global_notifications_deleted,
             notification_attempts_deleted=counts.notification_attempts_deleted,
@@ -167,7 +171,9 @@ class CleanupService:
             ):
                 return None, target_id
             try:
-                return await repository.delete_schedule(schedule=schedule), target_id
+                return await repository.delete_schedule(
+                    schedule=schedule, retention_cutoff=cutoff
+                ), target_id
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - force rollback without leaking DB details

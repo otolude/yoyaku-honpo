@@ -1,14 +1,15 @@
 # Phase 3 受入
 
-Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階の`/post show` Autocomplete改善と、第2段階2AのProviderを使わない予約名基盤を対象とする。AI生成、費用制御、Provider、Jobは収録しない。自動テストで確認できる項目と実Discord確認が必要な項目を分け、実Discordの証跡がない項目は確認済みにしない。
+Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1のProvider非依存永続基盤を対象とする。2B-2のWorker・Generator実行、実AI Provider、決済、Plan、顧客Quotaは収録しない。
 
 - 実施日: 2026-08-30
 - 実施者: Codex（自動テスト）
 - 証跡: 重点テスト322件、通常pytest 815件成功／297件skip、専用PostgreSQL込み全pytest 1112件成功
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
-- 集計: 確認済み 40件／未確認 0件（合計40件）
+- 集計: 確認済み 52件／未確認 0件（合計52件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
+- Phase 3第2段階2B-1隔離受入判定: 完了
 
 ## 自動テスト受入
 
@@ -95,3 +96,18 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 
 - 修正前の実Discord確認では、Bの最新名が保存されAの古い名前と別予約が変更されないデータ保護結果を確認したが、古いAはBotへdispatchされずDiscordの汎用エラーになった。この結果をCAS競合受入の成功とは扱わない。
 - 外側Modalのnonce化後に改めて再試験し、古いAがBotへdispatchされ、固定競合案内と最新詳細が表示されることを確認した。この修正後の再試験だけをCAS競合の実Discord成功証跡とする。
+
+## 第2段階2B-1 自動隔離受入
+
+- [x] Job status、固定result code、Budget period、状態遷移、30日／90日保持判定を閉じたDomain値として検証する。
+- [x] `BudgetPolicy`は設定由来の正のJPY microunits・日次／月次回数を検証し、bool、0、負数、overflow、不正通貨、月次未満の日次を拒否する。
+- [x] JSTの日次・月次境界を検証し、50／500／100円相当をDB CHECKや変更不能な上限定数へ固定しない。
+- [x] `NameGenerator` Portと外部通信しないDisabled Generatorを用意し、Fake Generatorを本番設定から選択できない。
+- [x] JobはScheduleへの`ON DELETE RESTRICT`、Schedule version一意、lifecycle CHECK、pending／lease／terminal index、processing全体1件の部分一意indexを持つ。
+- [x] Budget bucketは日次／月次、月初、非負、versionだけをDBで検証し、Schedule、guild、利用者、契約情報を持たない。
+- [x] AI有効・Generator利用可能・本文あり・source unsetの作成と本文実変更だけで同一transactionへJobを登録し、重複を正常に抑止する。
+- [x] AI無効、Disabled Generator、manual名、clear content、本文以外の編集、no-opではJobを作らず、既存unset予約をbackfillしない。
+- [x] Job登録をsavepointで隔離し、固定イベント以外へ本文、名前、UUID、Discord ID、秘密情報を出さず、DB接続全体の障害は隠さない。
+- [x] 保守的CAS保存はSchedule version、source、本文を再検証し、AI名保存時にSchedule version／updated_atを増やさず、名前全文なしのsystem OperationLogを残す。
+- [x] lease切れprocessingを再試行・Budget返却せず`abandoned/startup_abandoned`へ移し、pendingを維持するRecovery基盤と保持期限cleanup基盤を維持する。
+- [x] Migrationは2テーブル、制約、index、FKを追加し、backfillせず、データ存在時downgradeを拒否してsingle headを維持する。

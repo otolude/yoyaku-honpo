@@ -8,6 +8,8 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from discord_ai_reminder_bot.domain.name_generation import BudgetPolicy
+
 MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807
 DiscordId = Annotated[int, Field(gt=0, le=MAX_POSTGRES_BIGINT)]
 AllowedRoleIds = Annotated[tuple[DiscordId, ...], NoDecode]
@@ -73,6 +75,73 @@ class Settings(DatabaseSettings):
     notification_processing_timeout_seconds: int = Field(
         default=120, validation_alias="NOTIFICATION_PROCESSING_TIMEOUT_SECONDS"
     )
+    ai_name_generation_enabled: bool = Field(
+        default=False, validation_alias="AI_NAME_GENERATION_ENABLED"
+    )
+    ai_name_generation_poll_interval_seconds: int = Field(
+        default=5, validation_alias="AI_NAME_GENERATION_POLL_INTERVAL_SECONDS"
+    )
+    ai_name_generation_timeout_seconds: int = Field(
+        default=5, validation_alias="AI_NAME_GENERATION_TIMEOUT_SECONDS"
+    )
+    ai_name_generation_max_concurrency: int = Field(
+        default=1, validation_alias="AI_NAME_GENERATION_MAX_CONCURRENCY"
+    )
+    ai_name_generation_daily_request_limit: int = Field(
+        default=50, validation_alias="AI_NAME_GENERATION_DAILY_REQUEST_LIMIT"
+    )
+    ai_name_generation_monthly_request_limit: int = Field(
+        default=500, validation_alias="AI_NAME_GENERATION_MONTHLY_REQUEST_LIMIT"
+    )
+    ai_name_generation_monthly_cost_limit_microunits: int = Field(
+        default=100_000_000,
+        validation_alias="AI_NAME_GENERATION_MONTHLY_COST_LIMIT_MICROUNITS",
+    )
+    ai_name_generation_cost_currency: str = Field(
+        default="JPY", validation_alias="AI_NAME_GENERATION_COST_CURRENCY"
+    )
+    ai_name_generation_processing_lease_seconds: int = Field(
+        default=30, validation_alias="AI_NAME_GENERATION_PROCESSING_LEASE_SECONDS"
+    )
+    ai_name_generation_job_retention_days: int = Field(
+        default=30, validation_alias="AI_NAME_GENERATION_JOB_RETENTION_DAYS"
+    )
+    ai_name_generation_budget_retention_days: int = Field(
+        default=90, validation_alias="AI_NAME_GENERATION_BUDGET_RETENTION_DAYS"
+    )
+
+    @field_validator("ai_name_generation_enabled", mode="before")
+    @classmethod
+    def validate_ai_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            return value.lower() == "true"
+        raise ValueError("AI予約名生成の有効値はtrueまたはfalseにしてください")
+
+    @field_validator(
+        "ai_name_generation_poll_interval_seconds",
+        "ai_name_generation_timeout_seconds",
+        "ai_name_generation_max_concurrency",
+        "ai_name_generation_daily_request_limit",
+        "ai_name_generation_monthly_request_limit",
+        "ai_name_generation_monthly_cost_limit_microunits",
+        "ai_name_generation_processing_lease_seconds",
+        "ai_name_generation_job_retention_days",
+        "ai_name_generation_budget_retention_days",
+        mode="before",
+    )
+    @classmethod
+    def validate_ai_positive_integer(cls, value: object) -> int:
+        if isinstance(value, bool):
+            raise ValueError("AI予約名生成設定は正の整数にしてください")  # noqa: TRY004
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as error:
+            raise ValueError("AI予約名生成設定は正の整数にしてください") from error
+        if str(value).strip() != str(parsed) or not 1 <= parsed <= MAX_POSTGRES_BIGINT:
+            raise ValueError("AI予約名生成設定は正の整数にしてください")
+        return parsed
 
     @field_validator("notification_poll_interval_seconds", mode="before")
     @classmethod
@@ -148,7 +217,28 @@ class Settings(DatabaseSettings):
             raise ValueError("最大並行数は1回の取得件数以下にしてください")
         if self.notification_max_concurrency > self.notification_batch_size:
             raise ValueError("通知最大並行数は1回の通知取得件数以下にしてください")
+        if self.ai_name_generation_max_concurrency != 1:
+            raise ValueError("2BではAI予約名生成の最大並行数は1だけです")
+        if (
+            self.ai_name_generation_processing_lease_seconds
+            < self.ai_name_generation_timeout_seconds * 2
+        ):
+            raise ValueError("AI予約名生成leaseはtimeoutの2倍以上にしてください")
+        BudgetPolicy(
+            daily_request_limit=self.ai_name_generation_daily_request_limit,
+            monthly_request_limit=self.ai_name_generation_monthly_request_limit,
+            monthly_cost_limit_microunits=(self.ai_name_generation_monthly_cost_limit_microunits),
+            cost_currency=self.ai_name_generation_cost_currency,
+        )
         return self
+
+    def name_generation_budget_policy(self) -> BudgetPolicy:
+        return BudgetPolicy(
+            daily_request_limit=self.ai_name_generation_daily_request_limit,
+            monthly_request_limit=self.ai_name_generation_monthly_request_limit,
+            monthly_cost_limit_microunits=self.ai_name_generation_monthly_cost_limit_microunits,
+            cost_currency=self.ai_name_generation_cost_currency,
+        )
 
 
 def load_settings() -> Settings:

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from discord_ai_reminder_bot.application.name_generation import (
+    NameGenerationRegistrationPolicy,
+    register_generation_job,
+)
 from discord_ai_reminder_bot.application.notification_planning import NotificationPlanningService
 from discord_ai_reminder_bot.domain.enums import (
     DisplayNameSource,
@@ -62,11 +67,20 @@ class DuplicateScheduleWarning(Exception):
 class OnceScheduleCreationService:
     """Build a Schedule and its first pending run without committing or rolling back."""
 
-    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        configured_guild_id: int | None = None,
+        name_generation_policy: NameGenerationRegistrationPolicy | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
         self._session = session
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._configured_guild_id = configured_guild_id
+        self._name_generation_policy = name_generation_policy or NameGenerationRegistrationPolicy()
+        self._logger = logger
 
     async def create(
         self,
@@ -117,6 +131,15 @@ class OnceScheduleCreationService:
         if configured_guild_id is not None and guild_id == configured_guild_id:
             planner = NotificationPlanningService(self._session, configured_guild_id=guild_id)
             await planner.plan_for_run(schedule=schedule, run=run, event_at=now)
+        if content is not None:
+            await register_generation_job(
+                session=self._session,
+                schedule_id=schedule.id,
+                expected_schedule_version=schedule.version,
+                created_at=now,
+                policy=self._name_generation_policy,
+                logger=self._logger,
+            )
         return CreatedOnceSchedule(
             public_id=schedule.public_id,
             channel_id=channel_id,
@@ -131,11 +154,20 @@ class OnceScheduleCreationService:
 class RecurringScheduleCreationService:
     """Build a daily or weekly schedule and first run in a caller-owned transaction."""
 
-    def __init__(self, session: AsyncSession, *, configured_guild_id: int | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        configured_guild_id: int | None = None,
+        name_generation_policy: NameGenerationRegistrationPolicy | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
         self._schedules = ScheduleRepository(session)
         self._runs = ScheduleRunRepository(session)
         self._session = session
         self._configured_guild_id = configured_guild_id
+        self._name_generation_policy = name_generation_policy or NameGenerationRegistrationPolicy()
+        self._logger = logger
 
     async def create(
         self,
@@ -205,6 +237,15 @@ class RecurringScheduleCreationService:
             await NotificationPlanningService(
                 self._session, configured_guild_id=guild_id
             ).plan_for_run(schedule=schedule, run=run, event_at=now)
+        if content is not None:
+            await register_generation_job(
+                session=self._session,
+                schedule_id=schedule.id,
+                expected_schedule_version=schedule.version,
+                created_at=now,
+                policy=self._name_generation_policy,
+                logger=self._logger,
+            )
         return CreatedRecurringSchedule(
             public_id=schedule.public_id,
             channel_id=channel_id,

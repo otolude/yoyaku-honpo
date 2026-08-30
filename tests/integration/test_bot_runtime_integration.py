@@ -44,7 +44,7 @@ async def clean(engine: AsyncEngine) -> None:
 
 @pytest.mark.asyncio
 async def test_real_database_schema_is_current(test_engine: AsyncEngine) -> None:
-    assert await verify_schema_revision(test_engine) == "6c9d4e7f2a10"
+    assert await verify_schema_revision(test_engine) == "a41f8c7d2e90"
 
 
 @pytest.mark.asyncio

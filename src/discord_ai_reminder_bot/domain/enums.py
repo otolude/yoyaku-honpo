@@ -25,6 +25,38 @@ class DisplayNameSource(StrEnum):
     UNSET = "unset"
 
 
+class NameGenerationJobStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    ABANDONED = "abandoned"
+
+
+class NameGenerationResultCode(StrEnum):
+    GENERATED = "generated"
+    STALE_SCHEDULE = "stale_schedule"
+    MANUAL_NAME = "manual_name"
+    INELIGIBLE_SCHEDULE = "ineligible_schedule"
+    GENERATION_DISABLED = "generation_disabled"
+    PRICE_UNKNOWN = "price_unknown"
+    BUDGET_INVALID = "budget_invalid"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    TIMEOUT = "timeout"
+    INVALID_RESPONSE = "invalid_response"
+    GENERATOR_UNAVAILABLE = "generator_unavailable"
+    GENERATOR_ERROR = "generator_error"
+    STALE_AFTER_GENERATION = "stale_after_generation"
+    STARTUP_ABANDONED = "startup_abandoned"
+    SHUTDOWN_UNKNOWN = "shutdown_unknown"
+
+
+class BudgetPeriodType(StrEnum):
+    DAILY = "daily"
+    MONTHLY = "monthly"
+
+
 class RunStatus(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
@@ -56,6 +88,7 @@ class OperationAction(StrEnum):
     COMPLETED = "completed"
     ENDED = "ended"
     FAILED = "failed"
+    NAME_GENERATED = "name_generated"
 
 
 class ActorType(StrEnum):
