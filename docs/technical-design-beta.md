@@ -1136,3 +1136,10 @@ Phase 3第6項の掲載要件は[ポートフォリオ掲載計画](portfolio-pl
 6B-2では合成データの一覧・詳細をREADME、一覧・詳細・編集Modal・投稿結果をfeature flowsへ掲載する。完全な予約UUIDは不透明図形でflattenし、元画像・編集layerを追跡せず、PNG構造・SHA-256・alt text・掲載先を[asset manifest](portfolio/assets/manifest.md)へ記録する。画像そのものはコード・DB・本番運用の追加実装を意味せず、Discord商標と公開可否は6Cで判断する。
 
 画面assetは合成データで新規撮影し、復元不能な匿名化、metadata除去、manifest記録を経た公開用ファイルだけを追跡する。OpenAI Adapterやサブスクリプション要件は実装状態を明示し、実Provider稼働、Plan／Entitlement／Quota、決済、本番配置を現在の構成として描かない。
+### 24.6 GitHub運営・CI境界
+
+`.github/workflows/ci.yml`はread-onlyの`contents: read`だけを付与し、develop push／Pull Requestをtriggerとする。同一workflow・refの古いrunはcancelし、単一job内でNode.js 24対応の公式`actions/checkout@v7`、`actions/setup-python@v7`、Python 3.14、依存導入、`pip check`、Ruff、通常pytestを実行する。その後、一時PostgreSQL serviceの`discord_bot_test`へだけMigration安全ラッパーでupgrade／current／heads／checkを行い、integration testsを実行する。
+
+DB資格情報はCI serviceだけの固定非秘密値で、Volumeを永続化しない。`TEST_DATABASE_URL`はworkflow processへ明示し、通常pytest stepでは空にしてintegrationをskipする。開発・production URL、Bot token、OpenAI／決済keyを設定せず、live Provider CLI、deploy、release、repository書換えをworkflowへ含めない。GitHub上の初回成功は構成追加とは別の受入とする。
+
+Issue Formはbugとimprovementだけを提供し、blank Issueを無効化する。Security Policyは公開Issueへの脆弱性投稿を禁止し、public化直前に有効化するPrivate vulnerability reportingへ移行する。外部PRは事前Issue相談を求め、Code of ConductとPR templateは現段階では追加しない。

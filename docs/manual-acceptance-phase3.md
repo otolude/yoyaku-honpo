@@ -8,7 +8,8 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 集計: 確認済み 114件／未確認 6件（合計120件）
+- 6C-1証跡: YAML／Issue Form／workflow静的検査、通常pytest 1019件成功／349件skip、専用PostgreSQL integration 349件成功、Ruff check／format、pip check、Migration current／heads／check成功、主要8表は終了時0件。GitHub Actions上の実行は未確認
+- 集計: 確認済み 120件／未確認 6件（合計126件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -18,6 +19,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - Phase 3第6項6A隔離受入判定: 完了（12件／12件）
 - Phase 3第6項6B-1受入判定: 完了（2件／2件）
 - Phase 3第6項6B-2受入判定: 完了（1件／1件）
+- Phase 3第6項6C-1隔離受入判定: 完了（6件／6件、GitHub上の実行は未確認）
 - Phase 3第6項6C受入判定: 未完了（0件／4件、利用者判断を含む）
 
 ## 自動テスト受入
@@ -236,3 +238,14 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 - [ ] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。
 - [ ] 採用LICENSE・著作権表記、dependency license、第三者素材、Discord／OpenAIの商標・画面掲載条件を確認し、Discord画面を掲載するか利用者判断を記録する。
 - [ ] repository visibilityとpublic化時期、SECURITYの連絡先、外部Contribution、Code of Conduct、公開Issue／PR、CI・badgeの利用者判断と実際の公開状態を確認し、最終公開可否を判定する。
+
+## Phase 3第6項6C-1 リポジトリ運営基盤とCI 自動隔離受入
+
+以下はローカルのファイル内容、YAML schema、無通信テスト、専用test DBだけを直接証跡とする。GitHub Actions上の実行成功、Private vulnerability reporting有効化、repository visibility、公開可否は上記6Cの未確認条件へ残す。
+
+- [x] オープンソースライセンスを付与せず、`Copyright (c) 2026 Oto. All rights reserved.`、公開目的、書面による個別許諾、GitHub上の閲覧・fork、第三者素材の除外、無保証をCopyright Noticeへ明記する。
+- [x] SECURITYで公開Issueへの脆弱性投稿を禁止し、public化直前に有効化するPrivate vulnerability reporting、秘密非添付、対応期限非保証、個人連絡先なしを明記する。
+- [x] CONTRIBUTINGとbug／improvement Issue Formを追加し、Issueは受け付ける一方で外部PRを積極募集せず、blank Issue、Code of Conduct、PR templateを追加しない。
+- [x] CIをdevelop push／Pull Request、`contents: read`、concurrency cancel、Python 3.14、pip check、Ruff、通常pytest、専用PostgreSQL integrationへ限定する。
+- [x] CIのMigrationを安全ラッパー経由のtest targetと実DB名照合だけにし、開発・production DB、実`.env`、Discord、OpenAI、決済、live acceptance、deploy、releaseへ接続しない。
+- [x] YAML・Issue Form・workflow境界、通常／PostgreSQL pytest、Ruff、Migration current／heads／check、秘密情報、既存画像hashをローカルで検証し、GitHub上の成功やARM64確認の代替にしない。

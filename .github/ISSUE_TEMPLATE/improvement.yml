@@ -1,0 +1,43 @@
+name: Improvement proposal
+description: 改善したい課題と希望する動作を提案します
+title: "[Improvement]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        外部ContributionやPull Requestは積極募集していません。実装前にこのIssueで相談してください。秘密情報や実利用者データを記載しないでください。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解決したい課題
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 希望する動作
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: 利用場面
+      description: 実利用者や実案件を特定しない合成例で説明してください。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 検討した代替案
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 確認事項
+      options:
+        - label: 既存Issueを検索しました。
+          required: true
+        - label: 秘密情報、個人情報、実利用者データ、実IDを含めていません。
+          required: true

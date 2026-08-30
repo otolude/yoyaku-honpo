@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.4-bookworm
+        env:
+          POSTGRES_DB: discord_bot_test
+          POSTGRES_USER: discord_bot_test
+          POSTGRES_PASSWORD: discord_bot_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U discord_bot_test -d discord_bot_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Ruff check
+        run: python -m ruff check .
+      - name: Ruff format check
+        run: python -m ruff format --check .
+      - name: Run unit and isolated tests
+        run: python -m pytest
+      - name: Apply migrations to identity-checked test database
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://discord_bot_test:discord_bot_test_password@127.0.0.1:5432/discord_bot_test
+        run: >-
+          python -m discord_ai_reminder_bot.infrastructure.database.migrate
+          --target test
+          --expected-database discord_bot_test
+          --confirm test:discord_bot_test:upgrade
+          upgrade head
+      - name: Verify migration revision and model consistency
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://discord_bot_test:discord_bot_test_password@127.0.0.1:5432/discord_bot_test
+        run: |
+          python -m discord_ai_reminder_bot.infrastructure.database.migrate --target test --expected-database discord_bot_test current
+          python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
+          python -m discord_ai_reminder_bot.infrastructure.database.migrate --target test --expected-database discord_bot_test check
+      - name: Run PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://discord_bot_test:discord_bot_test_password@127.0.0.1:5432/discord_bot_test
+        run: python -m pytest tests/integration

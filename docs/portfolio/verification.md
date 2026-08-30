@@ -40,7 +40,7 @@ OpenAI Adapterのcontract testは実SDKとMock transportを使用し、実OpenAI
 | --- | --- | --- |
 | Phase 1 | 63／63 | [Phase 1受入](../manual-acceptance-phase1.md) |
 | Phase 2 | 47／47 | [Phase 2受入](../manual-acceptance-phase2.md) |
-| Phase 3 | 6B-2反映後114／120 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
+| Phase 3 | 6C-1ローカル隔離受入後120／126 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
 
 Phase 1・2には自動テストと実Discord／隔離環境の人手受入が含まれる。Phase 3では自動隔離受入、実ViewStore、専用PostgreSQL、実Discordの証跡を項目ごとに記録している。件数だけで未列挙の動作を保証しない。
 
@@ -57,3 +57,8 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 コードまたは依存関係を変更した場合は、対象commitと環境を固定して通常pytest、専用PostgreSQL込みpytest、Ruff、pip check、正式Migrationラッパーによるcurrent／heads／checkを再実行する。終了時の専用DB清掃と専用container停止を確認し、新しい日付、commit、件数で本書とREADME概要を更新する。
 
 文書だけの変更では過去の検証を再実行したように記載せず、コード基準との関係を明示する。実Discord、実Provider、ARM64、隔離セットアップはそれぞれ別の人手受入として記録する。
+## 7. 6C-1検証の扱い
+
+6C-1ではCopyright Notice、Security、Contribution、Issue Form、CI workflowをローカルで静的・自動検証する。GitHub Actions上の実行結果はpush前には存在しないため、本snapshotへ成功済みとは記録しない。初回push後にworkflow、permissions、PostgreSQL service、Migration安全照合の結果をGitHub上で確認し、日付・commitとともに別途更新する。
+
+初回CIは旧commitで成功したが、Node.js 20 Actionの非推奨警告を受けたため、履歴置換版では公式`actions/checkout@v7`と`actions/setup-python@v7`へ更新する。新commitのCI結果はpush後の利用者確認まで未確認とする。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。

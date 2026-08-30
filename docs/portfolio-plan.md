@@ -260,3 +260,8 @@ LICENSEの自動決定、GitHub Actions、CI badge、GitHub Pages、live demo、
 ## 17. repository完成後の応募導線
 
 6Cと公開判断後の別作業として、GitHub profile READMEへ得意領域と学習・開発中技術を整理し、本repositoryをpin留めする。クラウドワークス等のportfolio欄からGitHubへリンクし、必要に応じてQiita／Zennへ原因調査や設計判断を匿名化してまとめる。氏名、mail、SNS、案件媒体URL、稼働条件を本書から推測して追加せず、連絡導線は利用者が別途決定する。
+## 16. 6C-1 リポジトリ運営基盤
+
+利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of Conduct、PR template、CI badgeは現段階では追加しない。外部PRは積極募集せず、Issueは受け付ける。
+
+Private vulnerability reportingの有効化、GitHub上のCI成功、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。

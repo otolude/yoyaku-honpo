@@ -136,3 +136,8 @@ AI入力本文をアプリケーション側の別履歴として保存しない
 14. 正式リリース
 
 現段階では2以降は未実装である。決済Providerの正式採用、契約単位・契約者、プラン名、月額・年額、無料プラン・試用、AI利用枠、予約件数・投稿回数・保存期間の差、解約・日割り・返金、支払い失敗時の猶予期間、失効後の新規予約・既存予約実行を商品仕様監査前に確定扱いしない。
+## Phase 3第6項6C-1: リポジトリ運営基盤とCI
+
+公開前監査の前提として、オープンソースライセンスを付与しないCopyright Notice、Security Policy、Contribution方針、bug／improvement Issue Form、GitHub Actions CIを整備する。独自コード・文書はall rights reservedとし、GitHub利用規約上の閲覧・fork以外の利用は明示的な書面許可を必要とする。CIはPython 3.14、Ruff、通常pytest、一時PostgreSQL統合pytest、Migration安全ラッパーを対象とし、Discord、OpenAI、決済、開発DB、productionへ接続しない。
+
+構成追加とローカル検証は6C-1で扱う。GitHub上でのworkflow成功、Private vulnerability reporting有効化、repository visibility、dependency license、商標条件、公開可否は6Cの未確認ゲートとして維持する。public化は6C合格後に利用者が最終承認して手動実施する。

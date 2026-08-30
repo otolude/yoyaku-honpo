@@ -129,7 +129,7 @@ flowchart LR
 - 専用PostgreSQL込みpytest: 1,368 passed
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: 6B-2反映後114／120。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- Phase 3: 6C-1ローカル隔離受入後120／126。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
 - 実OpenAI Provider受入とARM64 Linux実機確認は未確認
 
 環境、対象commit、Ruff、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。
@@ -157,12 +157,13 @@ python -m discord_ai_reminder_bot
 
 ## 開発プロセス
 
-`要件定義 → 技術設計 → 実装 → unit test → PostgreSQL integration test → manual acceptance → operations更新 → commit／push → 次段階`を基本単位にしています。Issue、Pull Request、GitHub Actionsを利用済みとは記載していません。
+`要件定義 → 技術設計 → 実装 → unit test → PostgreSQL integration test → manual acceptance → operations更新 → commit／push → 次段階`を基本単位にしています。GitHub ActionsのCI構成とIssue Formは追加済みですが、GitHub上でのCI成功確認はpush後の別受入です。外部Pull Requestは積極募集していません。
 
 ## ロードマップ
 
 - 完了: Phase 1、Phase 2、Phase 3の予約名2A、永続基盤2B、OpenAI隔離基盤2C、ポートフォリオ6A
 - 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
+- 完了: Phase 3第6項6C-1の運営ファイル・CI構成とローカル隔離受入（GitHub上の実行は未確認）
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
 - 今後: 6C公開前監査、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
@@ -184,4 +185,6 @@ python -m discord_ai_reminder_bot
 
 ## ライセンス・公開状態
 
-LICENSEは未決定で、現時点ではOSSライセンスを付与していません。GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化時期は6C監査合格後を候補とします。著作権表記、Contribution受付、SECURITY窓口、Code of Conduct、Issue／PR、CI／badge、Discord画面掲載は6Cまでの利用者判断事項です。GitHubプロフィールREADME、pin留め、連絡導線、案件媒体の掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLは今回追加していません。
+本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を参照してください。
+
+GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定で、CIもGitHub上の成功確認前のためbadgeは掲載していません。Code of Conduct、PR template、個人連絡先は追加していません。

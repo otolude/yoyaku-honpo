@@ -445,3 +445,18 @@ READMEの再現手順は安全な最短入口に限定し、DB操作、Discord�
 6B-1の本文成果物は[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ分離し、English summaryは利用者承認済みの最終文面を使用する。GitHub profile、pin留め、案件媒体からの導線はrepository成果物完成後の別作業とし、氏名、連絡先、稼働条件を本repositoryへ推測で追加しない。
 
 6B-2では撮影用private channelと合成データだけで4画像を作成し、一覧・詳細の完全UUIDを不透明に焼き込み、画素だけの新規PNGへflattenした。元画像・編集layerは追跡せず、構造・hash・掲載先は[asset manifest](portfolio/assets/manifest.md)へ記録する。毎日・毎週の合成予約は正式Bot操作で論理削除し、投稿済み単発予約は既存保持規則に従う。撮影用channelは6Cまで保持し、DB直接削除やVolume削除をcleanup手段にしない。
+## 23. GitHub Actions CI（公開前構成）
+
+CIはdevelopへのpushとPull Requestで実行する構成である。GitHub上での成功はまだ未確認で、badge、deploy、release、public化を行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
+
+公式ActionはNode.js 24対応の`actions/checkout@v7`と`actions/setup-python@v7`を使用する。正確なfull commit SHAを独立検証できない状態では推測でpinせず、version更新時にworkflow構文と実行結果を再確認する。
+
+一時PostgreSQL serviceには`discord_bot_test`だけを作り、CI内の固定非秘密credentialを使用する。正式なDB手順は次の順で、Alembic CLIを直接使わない。
+
+1. Migration安全ラッパーで`test`／`discord_bot_test`／操作束縛confirmationを照合して`upgrade head`する。
+2. 同じtargetで`current`と`check`を行い、DB非接続の`heads`でsingle headを確認する。
+3. `TEST_DATABASE_URL`を明示したintegration testsを実行する。
+
+通常pytest stepでは`TEST_DATABASE_URL`を空にし、開発DBや`.env`へfallbackさせない。CI serviceは永続Volumeを使わず、production、開発用postgres、実Discord、外部AI、決済へ接続しない。workflow変更時はYAML、permissions、trigger、concurrency、action参照、秘密情報、Migration commandをローカルで再監査する。
+
+Security Policy、Contribution方針、Issue Formの運用開始はrepository公開後である。Private vulnerability reportingはpublic化直前にGitHub上で手動有効化し、有効化前に利用可能と案内しない。脆弱性を公開Issueへ移さず、秘密情報をIssueやlogへ貼らない。

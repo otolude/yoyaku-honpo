@@ -75,3 +75,10 @@ OpenAI Adapterと手動受入CLIは無通信のMock transportで確認済みだ�
 - 実Providerを明示許可後に限定実行する品質・保持・請求受入
 
 公開前の具体的な判定は[ポートフォリオ掲載計画](../portfolio-plan.md)の6Cへ残す。
+## 7. 公開リポジトリの報告境界
+
+公開Issueにはbug／improvementの定型Formだけを用意し、秘密情報除去と「脆弱性ではない」の確認を求める。脆弱性は公開Issueへ投稿させず、[Security Policy](../../SECURITY.md)でPrivate vulnerability reportingへ案内する。同機能はpublic化直前に手動有効化予定であり、現時点で利用可能とは扱わない。個人メール、Discord DM、返信・修正期限の保証は設けない。
+
+CIはread-only permission、一時test DB、固定非秘密credentialだけを使用し、実`.env`、開発・production DB、Discord、OpenAI、決済へ接続しない。これは構成上の境界であり、GitHub上の実行成功や外部セキュリティ監査を意味しない。
+
+公開予定の独自コード・文書にはオープンソースライセンスを付与せず、Copyright Noticeでall rights reservedと書面による個別許諾を示す。この方針はGitHub利用規約上の閲覧・forkを妨げず、依存コンポーネント、Discord UI、名称・商標等の第三者権利を取り込むものではない。技術的コピーの完全防止や法的効果は保証しない。
