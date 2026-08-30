@@ -172,6 +172,10 @@ GPT-5.6 LunaとGPT-5.4 nanoはいずれも正式採用前であり、実Provider
 
 - [ ] 利用者の明示許可後、専用Project、制限付きキー、予算・アラートを確認し、同じ合成caseでLunaとGPT-5.4 nano固定snapshotの日本語品質、32文字、応答時間、実token量、費用、保持、請求、dashboard設定を実APIで確認する。
 
+この受入は中止せず公開前へ延期する。専用Projectは作成済みだが、内部識別情報は記録しない。Projectでは`gpt-5.6-luna`と`gpt-5.4-nano`だけを許可し、各モデル60,000 TPM・10 RPMとしている。現在は残高0 USD、支払い方法未登録、APIキー未作成、API通信0回、費用発生なしであり、Project作成を正式Provider採用の証跡にはしない。
+
+課金可能な状態を作る前に利用者の明示許可を再取得する。最低プリペイド購入が必要な場合はAuto-rechargeを無効にし、その購入額を実試験のAPI原価と混同しない。固定匿名6 caseをLunaへ6回、別runでGPT-5.4 nano固定snapshotへ6回送信し、両runとも各requestの間隔を60秒以上空ける。retry、fallback、Batch、並列実行、自動保存は行わない。悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、合計4,006,800 JPY microunits（約4.0068円）である。試験後にモデルの使い分けを決め、プラン別モデル・回数・機能は商品仕様策定時に確定する。この延期記録ではチェックを付けず、集計99件／2件／101件を維持する。
+
 ## 2C 公開前環境受入（2C-1完了条件外）
 
 - [x] Python 3.14.4／WSL2 Linux x86_64で公式`openai` packageの依存解決、import、実SDK＋Mock transport contractを確認し、package metadata上の対応と実機確認を区別する。

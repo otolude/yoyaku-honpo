@@ -483,6 +483,9 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - live実行はProvider、専用target、明示モデル、最大request数、悲観最大JPY microunits、操作を束縛した完全一致confirmationと、process環境だけの専用APIキーが揃う場合に限る。公式`https://api.openai.com/v1`を固定し、redirect、proxy環境、任意base URLを許可しない。DNSや経路上の攻撃をアプリケーションだけで完全には防げないため、専用Projectと実行環境のネットワーク管理も実Provider受入条件とする。
 - 手動受入の上限は既存の監査済みモデル単価、JPY microunits為替、安全係数、入出力token上限からprocess内で悲観計算する。DBの運営Budgetや将来の顧客Quotaとは接続せず、request開始前に回数と費用を消費済みにし、timeout、cancel、結果不明でも返却しない。表示額は受入試験の安全見積りで販売価格ではない。
 - live時だけcase ID、モデル、検証済み生成名、文字数、経過時間、消費request数、悲観費用累計を対話標準出力へ表示できる。合成本文全文、APIキー、header、raw request／response、Provider request ID、raw usage、例外全文を表示せず、ファイル、DB、Job、Budget、OperationLog、通常loggerへ自動保存しない。shell redirectによる実行者側の保存は防止不能であることを運用手順へ明記する。
+- 実Provider受入は公開前へ延期し、中止または不要とは扱わない。専用Projectは準備済みだが、Project名・ID等を保存せず、残高0 USD、支払い方法未登録、APIキー未作成、API通信0回、費用発生なしを維持する。課金可能な状態を作る前に利用者の明示許可を再取得する。
+- 実Provider受入では固定匿名6 caseを`gpt-5.6-luna`へ6回、別runで`gpt-5.4-nano-2026-03-17`へ6回実行し、両runとも各requestの間隔を60秒以上空ける。Projectの各候補モデルに設定された60,000 TPM、10 RPMを超えず、retry、fallback、Batch、並列実行、自動保存を行わない。最低プリペイド購入が必要な場合もAuto-rechargeを無効にし、購入額をAPI試験原価と扱わない。
+- 現在の監査条件による悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、12回合計4,006,800 JPY microunits（約4.0068円）である。実施時に日本語品質、32文字、応答時間、token、請求、保持、dashboard設定を確認し、モデルの正式な使い分けはその後、プラン別モデル・回数・機能は商品仕様策定時に確定する。
 - 利用者が実用上問題なく使える品質、回数、応答速度を確保し、そのうえで重複呼び出し、無制限再試行、不要な長文入力・過剰出力、不要な高価格モデル、無期限保存を避ける。コスト削減によって通常利用を困難にしたり、頻繁にフォールバックへ落としたりしない。
 - AI無効、上限到達、timeout、異常応答でも予約の作成、編集、投稿を成功させる。
 - 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerからAIを呼ばない。

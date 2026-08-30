@@ -424,6 +424,10 @@ CLIは固定6件の匿名合成caseだけを各選択modelへ直列送信し、r
 
 実Provider受入前はどちらのモデルも正式採用済みとせず、ProviderとAIを無効のまま維持する。AI枠超過、Provider障害、AI無効でも予約作成・投稿、JSTフォールバック名、手動名編集を継続する。将来のプラン別モデル・回数・機能は商品仕様で決め、2C-1の運営Budgetへ顧客Quotaを混ぜない。
 
+実Provider受入は公開前まで延期する。これは中止や不要判定ではない。専用Projectは作成済みで、比較候補`gpt-5.6-luna`と`gpt-5.4-nano`だけを許可し、各モデル60,000 TPM・10 RPMとしているが、Project名・ID等の内部識別情報を文書や通常ログへ残さない。現在は残高0 USD、支払い方法未登録、APIキー未作成、API通信0回、費用発生なしであり、この状態ではliveを実行しない。Project作成だけでOpenAIを正式採用済みとは扱わない。
+
+課金可能な状態を作る前に利用者の明示許可を再取得する。最低プリペイド購入が必要になる可能性がある場合はAuto-rechargeを無効にし、購入額を実試験そのものの費用と記録しない。専用Project、制限付きキー、Project予算・アラートを確認後、Lunaの固定匿名6 caseを実行し、終了後に別runとして固定`gpt-5.4-nano-2026-03-17`の同じ6 caseを実行する。両runとも各requestの間隔を60秒以上空ける。合計12 requestで、retry、fallback、Batch、並列実行は行わない。悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、合計4,006,800 JPY microunits（約4.0068円）であり、プリペイド購入額や販売価格とは別である。結果をDBやファイルへ自動保存せず、日本語品質、32文字、応答時間、token、請求、保持、dashboard設定を確認する。
+
 OpenAI SDK依存は`pyproject.toml`の2.54 minor範囲を正式`.venv`へ通常の`python -m pip install -e '.[dev]'`で解決する。本リポジトリはlock fileを管理していないため新規作成せず、SDK patch更新時は実APIへ接続しないMock transport contract testを必須にする。AdapterにはPython 3.14／WSL2での初回platform検出停止を避けるため、SDK 2.54.xだけを対象とした非公開のinstance-local platform cache初期化がある。これは公式に保証された公開APIではないため、未知version、private symbolまたは型の変更時は外部通信前にfail-closedとし、無通信contract testが成功するまでProviderを有効化しない。module symbolのmonkey patchやprocess-wide global変更は認めず、SDKが公開手段を提供した時点で撤去を検討する。package metadataのOS-independent表記だけをARM64実機受入の代替にせず、配置architecture確定後に同等ARM64 Linux上で依存解決、import、Mock transport、shutdownを確認する。
 
 将来のAI機能は初期状態で無効とし、明示的に有効化した場合も固定イベントと安全な集計だけを監視する。APIキー、本文、AI入力全文、AI応答全文を通常ログへ記録しない。ログは14日、DBバックアップは日次7世代かつ最大14日保持する方針とし、配置環境決定時に自動削除、アクセス制御、復元後cleanupの具体手順を確定する。

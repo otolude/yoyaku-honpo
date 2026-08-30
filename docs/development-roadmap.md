@@ -11,7 +11,7 @@ Phase 1とPhase 2は受入完了済みである。現在はローカル環境で
 Phase 3は次の順序で進める。
 
 1. `/post show`の通常Autocomplete候補から削除済み予約を除外する。（実装・実Discord受入完了）
-2. AI予約名機能の要件、安全境界、DB設計を確定する。（2A、2B-1／2B-2、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤まで完了。実Provider受入は未実施）
+2. AI予約名機能の要件、安全境界、DB設計を確定する。（2A、2B-1／2B-2、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤まで完了。実Provider受入とARM64 Linux実機確認は公開前へ延期）
 3. AIを使わない場合の予約名フォールバックを実装する。（実装・受入完了）
 4. 予約詳細画面から予約名を編集できるようにする。（実装・受入完了）
 5. 一覧、詳細、Autocomplete、確認画面へ予約名を表示する。（実装・受入完了）
@@ -20,6 +20,12 @@ Phase 3は次の順序で進める。
 8. 常時稼働環境を構築し、本番リリースする。
 
 Phase 3の受入は[Phase 3受入表](manual-acceptance-phase3.md)でPhase 1・Phase 2と分離して管理する。第1段階、2A、2B-1、2B-2、2C-1、2C-2の安全基盤は隔離受入済みである。実Provider受入ではProvider、価格、品質、保持、請求、dashboard条件を再確認する。
+
+次に着手する正式段階は、第6項「ポートフォリオを整備する」とする。実Provider受入とARM64 Linux実機確認は中止せず、公開前限定テストおよび配置環境確定時の未確認ゲートとして残すため、ポートフォリオ整備の開始条件にはしない。
+
+ポートフォリオ整備の目的は、実装済みの予約機能、情報境界、AIのfail-closed設計、テスト証跡を、秘密情報や実利用者データを含めず第三者が確認できる形へ整理することである。この段階ではREADME・構成図・機能説明・匿名化した画面資料・再現可能な検証手順を整合させる。予約機能やAI Providerの追加実装、実API通信、公開前Discord試験、常時稼働環境、DBモデル／Migration、Plan／Entitlement／Quota、契約・決済は対象外とする。
+
+実装順は、6Aで掲載範囲・匿名化・証跡・成果物の要件を確定し、6BでREADME、構成図、機能フロー、匿名化資料を作成し、6Cでリンク、再現手順、秘密情報、未実装表示、Phase 3受入との整合を監査する。受入では、実装済み／未実装の区別、主要機能と安全境界の説明、匿名化、再現可能な起動・検証案内、リンク・Markdown品質、秘密情報非露出を確認する。外部サービスや有料処理は使用せず、原則としてDBモデルとMigrationを変更しない。
 
 2B-2後の運用安全修正として、Migrationの正式経路をPythonラッパーへ統一し、`alembic/env.py`にもtarget、期待DB名、操作確認、接続後`current_database()`の最終ガードを追加する。test／development／productionのURL選択を分離し、直接Alembic CLI、offline mode、接続先不一致をDDL前に拒否する。
 
@@ -61,6 +67,10 @@ AIは初期状態で無効とし、明示設定時だけ有効化する。同じ
 2C-1では条件付き第一候補をOpenAI APIとし、statelessなResponses API Adapter、許可モデル・価格・為替・入出力上限のfail-closed設定、構造化出力の再検証、SDK retry 0、SDK clientのshutdown回収を無通信Fakeで隔離実装する。通常候補は日付snapshotが公開されていない`gpt-5.6-luna` alias、品質比較候補は固定`gpt-5.4-nano-2026-03-17`とする。Deprecatedの`gpt-5-nano`は拒否する。どちらも実API限定比較前で正式採用済みではない。
 
 2C-2では、通常Bot・Worker・pytest・DBから分離した手動受入CLIを実装する。固定6件の匿名合成case、許可モデル、request数、悲観最大費用、完全一致confirmation、process専用キー、公式endpoint、redirect／proxy無効を境界とし、引数なし・help・dry-runでは通信しない。安全基盤の自動隔離受入だけを完了扱いとし、実API品質、保持、請求、dashboard、ARM64は別の未確認受入として残す。
+
+実Provider受入は公開前へ延期する。専用Projectは準備済みだが、内部識別情報は文書化しない。Project上の比較候補は`gpt-5.6-luna`と`gpt-5.4-nano`だけで、各モデルの上限は60,000 TPM、10 RPMである。残高0 USD、支払い方法未登録、APIキー未作成、API通信0回、費用発生なしの状態を維持し、Project作成をProvider正式採用の証跡にはしない。
+
+課金可能な状態を作る前に利用者の明示許可を再取得する。最低プリペイド購入が必要になる可能性がある場合も、購入額を実試験のAPI原価と混同せず、Auto-rechargeを無効にしてから専用Project、制限付きキー、Project予算・アラートを確認する。固定匿名6 caseをLunaへ6回、別runでGPT-5.4 nano固定snapshotへ6回実行し、両runとも各requestの間隔を60秒以上空ける。retry、fallback、Batch、並列実行、自動保存は行わない。悲観費用はLuna 333,600 JPY microunits／回、GPT-5.4 nano 334,200 JPY microunits／回、合計4,006,800 JPY microunits（約4.0068円）であり、プリペイド購入額や販売価格ではない。日本語品質、32文字、応答時間、token、請求、保持、dashboard設定を確認後にモデルの使い分けを決め、プラン別モデル・回数・機能は商品仕様策定時に確定する。
 
 将来の商品仕様では`AI設定 → Entitlement → 顧客プランQuota → ModelSelectionPolicy → 運営Budget → Job → Generator`の順を採用候補とする。2C-1では運営設定による単一モデルだけを扱い、Entitlement、顧客Quota、ModelSelectionPolicy、契約、決済を実装しない。基本プランでLunaと少なめの枠、上位プランでGPT-5.4 nanoと多めの枠・追加AI機能を提供する案は未確定であり、品質差が小さければ全プラン共通Lunaとして回数・機能だけを分ける選択肢も維持する。
 
