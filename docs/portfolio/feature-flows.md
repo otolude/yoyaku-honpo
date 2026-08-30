@@ -24,6 +24,10 @@ sequenceDiagram
 
 JSTフォールバック名は表示時の純粋関数で、DBへ保存せず本文を一覧・Select・Autocompleteへ出さない。投稿の一時エラーには上限付きretryがある一方、結果不明では二重投稿防止を優先する。
 
+次は、撮影専用channelへBotが単発の合成本文を投稿した結果である。実利用者データは含まない。
+
+![撮影用channelへBotが投稿した公開前チェックの合成message](assets/scheduled-post-delivered.png)
+
 ## 2. 詳細操作、競合、削除
 
 | 操作 | transaction前 | transaction内 | 結果 |
@@ -34,6 +38,18 @@ JSTフォールバック名は表示時の純粋関数で、DBへ保存せず本
 | 論理削除 | 対象と操作権限を確認 | lock後にversion・状態・管理者理由を再検証 | deletedとして保持し、30日cleanup対象へ移す |
 
 詳細Viewを開いた後に権限を失った場合は古いEmbedとViewを解除し、他人の本文、予約名、投稿先、UUIDを再表示せず固定案内だけを返す。外側Modalのcustom IDには非識別nonceを付け、同種Modalを複数保持しても別instanceを停止しない。
+
+一覧画像は撮影用予約全5件のうち、単発・毎日・毎週の代表3件が見える範囲を切り出している。完全な予約UUIDは不透明な図形で焼き込み匿名化している。
+
+![単発・毎日・毎週の合成予約を表示した予約一覧](assets/schedule-list.png)
+
+詳細では、週次予約の正式な本文と、編集・予約名編集・一時停止・削除の操作を確認できる。
+
+![週次プロジェクト進捗共有の状態・日時・本文・操作を表示した予約詳細](assets/schedule-detail.png)
+
+編集Modalには、投稿先、曜日、投稿時刻、終了日、本文の現在値を表示する。表示値はすべて撮影用の合成データである。
+
+![合成された毎週予約の投稿先・曜日・時刻・本文を編集するModal](assets/schedule-edit-modal.png)
 
 ## 3. AI予約名のJob登録とCAS保存
 

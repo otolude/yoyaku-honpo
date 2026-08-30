@@ -46,7 +46,13 @@ Discordで後から投稿したい内容を予約し、一覧、詳細、編集�
 
 ## 代表画面
 
-画面資料はまだ掲載していません。Phase 3の6B-2で、実利用者データを使わない合成シナリオを新規撮影し、[スクリーンショット方針](docs/portfolio/screenshot-policy.md)に沿って匿名化・確認します。完成前の画像リンクや空の画像枠は置いていません。
+専用開発guildの合成データだけで撮影し、完全な予約UUIDを不透明に焼き込み匿名化した画面です。一覧は撮影用予約全5件のうち、代表3件が見える範囲を掲載しています。
+
+![単発・毎日・毎週の合成予約を表示した予約一覧](docs/portfolio/assets/schedule-list.png)
+
+![週次プロジェクト進捗共有の状態・日時・本文・操作を表示した予約詳細](docs/portfolio/assets/schedule-detail.png)
+
+編集Modalと予約投稿結果を含む4枚の説明は[機能フロー](docs/portfolio/feature-flows.md)、匿名化・metadata監査は[asset manifest](docs/portfolio/assets/manifest.md)を参照してください。
 
 ## 技術スタック
 
@@ -123,7 +129,7 @@ flowchart LR
 - 専用PostgreSQL込みpytest: 1,368 passed
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: 本変更前111／119。6B-1反映後は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- Phase 3: 6B-2反映後114／120。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
 - 実OpenAI Provider受入とARM64 Linux実機確認は未確認
 
 環境、対象commit、Ruff、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。
@@ -156,7 +162,7 @@ python -m discord_ai_reminder_bot
 ## ロードマップ
 
 - 完了: Phase 1、Phase 2、Phase 3の予約名2A、永続基盤2B、OpenAI隔離基盤2C、ポートフォリオ6A
-- 進行中: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離
+- 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
 - 今後: 6C公開前監査、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 

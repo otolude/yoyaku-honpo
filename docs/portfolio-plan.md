@@ -182,7 +182,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 6Bは次の2段階に分ける。
 
 - 6B-1: README、利用者承認済みEnglish summary、architecture、feature flows、security and privacy、verification、screenshot policy、asset manifest、Mermaid、実装状態matrix、安全なsetup入口を作成する。
-- 6B-2: 本書とscreenshot policyに従って合成データ画像を新規撮影し、alt textとmanifestの実recordを対応付ける。
+- 6B-2: 本書とscreenshot policyに従って合成データ画像4枚を新規撮影し、alt textとmanifestの実recordを対応付ける。（2026-08-30完了。全画像・Git履歴・商標・公開状態の最終監査は6C）
 
 1. READMEを短い入口へ再設計し、日本語本文と短いEnglish summaryを作る。
 2. 実装済み／未実装／延期中マトリクスを作り、正本へリンクする。
@@ -229,8 +229,8 @@ pytest nodeは6Aの文書要件そのものを検証しないため、A項目に
 | 10 | テスト証跡の時点・限界 | A | 本書4節・11節 |
 | 11 | 6B成果物・6C監査・正本関係 | A | 本書7節・13～14節 |
 | 12 | 実Provider・ARM64未確認を隠さない | A | 本書1節・6節・11節、Phase 3受入表 |
-| 13 | 6Bで新規合成データを撮影 | B | 方針は定義済みだが画像未作成。6B成果物完成後に確認 |
-| 14 | 全assetの写り込み・metadata等を確認 | E | asset作成はB、全assetの最終目視・復元可能性監査はCへ分割 |
+| 13 | 6Bで新規合成データを撮影 | B | 2026-08-30に6B-2で4画像を作成・組み込み済み |
+| 14 | 全assetの写り込み・metadata等を確認 | E | 6B-2の各asset監査は完了。Git履歴・商標・公開状態を含む最終監査はCへ分割 |
 | 15 | LICENSE・依存・商標・履歴監査 | C | 現在はいずれも未完了。6Cで実査が必要 |
 | 16 | visibility・公開準備ファイル・CI判断 | E | 現状確認はC、採否・連絡先・公開時期は利用者判断Dへ分割 |
 

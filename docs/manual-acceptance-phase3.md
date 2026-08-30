@@ -8,7 +8,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 集計: 確認済み 113件／未確認 7件（合計120件）
+- 集計: 確認済み 114件／未確認 6件（合計120件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -17,7 +17,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - Phase 3第2段階2C-2安全基盤受入判定: 完了（live実Provider受入は未実施）
 - Phase 3第6項6A隔離受入判定: 完了（12件／12件）
 - Phase 3第6項6B-1受入判定: 完了（2件／2件）
-- Phase 3第6項6B-2受入判定: 未完了（0件／1件、画像未作成）
+- Phase 3第6項6B-2受入判定: 完了（1件／1件）
 - Phase 3第6項6C受入判定: 未完了（0件／4件、利用者判断を含む）
 
 ## 自動テスト受入
@@ -224,9 +224,9 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 
 ## Phase 3第6項6B-2 匿名化画面資料
 
-画像はまだ作成・編集・追加していない。6Aの方針や6B-1のchecklist／manifest形式を、実asset完成の代替証跡にしない。
+2026-08-30にOtoが専用開発guildの撮影用private channelと新規合成データだけで4画像を作成した。repository上のPNG構造・hash・文字列・目視監査、Markdown link・alt text・manifest対応を直接証跡とし、6Aの方針やchecklist形式だけを実asset完成の代替証跡にしない。Discord商標、Git履歴、公開状態の最終監査は6Cへ残す。
 
-- [ ] 専用開発guildの新規匿名合成データだけで画面資料を作成し、公開assetとalt textをmanifestへ対応付ける。既存実Discord受入画像、実利用者データ、元画像、編集レイヤーを成果物へ含めない。
+- [x] 専用開発guildの新規匿名合成データだけで一覧・詳細・編集Modal・投稿結果を作成し、READMEとfeature flowsの説明的alt text、manifestの用途・掲載先・不透明焼き込み・metadata除去・確認日・確認者・SHA-256へ対応付ける。既存実Discord受入画像、実利用者データ、元画像、編集レイヤーを含めず、完全UUID、実ID、秘密・接続情報を露出しない。
 
 ## Phase 3第6項6C 再現確認・秘密情報・ライセンス・公開状態の最終監査
 

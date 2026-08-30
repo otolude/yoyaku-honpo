@@ -442,4 +442,6 @@ Phase 3第6項の詳細は[ポートフォリオ掲載計画](portfolio-plan.md)
 
 READMEの再現手順は安全な最短入口に限定し、DB操作、Discord設定、障害対応は本Runbookへリンクする。AI Providerのlive confirmation、APIキー、課金手順をREADMEへ掲載せず、dry-runだけを通常の確認入口とする。6Cでは公開前Git履歴の秘密情報、ライセンス、依存ライセンス、第三者素材、Discord／OpenAIの商標・画面条件を確認する。
 
-6B-1の本文成果物は[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ分離し、English summaryは利用者承認済みの最終文面を使用する。画面資料は6B-2まで作成しない。GitHub profile、pin留め、案件媒体からの導線はrepository成果物完成後の別作業とし、氏名、連絡先、稼働条件を本repositoryへ推測で追加しない。
+6B-1の本文成果物は[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ分離し、English summaryは利用者承認済みの最終文面を使用する。GitHub profile、pin留め、案件媒体からの導線はrepository成果物完成後の別作業とし、氏名、連絡先、稼働条件を本repositoryへ推測で追加しない。
+
+6B-2では撮影用private channelと合成データだけで4画像を作成し、一覧・詳細の完全UUIDを不透明に焼き込み、画素だけの新規PNGへflattenした。元画像・編集layerは追跡せず、構造・hash・掲載先は[asset manifest](portfolio/assets/manifest.md)へ記録する。毎日・毎週の合成予約は正式Bot操作で論理削除し、投稿済み単発予約は既存保持規則に従う。撮影用channelは6Cまで保持し、DB直接削除やVolume削除をcleanup手段にしない。

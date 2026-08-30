@@ -1133,4 +1133,6 @@ Phase 3第6項の掲載要件は[ポートフォリオ掲載計画](portfolio-pl
 
 6B-1の論理構成は[architecture](portfolio/architecture.md)、transaction・Worker・Recovery・AI CAS・Migrationの代表処理は[feature flows](portfolio/feature-flows.md)に記録する。図はMermaid sourceを正本として画像を重複管理せず、将来のEntitlement、顧客Plan／Quota、決済、常時稼働を破線と未実装labelで示す。安全境界と未確認事項は[security and privacy](portfolio/security-and-privacy.md)、検証時点は[verification](portfolio/verification.md)へ分ける。English summaryは利用者承認済みの最終文面を使用し、実Providerや本番運用の実績を補完しない。
 
+6B-2では合成データの一覧・詳細をREADME、一覧・詳細・編集Modal・投稿結果をfeature flowsへ掲載する。完全な予約UUIDは不透明図形でflattenし、元画像・編集layerを追跡せず、PNG構造・SHA-256・alt text・掲載先を[asset manifest](portfolio/assets/manifest.md)へ記録する。画像そのものはコード・DB・本番運用の追加実装を意味せず、Discord商標と公開可否は6Cで判断する。
+
 画面assetは合成データで新規撮影し、復元不能な匿名化、metadata除去、manifest記録を経た公開用ファイルだけを追跡する。OpenAI Adapterやサブスクリプション要件は実装状態を明示し、実Provider稼働、Plan／Entitlement／Quota、決済、本番配置を現在の構成として描かない。

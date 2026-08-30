@@ -40,7 +40,7 @@ OpenAI Adapterのcontract testは実SDKとMock transportを使用し、実OpenAI
 | --- | --- | --- |
 | Phase 1 | 63／63 | [Phase 1受入](../manual-acceptance-phase1.md) |
 | Phase 2 | 47／47 | [Phase 2受入](../manual-acceptance-phase2.md) |
-| Phase 3 | 6B-1反映前111／119 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
+| Phase 3 | 6B-2反映後114／120 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
 
 Phase 1・2には自動テストと実Discord／隔離環境の人手受入が含まれる。Phase 3では自動隔離受入、実ViewStore、専用PostgreSQL、実Discordの証跡を項目ごとに記録している。件数だけで未列挙の動作を保証しない。
 
