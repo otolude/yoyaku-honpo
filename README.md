@@ -1,8 +1,8 @@
 # Discord AI Reminder Bot
 
-Discordへテキストを予約投稿するBotです。現在のPhase 1では、環境変数で指定した1つのguildを対象に、予約の作成・管理・実行・復旧・通知・保持期限後の削除までを実装しています。
+Discordへテキストを予約投稿するBotです。Phase 1とPhase 2は受入完了済みで、環境変数で指定した1つのguildを対象に、予約の作成・管理・実行・復旧・通知・保持期限後の削除、予約ID Autocomplete、予約詳細Viewを実装しています。
 
-## 現在利用できるPhase 1機能
+## 現在利用できる機能
 
 - 単発、毎日、毎週の予約投稿
 - 予約の一覧、詳細、編集、論理削除
@@ -14,10 +14,18 @@ Discordへテキストを予約投稿するBotです。現在のPhase 1では、
 - 起動時Recovery
 - 終端予約と関連履歴の30日保持・cleanup
 - 日本語のDiscord Embed表示
+- 予約ID Autocomplete
+- 予約詳細Viewからの編集、一時停止、再開、削除
 
-AI文章生成、文体の保存・反映、PAY.JP、サブスクリプション管理、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUI、AutocompleteはPhase 1対象外の将来構想です。現在利用できる機能ではありません。
+AI文章生成、AI予約名、文体の保存・反映、PAY.JP、サブスクリプション管理、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは将来構想です。現在利用できる機能ではありません。
 
-詳細は[Phase 1要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[手動受入チェックリスト](docs/manual-acceptance-phase1.md)を参照してください。
+詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)を参照してください。
+
+## Phase 2完了後の方針
+
+現在はローカル環境で開発を継続し、一般公開の準備が整うまで常時稼働環境を構築しません。機能実装、自動テスト、文書、ポートフォリオを先に完成させ、公開直前に少人数・短期間の限定テストを実施します。合格後は無料の常時稼働環境を第一候補として配置し、不足する場合だけ有料環境を検討します。
+
+AI予約名は未実装の任意機能です。初期状態では無効とし、AIが無効、利用上限到達、timeout、異常応答の場合も予約投稿の基本機能を継続する方針です。詳細とPhase 3の実装順序は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
 
 ## 必要環境
 

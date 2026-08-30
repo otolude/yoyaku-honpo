@@ -2,11 +2,11 @@
 
 ## 1. 文書の目的と対象環境
 
-本書は、Phase 1のDiscord予約投稿Botを開発・運用し、障害時に安全に判断するためのRunbookである。対象は環境変数で指定した1つのDiscord guild、WSL2またはLinux上の通常版CPython 3.14、Docker Compose上のPostgreSQL 18.4である。
+本書は、Phase 1・Phase 2完了時点のDiscord予約投稿Botをローカル環境で開発・運用し、障害時に安全に判断するためのRunbookである。対象は環境変数で指定した1つのDiscord guild、WSL2またはLinux上の通常版CPython 3.14、Docker Compose上のPostgreSQL 18.4である。一般公開用の常時稼働環境は未構築であり、公開準備まで構築を保留する。
 
 コマンドは特記がない限りリポジトリルートで実行する。開発DB、テストDB、本番DBを取り違えないことを最優先とし、実行前に接続先を確認する。予約の運用識別子には内部DB IDではなく完全なpublic UUIDv7を使う。
 
-基本セットアップは[README](../README.md)、仕様は[要件書](requirements-beta.md)と[技術設計書](technical-design-beta.md)、実Discord確認は[手動受入チェックリスト](manual-acceptance-phase1.md)を参照する。
+基本セットアップは[README](../README.md)、仕様は[要件書](requirements-beta.md)と[技術設計書](technical-design-beta.md)、今後の順序は[開発・公開ロードマップ](development-roadmap.md)、実Discord確認は[Phase 1手動受入](manual-acceptance-phase1.md)と[Phase 2手動受入](manual-acceptance-phase2.md)を参照する。
 
 `/post list` は全件数・総ページ数を表示し、前後ボタン、予約種類（すべて・単発・毎日・毎週）の絞り込み、現在ページの予約選択で詳細を確認できる。種類を変えると状態条件を保ったまま1ページへ戻り、0件でも別種類へ切り替えられる。一覧・詳細ViewはBotが継続稼働している間は15分で無効化せず操作できる。Bot再起動後の古い画面は復元しないため、`/post list` または `/post show` を再実行する。操作のたびに最新状態と権限を確認するため、操作間の作成・変更・削除により表示位置が変わることは正常である。終了日は `明日`、`8/30`、`2026-08-30` などを指定でき、成功表示では常に完全な `YYYY-MM-DD` となる。
 
@@ -354,7 +354,7 @@ docker compose --profile test rm -f postgres_test
 
 ### 18.2 予約詳細View基盤確認
 
-`/post show`と一覧選択後の詳細は同じ表示DTOを使う。第1段階では編集・一時停止・再開・削除ボタンをまだ表示せず、一覧由来だけ「一覧へ戻る」を表示する。戻る操作は最新の権限とDB状態を読み、元の状態・種類・ページ条件を維持して、ページが減っていれば最後の有効ページへ補正する。
+`/post show`と一覧選択後の詳細は同じ表示DTOを使う。状態と操作可否に応じて編集・一時停止・再開・削除を表示し、一覧由来では「一覧へ戻る」も表示する。戻る操作は最新の権限とDB状態を読み、元の状態・種類・ページ条件を維持して、ページが減っていれば最後の有効ページへ補正する。
 
 一覧・詳細ViewはBot稼働中にtimeoutしない。操作時は最新のguild、認可、所有者／管理者、Schedule状態、version、run、attemptを短いDB処理で再検証し、競合時は安全な案内と最新詳細へ更新する。Bot再起動後は古い画面を復元せず、`/post show`または`/post list`を再実行する。Bot停止時は一覧・詳細・既存確認Viewと開いているModalを停止し、wait Taskを回収する。削除済みephemeralメッセージはDiscordへ更新を試みず、Bot closeまたは画面遷移時にregistryから回収する。メッセージ削除や応答失敗だけでは業務状態を変更しない。詳細のversionと操作可否は内部情報であり、Embedや通常ログへ表示しない。
 
@@ -390,3 +390,11 @@ docker compose --profile test rm -f postgres_test
 - プロジェクト全体やVolumeをまとめて削除するCompose操作で開発データを巻き込む。
 - cleanup用のCLIは存在しないため、管理コマンドを捏造する。
 - Rate Limitやunknownを本物のDiscordへの大量送信で意図的に再現する。
+
+## 21. Phase 3と一般公開の運用方針（未実装）
+
+Phase 3と一般公開の詳細は[開発・公開ロードマップ](development-roadmap.md)を正本とする。現在はローカル開発だけを対象とし、常時稼働サービス、AI provider、AI費用集計、`failed`・`draft`・`paused`の新しい整理処理は未実装である。存在しない起動、課金、cleanupコマンドを本Runbookへ追加しない。
+
+将来のAI機能は初期状態で無効とし、明示的に有効化した場合も固定イベントと安全な集計だけを監視する。APIキー、本文、AI入力全文、AI応答全文を通常ログへ記録しない。ログは14日、DBバックアップは日次7世代かつ最大14日保持する方針とし、配置環境決定時に自動削除、アクセス制御、復元後cleanupの具体手順を確定する。
+
+公開前限定テストでは開発環境と分離したDiscord Application、DB、秘密情報を使い、実Discord、権限差、複数利用者競合、長時間稼働、再起動・Recovery、バックアップを確認する。Phase 3受入表はPhase 3実装開始時に別文書として新規作成し、Phase 1・Phase 2の完了証跡へ項目を追加しない。
