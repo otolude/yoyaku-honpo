@@ -696,7 +696,7 @@ async def test_real_postgres_queries_do_not_modify_rows(db_session: AsyncSession
     ) == snapshot
 
 
-async def test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order(
+async def test_autocomplete_owner_admin_guild_deleted_exclusion_limit_and_stable_order(
     db_session: AsyncSession,
 ) -> None:
     owned = [
@@ -707,27 +707,48 @@ async def test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order(
         creator_user_id=OTHER_CREATOR_ID, next_run_at=NOW + timedelta(minutes=1)
     )
     other_guild = autocomplete_schedule(guild_id=OTHER_GUILD_ID)
-    deleted = autocomplete_schedule(status=ScheduleStatus.DELETED, schedule_type=ScheduleType.ONCE)
+    deleted = autocomplete_schedule(
+        status=ScheduleStatus.DELETED,
+        schedule_type=ScheduleType.ONCE,
+        channel_id=123456789012345679,
+    )
     db_session.add_all([*owned, other_owner, other_guild, deleted])
     await db_session.flush()
 
     creator = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW)
     admin = await autocomplete(db_session, ScheduleAutocompleteOperation.SHOW, administrator=True)
-    admin_deleted = await service_for(db_session).autocomplete_schedules(
-        guild_id=GUILD_ID,
-        requester_user_id=CREATOR_ID,
-        administrator=True,
-        operation=ScheduleAutocompleteOperation.SHOW,
-        current="deleted",
-        now=NOW,
-    )
+    service = service_for(db_session)
+    deleted_searches = [
+        await service.autocomplete_schedules(
+            guild_id=GUILD_ID,
+            requester_user_id=CREATOR_ID,
+            administrator=administrator,
+            operation=ScheduleAutocompleteOperation.SHOW,
+            current=current,
+            channel_ids=channel_ids,
+            now=NOW,
+        )
+        for administrator in (False, True)
+        for current, channel_ids in (
+            ("", frozenset()),
+            ("deleted", frozenset()),
+            ("削除済み", frozenset()),
+            (str(deleted.public_id), frozenset()),
+            (str(deleted.public_id)[:30], frozenset()),
+            ("単発", frozenset()),
+            (str(deleted.channel_id), frozenset()),
+            ("deleted-channel", frozenset({deleted.channel_id})),
+        )
+    ]
     expected = sorted(owned, key=lambda item: (item.next_run_at, item.id))[:25]
 
     assert [item.public_id for item in creator] == [item.public_id for item in expected]
     assert len(creator) == 25
     assert other_owner.public_id in {item.public_id for item in admin}
     assert other_guild.public_id not in {item.public_id for item in admin}
-    assert [item.public_id for item in admin_deleted] == [deleted.public_id]
+    assert all(
+        deleted.public_id not in {item.public_id for item in result} for result in deleted_searches
+    )
     assert all(item.creator_user_id == CREATOR_ID for item in creator)
 
 

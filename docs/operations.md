@@ -348,9 +348,9 @@ docker compose --profile test rm -f postgres_test
 
 ### 18.1 予約ID Autocomplete確認
 
-`/post show|edit|delete|pause|resume`の予約ID欄では、投稿先チャンネル名を基本の検索方法とする。`tester-a`、`tester`、`#tester-a`、`お知らせ`のように入力でき、完全一致・前方一致・部分一致（英字は大文字小文字を区別しない）で、利用者が閲覧・操作できる予約だけが最大25件表示される。UUID、種別、状態、数値channel ID完全一致も利用でき、候補が出ない場合も完全なUUIDv7を直接入力できる。候補取得は読み取り専用で、channel名は設定guildのDiscordキャッシュだけを使用する。キャッシュにないchannelは名前検索できず、候補表示では短縮channel IDへ安全にフォールバックする。REST取得は行わない。
+`/post show|edit|delete|pause|resume`の予約ID欄では、投稿先チャンネル名を基本の検索方法とする。`tester-a`、`tester`、`#tester-a`、`お知らせ`のように入力でき、完全一致・前方一致・部分一致（英字は大文字小文字を区別しない）で、利用者が閲覧・操作できる予約だけが最大25件表示される。UUID、種別、状態、数値channel ID完全一致も利用できる。`/post show`の通常候補には削除済み予約を表示しないが、完全なUUIDv7の直接入力と`/post list status:削除済み`からは削除済み詳細を参照できる。他コマンドの候補状態境界は変更しない。候補取得は読み取り専用で、channel名は設定guildのDiscordキャッシュだけを使用する。キャッシュにないchannelは名前検索できず、候補表示では短縮channel IDへ安全にフォールバックする。REST取得は行わない。
 
-権限不足、DM、設定外guild、DB障害時は通常のephemeralエラーではなく空候補になる。候補取得後に状態が変化した場合は、コマンド実行時の既存の安全な拒否を確認する。実Discord受入項目は[Phase 2手動受入](manual-acceptance-phase2.md)に記録する。
+権限不足、DM、設定外guild、DB障害時は通常のephemeralエラーではなく空候補になる。候補取得後に状態が変化した場合は、コマンド実行時の既存の安全な拒否を確認する。Phase 3第1段階の実Discord受入項目は[Phase 3受入](manual-acceptance-phase3.md)に記録する。
 
 ### 18.2 予約詳細View基盤確認
 

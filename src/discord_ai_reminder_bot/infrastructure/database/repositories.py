@@ -449,7 +449,9 @@ class ScheduleRepository:
         _validate_limit(limit)
         now = require_utc(now)
         allowed_statuses = {
-            "show": tuple(item.value for item in ScheduleStatus),
+            "show": tuple(
+                item.value for item in ScheduleStatus if item is not ScheduleStatus.DELETED
+            ),
             "edit": (
                 ScheduleStatus.DRAFT.value,
                 ScheduleStatus.ACTIVE.value,

@@ -1013,13 +1013,15 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 負荷が増えた場合、Bot、予約ワーカー、Webhook APIを別プロセスへ分離する。PostgreSQLの処理権取得をすでに採用しているため、Phase 1の予約データと排他方式を維持したままワーカー数を増やせる。Celeryなどの追加は、DBポーリングで運用上の限界が確認された場合に改めて判断する。
 
-## 24. Phase 2後の将来設計（未実装）
+## 24. Phase 3とPhase 2後の将来設計
 
-本章はAI導入フェーズまたはPhase 2後に検討する未実装の将来計画であり、Phase 2の完了条件と現在実装済みの設計には含めない。実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。現時点ではDBモデルとAlembic Revisionを変更しない。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1だけはPhase 3第1段階として実装済みであり、24.2以降は未実装の将来設計である。後続段階の実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。第1段階ではDBモデルとAlembic Revisionを変更しない。
 
 ### 24.1 `/post show`の削除済み候補
 
-通常の`/post show` Autocomplete queryだけから`deleted`を除外する。論理削除されたScheduleと監査履歴はDBへ保持し、`/post list status:削除済み`の一覧および一覧由来の詳細取得対象にする。canonical UUIDの直接入力による`/post show`は`deleted`詳細を取得可能なままにする。delete、edit、pause、resumeのqueryとApplication Serviceの既存状態境界は変更せず、Autocomplete候補の射影だけを整理する。
+`ScheduleRepository.autocomplete_schedules()`の`show`用許可状態だけから`deleted`を除外する。操作別許可状態と検索条件はANDで結合されるため、空入力、状態、種別、UUID、channel ID、Discordキャッシュから解決したchannel IDのOR検索のすべてで`deleted`を返さない。最大25件、`next_run_at ASC NULLS LAST, id ASC`、読み取り専用の射影を維持する。
+
+論理削除されたScheduleと監査履歴はDBへ保持し、`/post list status:削除済み`の一覧および一覧由来の詳細取得対象にする。canonical UUIDの直接入力による`/post show`は`deleted`詳細を取得可能なままにする。delete、edit、pause、resumeのquery、`_STATUS_SEARCHES`、Presenter、Application Serviceの既存状態境界は変更しない。DB更新、row lock、Discord RESTによるchannel取得は追加せず、失敗時は空候補と固定ログを維持する。
 
 ### 24.2 AI予約名
 
