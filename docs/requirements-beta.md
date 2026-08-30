@@ -430,7 +430,7 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 
 ## 12.4 Phase 3とPhase 2後の将来計画
 
-以下はPhase 2の完了条件に含めないPhase 3の要件である。`/post show`の削除済み候補除外と、Providerを使用しない予約名基盤2Aは実装済みである。AIによる生成、費用制御、Provider接続は未実装の将来計画であり、実装時に要件、設計、Migration、プライバシー、受入項目を改めて確定する。
+以下はPhase 2の完了条件に含めないPhase 3の要件である。`/post show`の削除済み候補除外、予約名基盤2A、Provider非依存基盤2B、OpenAI Adapter隔離実装2C-1、実Provider受入の安全基盤2C-2までを実装済みとする。実Provider通信、品質・保持・請求受入、モデル正式採用は未実施である。
 
 ### `/post show`の削除済み候補
 
@@ -479,6 +479,10 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - SDK自動再試行は0、接続timeoutとrequest timeoutは既存5秒未満とする。429、5xx、接続失敗、timeout、cancel、認証・モデルエラーで再呼び出しせず、既存Budgetを返却しない。APIキー、本文、生成名、応答、Provider request ID、実usage、例外全文をJob、Budget、OperationLog、通常ログへ保存しない。
 - 将来は`AI設定 → Entitlement → 顧客プランQuota → ModelSelectionPolicy → 運営Budget → Job → Generator`とする。2C-1では運営設定の単一モデルだけを扱い、Plan、Entitlement、顧客Quota、ModelSelectionPolicy、契約、決済を実装しない。運営Budgetと顧客Quotaは別責務・別集計を維持する。
 - Provider側の標準的なabuse monitoring保持最大30日を2C-1時点では許容する。学習利用のopt-inは行わず、ZDRと国内処理要件は正式公開前に再評価する。ProviderがAPIデータを既定で学習に使わないことと、Bot自身が文体学習、過去投稿学習、Embedding、プロフィール生成を持たないことを別の方針として維持する。
+- 2C-2は実Provider受入そのものではなく、明示許可後だけ使用できる独立手動CLIの安全基盤とする。通常Bot、Worker、通常pytest、DB、永続Job／Budgetからlive runnerへ接続せず、固定6件の匿名合成本文を選択した許可モデルへ各1回だけ直列送信する。任意本文、stdin、ファイル、DBからの入力、再開、自動retry、model fallback、並列呼出しを追加しない。
+- live実行はProvider、専用target、明示モデル、最大request数、悲観最大JPY microunits、操作を束縛した完全一致confirmationと、process環境だけの専用APIキーが揃う場合に限る。公式`https://api.openai.com/v1`を固定し、redirect、proxy環境、任意base URLを許可しない。DNSや経路上の攻撃をアプリケーションだけで完全には防げないため、専用Projectと実行環境のネットワーク管理も実Provider受入条件とする。
+- 手動受入の上限は既存の監査済みモデル単価、JPY microunits為替、安全係数、入出力token上限からprocess内で悲観計算する。DBの運営Budgetや将来の顧客Quotaとは接続せず、request開始前に回数と費用を消費済みにし、timeout、cancel、結果不明でも返却しない。表示額は受入試験の安全見積りで販売価格ではない。
+- live時だけcase ID、モデル、検証済み生成名、文字数、経過時間、消費request数、悲観費用累計を対話標準出力へ表示できる。合成本文全文、APIキー、header、raw request／response、Provider request ID、raw usage、例外全文を表示せず、ファイル、DB、Job、Budget、OperationLog、通常loggerへ自動保存しない。shell redirectによる実行者側の保存は防止不能であることを運用手順へ明記する。
 - 利用者が実用上問題なく使える品質、回数、応答速度を確保し、そのうえで重複呼び出し、無制限再試行、不要な長文入力・過剰出力、不要な高価格モデル、無期限保存を避ける。コスト削減によって通常利用を困難にしたり、頻繁にフォールバックへ落としたりしない。
 - AI無効、上限到達、timeout、異常応答でも予約の作成、編集、投稿を成功させる。
 - 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerからAIを呼ばない。

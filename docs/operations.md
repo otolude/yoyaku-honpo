@@ -410,7 +410,17 @@ Phase 3と一般公開の詳細は[開発・公開ロードマップ](developmen
 
 2B／2C-1の設定名は`.env.example`を参照する。初期状態は`AI_NAME_GENERATION_ENABLED=false`かつ`AI_NAME_GENERATION_PROVIDER=disabled`で、APIキーも設定しないため外部AI通信や費用は発生しない。有効フラグだけではOpenAI Adapterを構成せず、Provider、許可モデル、秘密キー、監査済み単価、為替、入出力上限、安全係数が揃った場合だけ利用可能になる。設定無効またはGenerator unavailableならJob登録もpoll task作成も行わない。設定値、本文、生成名、ID、Provider request ID、例外全文を通常ログへ列挙しない。
 
-実Provider受入は通常pytest、CI、Bot通常起動から分離し、利用者の明示許可後だけ行う。専用OpenAI Project、制限付きAPIキー、Project予算・アラート、最大呼出回数・最大費用を事前確認し、`gpt-5.6-luna`と`gpt-5.4-nano-2026-03-17`へ同一の匿名テストケースを各1回ずつ送る。日本語品質、32文字、応答時間、usage、timeout、cancel、請求を比較し、本文・生成名を通常テストログへ出さない。APIキーをcommand引数、Git、`.env.example`へ記載しない。実施前にモデル提供状態、単価、Luna alias、標準保持最大30日、ZDR、国内処理を公式資料で再監査する。
+実Provider受入は通常pytest、CI、Bot通常起動から分離し、利用者の明示許可後だけ行う。専用OpenAI Project、制限付きAPIキー、Project予算・アラート、最大呼出回数・最大費用を事前確認し、`gpt-5.6-luna`と`gpt-5.4-nano-2026-03-17`へ同じ固定匿名ケースを各ケース1回ずつ送る。日本語品質、32文字、応答時間、usage、timeout、cancel、請求を比較し、本文・生成名を通常テストログへ出さない。APIキーをcommand引数、Git、`.env.example`へ記載しない。実施前にモデル提供状態、単価、Luna alias、標準保持最大30日、ZDR、国内処理を公式資料で再監査する。
+
+2C-2の手動CLIは、次のdry-runだけを通常作業で実行できる。引数なしと`--help`も通信せず、dry-runはキーの有無、長さ、prefix、末尾、hashを表示しない。
+
+```bash
+python -m discord_ai_reminder_bot.infrastructure.ai.acceptance --dry-run
+```
+
+live実行はこのRunbookを見ただけでは許可されない。利用者の明示許可に加え、専用Project、制限付きキー、Provider予算・アラート、公式endpoint、モデル・単価・保持・請求条件を再確認し、dry-runが表示するProvider、モデル一覧、最大request数、最大JPY microunits、`live`操作を束縛したconfirmationを完全一致で指定する。専用キーは`OPENAI_PROVIDER_ACCEPTANCE_API_KEY`として、その1 processの環境へ秘密管理機構から渡し、`.env`、shell history、CLI引数、ファイルへ書かない。具体的live commandは許可時にdry-run出力から組み立て、通常pytest、CI、Bot起動手順へ追加しない。
+
+CLIは固定6件の匿名合成caseだけを各選択modelへ直列送信し、request開始前に回数と悲観費用を消費する。process内上限は単一runの誤超過防止であり複数process間の排他ではないため、同じProjectで手動受入CLIを同時起動してはいけない。専用Project予算を全processの最終安全境界とし、現段階ではDB lockやOS固有lockを追加しない。失敗、timeout、cancel時は残りを実行せず、clientを回収する。生成名はlive端末へ一度だけ表示し、自動保存しない。ただし実行者によるshell redirect、terminal scrollback、画面収録までは技術的に防げないため、保存する場合も合成データだけの受入証跡として管理する。Provider request ID、raw usage、raw request／response、APIキー、例外全文を記録しない。表示するJPY microunitsは受入用悲観費用であり販売価格ではない。
 
 実Provider受入前はどちらのモデルも正式採用済みとせず、ProviderとAIを無効のまま維持する。AI枠超過、Provider障害、AI無効でも予約作成・投稿、JSTフォールバック名、手動名編集を継続する。将来のプラン別モデル・回数・機能は商品仕様で決め、2C-1の運営Budgetへ顧客Quotaを混ぜない。
 

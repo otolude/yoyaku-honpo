@@ -11,7 +11,7 @@ Phase 1とPhase 2は受入完了済みである。現在はローカル環境で
 Phase 3は次の順序で進める。
 
 1. `/post show`の通常Autocomplete候補から削除済み予約を除外する。（実装・実Discord受入完了）
-2. AI予約名機能の要件、安全境界、DB設計を確定する。（2A、2B-1／2B-2、2C-1のOpenAI Adapter隔離実装まで完了。実Provider受入は未実施）
+2. AI予約名機能の要件、安全境界、DB設計を確定する。（2A、2B-1／2B-2、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤まで完了。実Provider受入は未実施）
 3. AIを使わない場合の予約名フォールバックを実装する。（実装・受入完了）
 4. 予約詳細画面から予約名を編集できるようにする。（実装・受入完了）
 5. 一覧、詳細、Autocomplete、確認画面へ予約名を表示する。（実装・受入完了）
@@ -19,7 +19,7 @@ Phase 3は次の順序で進める。
 7. 公開前限定テストを実施する。
 8. 常時稼働環境を構築し、本番リリースする。
 
-Phase 3の受入は[Phase 3受入表](manual-acceptance-phase3.md)でPhase 1・Phase 2と分離して管理する。第1段階、2A、2B-1、2B-2、2C-1は隔離受入済みである。2Cの実Provider受入ではProvider、価格、プライバシー条件を再確認する。
+Phase 3の受入は[Phase 3受入表](manual-acceptance-phase3.md)でPhase 1・Phase 2と分離して管理する。第1段階、2A、2B-1、2B-2、2C-1、2C-2の安全基盤は隔離受入済みである。実Provider受入ではProvider、価格、品質、保持、請求、dashboard条件を再確認する。
 
 2B-2後の運用安全修正として、Migrationの正式経路をPythonラッパーへ統一し、`alembic/env.py`にもtarget、期待DB名、操作確認、接続後`current_database()`の最終ガードを追加する。test／development／productionのURL選択を分離し、直接Alembic CLI、offline mode、接続先不一致をDDL前に拒否する。
 
@@ -59,6 +59,8 @@ AIは初期状態で無効とし、明示設定時だけ有効化する。同じ
 2B-2ではclaimと悲観Budget予約を1 transactionでcommitし、Session、transaction、row lock、ORMをGeneratorへ渡さず、別の短いtransactionでCAS finalizeする。startup recovery後だけ5秒間隔・1件・最大並行1のpollを開始し、shutdownではGenerator taskをcancel・回収して`shutdown_unknown`へ終端化する。本番DIはDisabledのままであり、Fakeは隔離テスト専用である。
 
 2C-1では条件付き第一候補をOpenAI APIとし、statelessなResponses API Adapter、許可モデル・価格・為替・入出力上限のfail-closed設定、構造化出力の再検証、SDK retry 0、SDK clientのshutdown回収を無通信Fakeで隔離実装する。通常候補は日付snapshotが公開されていない`gpt-5.6-luna` alias、品質比較候補は固定`gpt-5.4-nano-2026-03-17`とする。Deprecatedの`gpt-5-nano`は拒否する。どちらも実API限定比較前で正式採用済みではない。
+
+2C-2では、通常Bot・Worker・pytest・DBから分離した手動受入CLIを実装する。固定6件の匿名合成case、許可モデル、request数、悲観最大費用、完全一致confirmation、process専用キー、公式endpoint、redirect／proxy無効を境界とし、引数なし・help・dry-runでは通信しない。安全基盤の自動隔離受入だけを完了扱いとし、実API品質、保持、請求、dashboard、ARM64は別の未確認受入として残す。
 
 将来の商品仕様では`AI設定 → Entitlement → 顧客プランQuota → ModelSelectionPolicy → 運営Budget → Job → Generator`の順を採用候補とする。2C-1では運営設定による単一モデルだけを扱い、Entitlement、顧客Quota、ModelSelectionPolicy、契約、決済を実装しない。基本プランでLunaと少なめの枠、上位プランでGPT-5.4 nanoと多めの枠・追加AI機能を提供する案は未確定であり、品質差が小さければ全プラン共通Lunaとして回数・機能だけを分ける選択肢も維持する。
 

@@ -21,6 +21,8 @@ Discordへテキストを予約投稿するBotです。Phase 1とPhase 2は受�
 
 OpenAI Responses API向けの予約名Adapterは2C-1の隔離実装まで存在しますが、ProviderとAIは初期無効で、APIキー未設定、実Provider受入未実施のため外部AI機能はまだ利用できません。通常候補は`gpt-5.6-luna`、品質優先の比較候補は`gpt-5.4-nano-2026-03-17`で、実API限定比較前のためどちらも正式採用済みではありません。Deprecatedの`gpt-5-nano`は新規採用しません。AI文章生成、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは後続開発で扱う未実装機能です。
 
+2C-2では、将来の明示許可後に合成データだけで両モデルを比較する手動受入CLIの安全基盤を追加しています。引数なし、`--help`、`--dry-run`は通信せず、通常Bot、Worker、通常pytestからlive実行へ到達しません。基盤の存在は実Provider受入完了を意味せず、専用Project、制限付きキー、Provider予算・アラート、保持・請求条件の確認前にlive実行してはいけません。
+
 正式リリースではサブスクリプション契約を導入することを要件としますが、現段階では決済機能、料金プラン、契約管理、Webhookを実装しておらず、ローカル開発・ポートフォリオ段階で課金しません。PAY.JPは過去からの決済Provider候補であり、正式採用済みではありません。利用者の文体学習、過去投稿学習、Embedding、利用者プロフィール生成は採用しません。
 
 詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)、[Phase 3受入](docs/manual-acceptance-phase3.md)を参照してください。

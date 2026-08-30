@@ -1,18 +1,20 @@
 # Phase 3 受入
 
-Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤と2C-1のOpenAI Adapter隔離実装を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは収録しない。
+Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは自動隔離受入に含めない。
 
 - 実施日: 2026-08-30
 - 実施者: Codex（自動テスト）
 - 証跡: 重点テスト322件、通常pytest 815件成功／297件skip、専用PostgreSQL込み全pytest 1112件成功
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 集計: 確認済み 87件／未確認 1件（合計88件）
+- 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
+- 集計: 確認済み 99件／未確認 2件（合計101件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
 - Phase 3第2段階2B-2隔離受入判定: 完了（本番AI機能は利用不能）
 - Phase 3第2段階2C-1隔離受入判定: 完了（実Provider受入は未実施）
+- Phase 3第2段階2C-2安全基盤受入判定: 完了（live実Provider受入は未実施）
 
 ## 自動テスト受入
 
@@ -150,6 +152,25 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - [x] 運営設定の単一モデルだけを扱い、将来のEntitlement、顧客Quota、ModelSelectionPolicy、Plan、契約、決済を実装せず、Job／Budget schemaとMigrationを変更しない。
 
 GPT-5.6 LunaとGPT-5.4 nanoはいずれも正式採用前であり、実Provider受入は未実施である。APIキー未設定、Provider無効、外部通信なし、費用発生なしを維持する。OpenAI側の標準abuse monitoring保持最大30日は2C-1時点で許容し、ZDRと国内処理は正式公開前に再評価する。Providerの学習不使用と、Bot自身が学習・Embedding・プロフィール生成を行わない方針は別々に維持する。
+
+## 第2段階2C-2 手動受入安全基盤の自動隔離受入
+
+- [x] 独立CLIの引数なし、help、dry-runではAPIキーを読まず、SDK client、DNS、HTTPを開始せず、安全な固定計画だけを表示する。
+- [x] liveはProvider、専用target、明示モデル、最大request数、悲観最大費用、live操作を束縛した完全一致confirmationが揃わなければclient構築前に拒否する。
+- [x] 専用APIキーをprocess環境からだけ読み、`.env`、通常Settings、CLI引数、subprocess、ファイル、DBへfallbackまたは保存しない。
+- [x] 公式OpenAI endpointだけを完全一致で許可し、HTTP、別host／port、userinfo、query、fragment、任意base URL、環境proxy、redirect追従を拒否する。
+- [x] 単発、毎日、毎週、絵文字、Markdown／mention風、prompt injection風の固定6合成caseだけを使い、任意ファイル、stdin、DB、実利用者本文を入力できない。
+- [x] Luna aliasとGPT-5.4 nano固定snapshotだけを明示選択でき、Deprecated、未固定alias、未知model、重複を拒否し、両modelへ同じcase・instruction・Schema・token上限を渡す。
+- [x] 監査済み単価、JPY microunits為替、安全係数、token上限からmodel別・全体の悲観費用を切上げ、request数と計算値に一致しない上限を拒否する。
+- [x] request直前にprocess内回数・悲観費用を消費し、timeout、cancel、失敗、結果不明でも返却せず、固定case数×model数を超過できない。
+- [x] 各requestを直列に1回だけ実行し、SDK retry、自動追加呼出し、model fallback、Batch、並列、再開を行わず、最初の障害またはcancelで残りを停止する。
+- [x] client close、二重close、cancel時Task回収を検証し、通常Bot composition、Worker、通常pytest、DB Job／Budgetからlive runnerへ接続しない。
+- [x] live成功時だけ合成case ID、model、検証済み生成名、文字数、経過時間、回数、悲観費用を対話出力でき、dry-run、固定エラー、終了summary、通常loggerへ生成名を複製しない。
+- [x] APIキー、Authorization、合成本文全文、raw request／response、request ID、raw usage、例外全文を出力・ログ・永続層へ露出せず、Mock transport以外の実API通信がないことを確認する。
+
+## 2C 実Provider受入
+
+- [ ] 利用者の明示許可後、専用Project、制限付きキー、予算・アラートを確認し、同じ合成caseでLunaとGPT-5.4 nano固定snapshotの日本語品質、32文字、応答時間、実token量、費用、保持、請求、dashboard設定を実APIで確認する。
 
 ## 2C 公開前環境受入（2C-1完了条件外）
 

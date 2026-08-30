@@ -1035,7 +1035,7 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 ## 24. Phase 3とPhase 2後の将来設計
 
-本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1、2B-2のProvider非依存基盤と、2C-1のOpenAI Adapter隔離実装は完了している。APIキーと費用を伴う実Provider受入は未実施である。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1、2B-2のProvider非依存基盤、2C-1のOpenAI Adapter隔離実装、2C-2の手動受入安全基盤は完了している。APIキーと費用を伴う実Provider受入は未実施である。
 
 ### 24.1 `/post show`の削除済み候補
 
@@ -1100,6 +1100,18 @@ Responses APIは`store=false`のstateless呼出しとし、tools、web search、
 モデルID、snapshot、単価、reasoning、Responses API、構造化出力の監査元は[GPT-5.6 Luna公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、[GPT-5.4 nano公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5.4-nano)、[GPT-5 nano公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5-nano)とする。SDK retry・timeout・Python対応は[OpenAI公式Python SDK](https://github.com/openai/openai-python)を参照し、実Provider受入直前に再確認する。
 
 OpenAI APIはAPIデータを既定で学習へ使わない方針と、標準abuse monitoring logを最大30日保持する境界を区別する。2C-1では最大30日の標準保持を許容し、学習opt-in、feedback、Provider側任意ログを有効にしない。ZDR適格性と国内処理は正式公開前に再評価する。Bot自身も文体学習、過去投稿学習、Embedding、プロフィール生成を行わない。
+
+#### 24.2.4 2C-2 実Provider受入の安全な実行基盤
+
+`infrastructure/ai/acceptance.py`を通常composition rootから参照しない独立moduleとする。引数なし、help、dry-runは固定計画を表示するだけでSDK clientもAPIキーも読まず、liveは`provider-acceptance` target、Provider、明示モデル、固定計画と一致する最大request数・悲観費用、これらを束縛したconfirmationを検証後、`OPENAI_PROVIDER_ACCEPTANCE_API_KEY`を`os.environ`からだけ読む。Pydantic Settingsと`.env`を経由せず、CLI引数やsubprocessへ秘密を渡さない。library入口も同じ検証からinstance-localの封印済みauthorizationを生成し、内部executorとHTTP client factoryはそのseal、再計算plan、confirmation、key、endpointをrequest前に再検証する。未認可objectからprivate executorを直接呼んでもclientを生成しない。
+
+合成caseは単発、毎日、毎週、絵文字、Markdown／mention風、prompt injection風の固定6件とし、個人名、実ID、実URL、実本文を持たない。選択可能モデルは`gpt-5.6-luna`と`gpt-5.4-nano-2026-03-17`だけで、各モデルへ同じcase、instruction、Schema、token上限を1回ずつ直列実行する。任意入力、再開、retry、fallback、Batch、並行実行を持たない。
+
+CLI専用上限は永続Jobの運営Budgetから独立したprocess内責務とする。既存の監査済み単価、為替150 JPY／USD相当、安全係数125%、最大8,512入力token・64出力tokenを使ってmodel別最大費用をJPY microunitsへ切上げ、計画request数との積だけを許可する。request直前に回数と悲観費用を消費し、失敗、timeout、cancel、結果不明でも返さない。この固定為替と安全係数は実Provider受入直前に再監査する試験値で、販売価格、顧客Quota、恒久運営上限ではない。process内上限は複数CLI process間で共有されないため運用上の同時起動を禁止し、専用Project予算を全体境界とする。短時間の明示手動試験へDBやOS依存lockを追加する複雑性は避ける。
+
+live HTTP clientは公式`https://api.openai.com/v1`を完全一致で固定し、redirectを追わず、環境proxyを読まない。任意endpoint、userinfo、query、fragment、別portを受け取るCLIは作らない。アプリケーション単独ではDNS rebinding、OS resolver、上流ネットワークの侵害を完全には防げないため、専用Project、制限付きキー、Provider予算・アラートと受入専用実行環境を別途確認する。
+
+成功時だけ合成case ID、モデル、検証済み生成名、文字数、経過時間、消費回数、悲観費用累計を対話標準出力へ出す。本文、APIキー、Authorization、raw payload、request ID、raw usage、Provider例外は表示・保存しない。固定エラーでrun全体を停止し、現在clientをcloseして残りcase・別modelを実行しない。shell redirectや端末側記録はprocessから防げないため実行者責任とする。2C-2完了はlive品質、保持、請求、dashboard設定、ARM64を受入済みにしない。
 
 将来の商品仕様では基本プランにLuna・少なめのAI枠・予約名自動生成、上位プランにGPT-5.4 nano・多めの枠・再生成や複数候補等を置く案があるが、プラン名、価格、回数、対応モデルは未確定である。品質差が小さい場合はLunaを共通モデルにして回数・機能だけを分ける。正式決定は同一匿名ケースの実API比較と商品仕様策定後に行う。
 
