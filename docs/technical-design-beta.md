@@ -1012,3 +1012,21 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 ### 23.7 プロセス分離
 
 負荷が増えた場合、Bot、予約ワーカー、Webhook APIを別プロセスへ分離する。PostgreSQLの処理権取得をすでに採用しているため、Phase 1の予約データと排他方式を維持したままワーカー数を増やせる。Celeryなどの追加は、DBポーリングで運用上の限界が確認された場合に改めて判断する。
+
+## 24. Phase 2後の将来設計（未実装）
+
+本章はAI導入フェーズまたはPhase 2後に検討する未実装の将来計画であり、Phase 2の完了条件と現在実装済みの設計には含めない。実装時に要件、詳細設計、Migration、外部AIのプライバシー条件、受入項目を改めて確定する。現時点ではDBモデルとAlembic Revisionを変更しない。
+
+### 24.1 `/post show`の削除済み候補
+
+通常の`/post show` Autocomplete queryだけから`deleted`を除外する。論理削除されたScheduleと監査履歴はDBへ保持し、`/post list status:削除済み`の一覧および一覧由来の詳細取得対象にする。canonical UUIDの直接入力による`/post show`は`deleted`詳細を取得可能なままにする。delete、edit、pause、resumeのqueryとApplication Serviceの既存状態境界は変更せず、Autocomplete候補の射影だけを整理する。
+
+### 24.2 AI予約名
+
+AI予約名の生成はDB transaction外のアプリケーションユースケースとして設計し、AI呼び出し中にSession、transaction、row lockを保持しない。生成失敗は`unset`へフォールバックし、予約作成、編集、投稿の成否から切り離す。本文なしまたは生成失敗時の表示名は「名称未設定」とする。
+
+将来の永続化候補は`schedules.display_name`と`schedules.display_name_source`とし、sourceは`ai`、`manual`、`unset`の閉じた値とする。新規・本文変更時は、`ai`なら再生成または自動更新、`manual`なら既存名維持、`unset`かつ本文ありなら再生成とする。詳細画面の✏️編集による手動変更後は`manual`としてAIに上書きさせない。空欄編集によってAI自動生成へ戻す操作は、実装時に状態遷移と確認表示を確定する設計候補とする。
+
+生成結果は短い固定文字数へ制限し、改行・制御文字を除去または置換し、mentionを安全化してから、`/post list`、`/post show`、Autocomplete候補、確認画面の専用名称欄へ渡す。候補へ予約本文全文を渡さない。本文中の命令は入力データとして境界付け、AIのシステム指示として解釈させない。
+
+本文とAI応答は通常ログへ記録しない。外部AIへ本文を送信する場合は、用途、送信先、保存方針を利用者へ事前に明示する。プロバイダー契約、データ保持、削除、同意の詳細は実装時のプライバシー要件として確定する。

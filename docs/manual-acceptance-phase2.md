@@ -4,7 +4,8 @@
 
 - 実施日: 2026-08-30
 - 実施者: Oto
-- 集計: 確認済み 45件／未確認 2件（合計47件）
+- 集計: 確認済み 47件／未確認 0件（合計47件）
+- Phase 2受入判定: 完了
 
 ## 実Discord確認記録
 
@@ -125,12 +126,21 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 「管理者の他人削除理由」は`tests/test_schedule_deletion.py::test_required_delete_reason_rejects_missing_whitespace_and_too_long`、`tests/test_schedule_deletion.py::test_required_delete_reason_trims_edges_and_preserves_valid_content`、`tests/test_schedule_deletion.py::test_admin_other_required_reason_is_application_final_defense`で、空文字、半角・全角・制御空白、混合空白、501文字を型付きエラーで拒否し、1文字、trim対象、500文字、内部空白・改行、日本語を保存用理由として維持するDomain／Application境界を確認した。`tests/test_post_commands.py::test_delete_reason_modal_rejects_invalid_input_before_session_and_can_reopen`、`tests/test_post_commands.py::test_delete_reason_modal_passes_only_trimmed_valid_reason_to_delete_flow`、`tests/test_post_commands.py::test_closed_delete_reason_modal_can_be_reopened_without_retiring_detail`で、管理者の他作成者予約だけに有限timeoutの理由Modalを表示し、専用固定案内、Session開始前拒否、親Detail維持、再オープン、二重submit防止、fixed custom_id、ephemeral、`AllowedMentions.none()`を確認した。`tests/integration/test_schedule_deletion_integration.py::test_real_postgres_admin_other_invalid_reason_changes_nothing`、`tests/integration/test_schedule_deletion_integration.py::test_real_postgres_admin_deletes_other_owner_with_expected_kind`と既存の所有者・認可・guild・version・状態・rollback・同時削除node群で、拒否時のSchedule・run・OperationLog・NotificationLog非変更、有効なtrim済み理由を伴う1回の論理削除と1件のOperationLog、所有者本人の理由省略、操作時の最新認可・競合再検証を確認した。`tests/test_post_presenter.py::test_delete_preview_hides_audit_reason_and_shows_confirmation_without_mutation_claims`、`tests/test_post_presenter.py::test_deleted_embed_has_safe_fixed_result_without_thirty_day_promise`で、監査理由全文を利用者向け確認・成功Embedへ複製せず、Discordメッセージを削除しない固定案内を確認した。
 
+### 2026-08-30 最終実Discord確認
+
+- 実施者: Oto
+- 証跡種別: 実Discord PC版／スマホ版
+
+「応答時間」はPC版で、`/post show`の空入力、完全なchannel名検索、部分一致検索、`#`だけの安全な空候補、`/post resume`の候補表示をそれぞれ複数回確認した。各操作は概ね3秒以内に候補または空候補を返し、オプション読み込み失敗とアプリケーション応答失敗は再発しなかった。通常メッセージ送信とAutocomplete関連の異常ログはなく、一時停止した確認用予約は確認後に再開した。これにより本項目の全受入条件を満たすことを確認した。
+
+「スマホ版 `/post delete`」は実スマホ版Discordで`public_id`候補の表示と選択を確認した。候補名から状態、種別、日時、投稿先、短縮IDを識別でき、100文字以内で、予約本文全文、内部DB ID、versionは表示されなかった。選択時は正しい予約IDが入力され、オプション読み込み失敗はなかった。候補表示・選択だけでは予約を削除せず、コマンドをcancelして実削除も行わなかった。他人の本文や予約情報は証跡へ残していない。これにより本項目の全受入条件を満たすことを確認した。
+
 | 状態 | 確認項目 | 期待結果 |
 |---|---|---|
 | [x] | PC版 `/post show` | 閲覧可能な候補が3秒以内に表示され、deletedは削除済み表示になる |
 | [x] | Web版 `/post edit` | 編集可能な候補だけが表示される |
 | [x] | `/post edit` 変更指定なし | Autocomplete候補選択後を含め、予約IDだけでは専用案内をephemeral表示し、DB更新・OperationLog生成を行わない |
-| [ ] | スマホ版 `/post delete` | 100文字以内の候補名が識別でき、本文を含まない |
+| [x] | スマホ版 `/post delete` | 100文字以内の候補名が識別でき、本文を含まない |
 | [x] | PC／Web `/post pause` | activeのdaily／weeklyだけが表示される |
 | [x] | PC／Web `/post resume` | 再開可能なpaused daily／weeklyだけが表示される |
 | [x] | 最大件数 | 候補が最大25件で安定順に表示される |
@@ -148,7 +158,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 | [x] | 認可失敗 | DM、設定外guild、権限なしでは通常メッセージを送らず空候補になる |
 | [x] | 情報境界 | 本文、秘密情報、内部ID、他guild情報が候補・利用者応答・通常ログに出ない |
 | [x] | channel cache miss | 名前検索は該当なしとなり、REST取得せず、別条件の候補表示では短縮channel IDを使う |
-| [ ] | 応答時間 | 空入力・検索入力のどちらも3秒以内に候補または空候補が返る |
+| [x] | 応答時間 | 空入力・検索入力のどちらも3秒以内に候補または空候補が返る |
 | [x] | 直接show詳細基盤 | `/post show`から共通`ScheduleDetailView`を表示する。長寿命Contextにはcanonical public_id、最新expected_version、actor ID、必要なlist originだけを保持し、guild IDや内部DB IDは保持・伝達しない。編集可能状態は✏️編集、activeのdaily／weeklyは⏸️一時停止、pausedのdaily／weeklyは▶️再開、削除可能状態は🗑️削除を表示し、直接show由来では「一覧へ戻る」を表示しない。操作不能なボタンは現在の仕様に従ってdisabled表示または非表示とし、version、内部DB ID、可否理由をEmbedへ表示しない。応答はephemeralかつ`AllowedMentions.none()`とする。各ボタン操作時にInteractionから現在guildを取得し、DMを拒否して、Interactionと最新Scheduleのguild境界、所有者／管理者認可、最新状態を再検証する。別guildや権限喪失時は安全な固定案内とし、fixed custom_idへguild ID、user ID、public_id、versionを含めない |
 | [x] | 一覧詳細から戻る | 一覧で予約を選択後、同じephemeralメッセージの「一覧へ戻る」で元の状態・種類・ページ条件へ戻れる |
 | [x] | 詳細中の一覧更新 | 詳細表示中に予約件数や状態が変わっても、戻ると最新一覧を取得し、消滅した末尾ページは最後の有効ページへ補正される |
