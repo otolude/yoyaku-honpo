@@ -49,6 +49,18 @@ class NameGenerator(Protocol):
     async def generate(self, request: NameGenerationRequest) -> GeneratedScheduleName: ...
 
 
+class NameGeneratorError(Exception):
+    """Provider-neutral failure whose provider details must not cross this boundary."""
+
+
+class NameGeneratorUnavailableError(NameGeneratorError):
+    """The configured provider could not serve this one-shot request."""
+
+
+class NameGeneratorInvalidResponseError(NameGeneratorError):
+    """The provider response or bounded request was unsafe to use."""
+
+
 class DisabledNameGenerator:
     """Safe production default; it never performs I/O."""
 
@@ -58,6 +70,9 @@ class DisabledNameGenerator:
     async def generate(self, request: NameGenerationRequest) -> GeneratedScheduleName:
         del request
         raise RuntimeError("name generation is disabled")
+
+    async def close(self) -> None:
+        """Keep shutdown uniform without allocating external resources."""
 
 
 @dataclass(frozen=True, slots=True)

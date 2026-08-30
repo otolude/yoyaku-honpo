@@ -1035,7 +1035,7 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 ## 24. Phase 3とPhase 2後の将来設計
 
-本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1、2B-2のProvider非依存基盤は実装済みである。実Provider接続2Cは未実装である。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1、2B-2のProvider非依存基盤と、2C-1のOpenAI Adapter隔離実装は完了している。APIキーと費用を伴う実Provider受入は未実施である。
 
 ### 24.1 `/post show`の削除済み候補
 
@@ -1061,7 +1061,7 @@ AI providerは`infrastructure/ai/`のインターフェース背後へ置き、�
 
 費用制御はApplication層のprovider呼び出し前に適用する。永続的な上限管理が必要な場合は、本文、生成名、Discord ID、利用者ID、予約IDを持たない日次・月次集計をMigration候補とする。運営者全体のBudgetは環境・運用規模・収益・実単価に応じて変更可能にし、顧客プランQuotaは別Policy・別集計とする。2CのProvider選定時と商品仕様策定時に、Providerの入出力単価、guild別利用量、販売価格、プラン別枠、インフラ・DB・保存・バックアップ・監視・ネットワーク費、決済手数料、税・返金・障害対応の予備費、目標原価率、想定外利用への余裕、実用上必要な回数と応答品質から再計算する。
 
-2Bでは、将来`EntitlementPolicy`を差し込めるApplication境界を用意し、`AI設定 → 将来Entitlement → 運営Budget → Job → Generator`の順で判定できるようにする。2B自体は常に無課金、決済Provider未接続、AI初期無効を維持し、Entitlementの差し込み位置だけを設けて決済テーブルや課金処理を混ぜない。Budget scopeは将来Bot全体、guild、契約単位へ拡張可能にするが、顧客プランQuotaは別テーブル・別責務とする。Jobへプラン名、Provider顧客ID、契約IDを保存せず、AI Provider Adapterと決済Provider Adapterを相互依存させない。Provider選定後も費用だけを理由に利用不能なほど低い上限を自動採用せず、通常利用の品質、回数、応答速度を満たしたうえで無駄を抑える。
+将来は`AI設定 → Entitlement → 顧客プランQuota → ModelSelectionPolicy → 運営Budget → Job → Generator`の順で判定する。2C-1ではEntitlement、顧客Quota、ModelSelectionPolicy、契約、決済を実装せず、運営設定の単一モデルだけを選ぶ。運営Budgetと顧客Quotaは別Policy・別集計とし、Jobへモデル、プラン、Provider顧客ID、契約IDを保存しない。AI Provider Adapterと決済Provider Adapterも相互依存させない。Provider選定後も費用だけを理由に利用不能なほど低い上限を自動採用せず、通常利用の品質、回数、応答速度を満たしたうえで無駄を抑える。
 
 正式リリース後のAI API、常時稼働サーバー、PostgreSQL・ストレージ、バックアップ、ログ・監視、ネットワーク、決済手数料、税・返金・障害対応の予備費はサブスクリプション収益で賄う。利用状況、原価、解約率、障害率を観測してBudgetと商品Quotaを見直せる構成とし、0円運用や暫定値の永久固定を前提にしない。
 
@@ -1084,6 +1084,24 @@ finalizeは新しい短いtransactionでSchedule→Jobをlockする。成功時�
 Bot startupはschema確認後、既存Recoveryの列へName Generation Recoveryを追加し、完了後だけpollを開始する。Disabledまたは設定無効ではpoll taskを作らない。pollは5秒間隔、1 cycle 1件で、例外後も次cycleを維持する。shutdownはname poll停止、Generator cancel・await、`shutdown_unknown` finalizeの後に既存Worker・View回収とEngine disposeへ進む。cleanup loopはJob30日・bucket90日の独立transactionを先に実施し、失敗を個別rollbackする。
 
 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerはAIユースケースへ依存しない。AI無効、上限到達、timeout、異常応答、費用集計失敗でも既存の予約処理を継続する。
+
+#### 24.2.3 2C-1 OpenAI Adapter
+
+`infrastructure/ai/openai_name_generator.py`だけがOpenAI公式Python SDKを遅延importする。`NameGenerator` Portのシグネチャは維持し、Provider非依存のtyped errorをApplication境界に置く。SDKはlock fileを持たない現行依存方針の中でもminor互換変更を自動取得しないよう`openai>=2.54,<2.55`へ限定し、patch更新ごとに実SDK＋Mock transport contract testを通す。Adapterは公式SDK clientを所有し、retryを0、connect 1秒・request 4秒の初期設定とし、外側Workerの5秒timeoutとcancelを最終境界にする。shutdownは実行中Task回収後にclientをcloseし、二重closeをno-opにする。SDK debug loggingを有効化せず、Provider例外の本文を通常ログへ渡さず、OpenAI／HTTP loggerのglobal levelを変更しない。
+
+SDK 2.54.0とPython 3.14.4／WSL2の組合せでは、初回async request前のSDK OS判定が`asyncio.to_thread()`から復帰しないことを無通信試験で確認した。公式に保証された公開APIだけではこの先行判定を無効化できないため、Adapter内の1関数に限定して、SDK自身の非公開`openai._base_client.get_platform`で同期取得した非識別OS familyを、新規`AsyncOpenAI` instanceの非公開`_platform` cacheへ未設定時だけ保存する。module symbolのmonkey patchやprocess-wide global state変更は行わず、instance間で共有しない。対応versionを2.54.xへ明示制限し、version、private symbol、戻り値、cache存在・型のいずれかが未知ならclient構築または公開前にfail-closedとし、HTTP requestへ進ませない。並行instance、二重初期化、既存の正当値保持、未知version／private layout拒否をcontract testで固定する。これは公式SDKの公開互換性保証外の保守境界であり、SDK patch更新時に無通信contract testを再実行し、公開手段が追加された場合はprivate処理を撤去する。実API通信、環境変数読み込み、識別情報追加には使用しない。
+
+Responses APIは`store=false`のstateless呼出しとし、tools、web search、file search、background、conversationを指定しない。入力は現在本文と固定instructionだけで、JSON Schemaは`name`文字列1項目、1～32文字、追加propertyなしとする。応答はmessageとoutput textが各1件であること、JSON型、key、文字列を検査し、最後に`GeneratedScheduleName`を通す。ProviderのSchemaを信頼せず、複数候補、空、改行、33文字以上、Cc／Cf／Csを`invalid_response`にする。
+
+既存本文上限2,000文字に加え、初期設定ではUTF-8 8,000 bytes、固定prompt余裕512とbyte fallbackを合わせた8,512 tokenの悲観上限、出力64 tokenを使用する。公式単価をmicro USD／100万token、為替をJPY microunits／USD、安全係数をbasis pointsとして設定し、切上げた最大JPY microunitsを呼出前Budgetへ渡す。価格、為替、token上限、APIキー、Provider、モデルが欠ける場合はDisabledとなる。実usageは永続化せず、timeout、cancel、usage欠落でも予約Budgetを返さない。
+
+許可モデルは通常比較候補`gpt-5.6-luna`と品質比較候補`gpt-5.4-nano-2026-03-17`に限定する。Lunaは日付付きsnapshotが公式公開されていないaliasのため、実Provider試験前および定期運用監査で提供状態、価格、挙動を再確認する。GPT-5.4 nanoは固定snapshotを優先し、Deprecatedの`gpt-5-nano`、固定されない`gpt-5.4-nano`、未知モデルを拒否する。reasoning effortは両候補で対応する`none`を初期比較値とし、実API品質試験で`low`との比較が必要な場合だけ明示変更する。
+
+モデルID、snapshot、単価、reasoning、Responses API、構造化出力の監査元は[GPT-5.6 Luna公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、[GPT-5.4 nano公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5.4-nano)、[GPT-5 nano公式モデル情報](https://developers.openai.com/api/docs/models/gpt-5-nano)とする。SDK retry・timeout・Python対応は[OpenAI公式Python SDK](https://github.com/openai/openai-python)を参照し、実Provider受入直前に再確認する。
+
+OpenAI APIはAPIデータを既定で学習へ使わない方針と、標準abuse monitoring logを最大30日保持する境界を区別する。2C-1では最大30日の標準保持を許容し、学習opt-in、feedback、Provider側任意ログを有効にしない。ZDR適格性と国内処理は正式公開前に再評価する。Bot自身も文体学習、過去投稿学習、Embedding、プロフィール生成を行わない。
+
+将来の商品仕様では基本プランにLuna・少なめのAI枠・予約名自動生成、上位プランにGPT-5.4 nano・多めの枠・再生成や複数候補等を置く案があるが、プラン名、価格、回数、対応モデルは未確定である。品質差が小さい場合はLunaを共通モデルにして回数・機能だけを分ける。正式決定は同一匿名ケースの実API比較と商品仕様策定後に行う。
 
 ### 24.4 データ保持と配置
 

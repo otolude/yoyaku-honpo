@@ -8,6 +8,7 @@ import uuid
 from discord_ai_reminder_bot.bot.client import ReminderBot
 from discord_ai_reminder_bot.config import load_settings
 from discord_ai_reminder_bot.domain.clock import SystemClock
+from discord_ai_reminder_bot.infrastructure.ai.factory import build_name_generator
 from discord_ai_reminder_bot.infrastructure.database.session import (
     create_database_engine,
     create_session_factory,
@@ -27,6 +28,7 @@ def main() -> int:
         clock=SystemClock(),
         worker_id=uuid.uuid7(),
         logger=logger,
+        name_generator=build_name_generator(settings),
     )
     try:
         bot.run(

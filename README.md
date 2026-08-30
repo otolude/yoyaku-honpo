@@ -19,7 +19,9 @@ Discordへテキストを予約投稿するBotです。Phase 1とPhase 2は受�
 - 最大32文字の手動予約名、AIなしの決定的フォールバック名、一覧・詳細・候補への安全な名前表示
 - 予約詳細Viewからの編集、一時停止、再開、削除
 
-AIによる予約名生成、AI文章生成、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは後続開発で扱う未実装機能です。正式リリースではサブスクリプション契約を導入することを要件としますが、現段階では決済機能、料金プラン、契約管理、Webhookを実装しておらず、ローカル開発・ポートフォリオ段階で課金しません。PAY.JPは過去からの決済Provider候補であり、正式採用済みではありません。利用者の文体学習、過去投稿学習、Embedding、利用者プロフィール生成は採用しません。
+OpenAI Responses API向けの予約名Adapterは2C-1の隔離実装まで存在しますが、ProviderとAIは初期無効で、APIキー未設定、実Provider受入未実施のため外部AI機能はまだ利用できません。通常候補は`gpt-5.6-luna`、品質優先の比較候補は`gpt-5.4-nano-2026-03-17`で、実API限定比較前のためどちらも正式採用済みではありません。Deprecatedの`gpt-5-nano`は新規採用しません。AI文章生成、複数guild、Web管理画面、添付ファイル、月次・年次予約、カレンダーUIは後続開発で扱う未実装機能です。
+
+正式リリースではサブスクリプション契約を導入することを要件としますが、現段階では決済機能、料金プラン、契約管理、Webhookを実装しておらず、ローカル開発・ポートフォリオ段階で課金しません。PAY.JPは過去からの決済Provider候補であり、正式採用済みではありません。利用者の文体学習、過去投稿学習、Embedding、利用者プロフィール生成は採用しません。
 
 詳細は[要件](docs/requirements-beta.md)、[技術設計](docs/technical-design-beta.md)、[運用Runbook](docs/operations.md)、[開発・公開ロードマップ](docs/development-roadmap.md)、[Phase 1手動受入](docs/manual-acceptance-phase1.md)、[Phase 2手動受入](docs/manual-acceptance-phase2.md)、[Phase 3受入](docs/manual-acceptance-phase3.md)を参照してください。
 
@@ -27,7 +29,7 @@ AIによる予約名生成、AI文章生成、複数guild、Web管理画面、�
 
 現在はローカル環境で開発を継続し、一般公開の準備が整うまで常時稼働環境を構築しません。機能実装、自動テスト、文書、ポートフォリオを先に完成させ、公開直前に少人数・短期間の限定テストを実施します。合格後は無料の常時稼働環境を第一候補として配置し、不足する場合だけ有料環境を検討します。
 
-AI予約名のProvider非依存基盤は2B-2まで実装しています。永続Jobのclaim、運営Budget予約、DB資源を閉じたGenerator実行、CAS finalize、Recovery・poll・shutdown・cleanup接続を含みます。ただし本番DIは外部通信しない`DisabledNameGenerator`だけで、初期設定も無効のためAI予約名はまだ利用できません。実AI Provider接続は2Cで扱います。AIが無効、利用上限到達、timeout、異常応答の場合も予約投稿の基本機能を継続します。
+AI予約名のProvider非依存基盤は2B-2まで実装し、2C-1ではOpenAI固有処理を`infrastructure` Adapterへ隔離しました。永続Jobのclaim、運営Budget予約、DB資源を閉じたGenerator実行、CAS finalize、Recovery・poll・shutdown・cleanup接続を含みます。初期設定はProvider／AIとも無効で、APIキーがなくても既存Botは起動できます。AIが無効、利用上限到達、timeout、異常応答の場合も、JSTフォールバック名、手動名編集、予約作成・投稿を継続します。
 
 公開前限定テストで決済を確認する場合は、選定したProviderのsandbox／test modeだけを使用します。料金、プラン名、無料枠、試用期間、契約単位の最終形、決済Providerは商品仕様監査後に確定し、推測で補いません。現在の50回／日、500回／月、100円相当／月は、Provider未選定・未接続の開発段階と2Bの初期実装・隔離テストで使う変更可能な費用安全値です。利用者向け販売価格でも正式リリース時の恒久上限でもなく、2CのProvider選定時とサブスクリプション商品設計時に再計算します。
 

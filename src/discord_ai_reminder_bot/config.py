@@ -78,6 +78,52 @@ class Settings(DatabaseSettings):
     ai_name_generation_enabled: bool = Field(
         default=False, validation_alias="AI_NAME_GENERATION_ENABLED"
     )
+    ai_name_generation_provider: Literal["disabled", "openai"] = Field(
+        default="disabled", validation_alias="AI_NAME_GENERATION_PROVIDER"
+    )
+    ai_name_generation_openai_api_key: SecretStr | None = Field(
+        default=None, validation_alias="AI_NAME_GENERATION_OPENAI_API_KEY"
+    )
+    ai_name_generation_openai_model: str | None = Field(
+        default=None, validation_alias="AI_NAME_GENERATION_OPENAI_MODEL"
+    )
+    ai_name_generation_openai_reasoning_effort: str | None = Field(
+        default=None, validation_alias="AI_NAME_GENERATION_OPENAI_REASONING_EFFORT"
+    )
+    ai_name_generation_openai_input_price_micro_usd_per_million_tokens: int | None = Field(
+        default=None,
+        validation_alias=("AI_NAME_GENERATION_OPENAI_INPUT_PRICE_MICRO_USD_PER_MILLION_TOKENS"),
+    )
+    ai_name_generation_openai_output_price_micro_usd_per_million_tokens: int | None = Field(
+        default=None,
+        validation_alias=("AI_NAME_GENERATION_OPENAI_OUTPUT_PRICE_MICRO_USD_PER_MILLION_TOKENS"),
+    )
+    ai_name_generation_usd_jpy_rate_microunits: int | None = Field(
+        default=None, validation_alias="AI_NAME_GENERATION_USD_JPY_RATE_MICROUNITS"
+    )
+    ai_name_generation_cost_safety_basis_points: int = Field(
+        default=12_500, validation_alias="AI_NAME_GENERATION_COST_SAFETY_BASIS_POINTS"
+    )
+    ai_name_generation_max_input_characters: int = Field(
+        default=2_000, validation_alias="AI_NAME_GENERATION_MAX_INPUT_CHARACTERS"
+    )
+    ai_name_generation_max_input_bytes: int = Field(
+        default=8_000, validation_alias="AI_NAME_GENERATION_MAX_INPUT_BYTES"
+    )
+    ai_name_generation_max_input_tokens: int = Field(
+        default=8_512, validation_alias="AI_NAME_GENERATION_MAX_INPUT_TOKENS"
+    )
+    ai_name_generation_max_output_tokens: int = Field(
+        default=64, validation_alias="AI_NAME_GENERATION_MAX_OUTPUT_TOKENS"
+    )
+    ai_name_generation_openai_connect_timeout_milliseconds: int = Field(
+        default=1_000,
+        validation_alias="AI_NAME_GENERATION_OPENAI_CONNECT_TIMEOUT_MILLISECONDS",
+    )
+    ai_name_generation_openai_request_timeout_milliseconds: int = Field(
+        default=4_000,
+        validation_alias="AI_NAME_GENERATION_OPENAI_REQUEST_TIMEOUT_MILLISECONDS",
+    )
     ai_name_generation_poll_interval_seconds: int = Field(
         default=5, validation_alias="AI_NAME_GENERATION_POLL_INTERVAL_SECONDS"
     )
@@ -129,6 +175,13 @@ class Settings(DatabaseSettings):
         "ai_name_generation_processing_lease_seconds",
         "ai_name_generation_job_retention_days",
         "ai_name_generation_budget_retention_days",
+        "ai_name_generation_cost_safety_basis_points",
+        "ai_name_generation_max_input_characters",
+        "ai_name_generation_max_input_bytes",
+        "ai_name_generation_max_input_tokens",
+        "ai_name_generation_max_output_tokens",
+        "ai_name_generation_openai_connect_timeout_milliseconds",
+        "ai_name_generation_openai_request_timeout_milliseconds",
         mode="before",
     )
     @classmethod
@@ -142,6 +195,18 @@ class Settings(DatabaseSettings):
         if str(value).strip() != str(parsed) or not 1 <= parsed <= MAX_POSTGRES_BIGINT:
             raise ValueError("AI予約名生成設定は正の整数にしてください")
         return parsed
+
+    @field_validator(
+        "ai_name_generation_openai_input_price_micro_usd_per_million_tokens",
+        "ai_name_generation_openai_output_price_micro_usd_per_million_tokens",
+        "ai_name_generation_usd_jpy_rate_microunits",
+        mode="before",
+    )
+    @classmethod
+    def validate_optional_ai_positive_integer(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        return cls.validate_ai_positive_integer(value)
 
     @field_validator("notification_poll_interval_seconds", mode="before")
     @classmethod
@@ -224,6 +289,16 @@ class Settings(DatabaseSettings):
             < self.ai_name_generation_timeout_seconds * 2
         ):
             raise ValueError("AI予約名生成leaseはtimeoutの2倍以上にしてください")
+        if (
+            self.ai_name_generation_openai_request_timeout_milliseconds
+            >= self.ai_name_generation_timeout_seconds * 1_000
+        ):
+            raise ValueError("OpenAI request timeoutは生成全体timeout未満にしてください")
+        if (
+            self.ai_name_generation_openai_connect_timeout_milliseconds
+            > self.ai_name_generation_openai_request_timeout_milliseconds
+        ):
+            raise ValueError("OpenAI接続timeoutはrequest timeout以下にしてください")
         BudgetPolicy(
             daily_request_limit=self.ai_name_generation_daily_request_limit,
             monthly_request_limit=self.ai_name_generation_monthly_request_limit,

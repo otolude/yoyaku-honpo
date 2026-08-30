@@ -1,16 +1,18 @@
 # Phase 3 受入
 
-Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは収録しない。
+Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤と2C-1のOpenAI Adapter隔離実装を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは収録しない。
 
 - 実施日: 2026-08-30
 - 実施者: Codex（自動テスト）
 - 証跡: 重点テスト322件、通常pytest 815件成功／297件skip、専用PostgreSQL込み全pytest 1112件成功
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
-- 集計: 確認済み 74件／未確認 0件（合計74件）
+- 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
+- 集計: 確認済み 87件／未確認 1件（合計88件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
 - Phase 3第2段階2B-2隔離受入判定: 完了（本番AI機能は利用不能）
+- Phase 3第2段階2C-1隔離受入判定: 完了（実Provider受入は未実施）
 
 ## 自動テスト受入
 
@@ -131,6 +133,30 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - [x] 既存cleanup loopへJob30日・bucket90日を個別rollback可能なtransactionで接続し、pending／processingとSchedule blockerを維持する。
 
 本番DIは外部通信しない`DisabledNameGenerator`だけで、`AI_NAME_GENERATION_ENABLED=false`が初期値である。2B-2完了時点でも外部AI機能は利用できず、実Discord受入は行わない。
+
+## 第2段階2C-1 自動隔離受入
+
+- [x] OpenAI公式SDK 2.54系を正式`.venv`へ解決し、実SDK＋Mock transportでResponses引数、構造化出力、retry 0、timeout、HTTP request、typed error、cancel、closeを無通信検証する。SDKを`infrastructure` Adapterへ隔離し、Domain、Application、Workerから直接参照しない。
+- [x] 通常候補`gpt-5.6-luna`と品質比較候補`gpt-5.4-nano-2026-03-17`だけを許可し、Deprecatedの`gpt-5-nano`、固定されないnano alias、空・未知モデルをfail-closedで拒否する。
+- [x] Lunaの日付付きsnapshotを推測せずalias監査を要求し、モデル別の公式単価、reasoning effort、入力・出力上限が一致しない設定を拒否する。
+- [x] stateless Responses APIへ本文と固定条件だけを渡し、`store=false`、構造化出力、tools・search・background・conversation未使用と、ID・日時・投稿先・契約情報の非送信を検証する。
+- [x] 既存2,000文字、UTF-8 byte、保守的token、出力tokenの多層上限を適用し、超過時はProviderを呼ばない。
+- [x] JSON型、message／候補数、空、複数行、33文字以上、Cc／Cf／Csを拒否し、最後に既存`GeneratedScheduleName` validatorを通す。
+- [x] SDK retry 0、接続・request timeout、cancel、429、5xx、接続、認証、モデル不正を文字列照合なしのtyped分類で処理し、1 Jobから再呼出ししない。
+- [x] 公式単価、JPY microunits為替、安全係数、最大tokenから悲観最大費用を切上げ計算し、0、負数、overflow、古い価格、不整合を拒否する。
+- [x] APIキー、本文、生成名、応答、UUID、Discord ID、Provider request ID、実usage、例外全文をJob、Budget、OperationLog、通常ログへ保存しない。
+- [x] Provider／AI初期無効とAPIキー未設定を維持し、有効フラグまたは一部設定だけではJob、poll、SDK import、外部通信を開始しない。
+- [x] Generator timeout、usage欠落、cancel、失敗でもBudgetを返却せず、Session、transaction、row lockを閉じた既存Worker境界とshutdown・二重close回収を維持する。
+- [x] 運営設定の単一モデルだけを扱い、将来のEntitlement、顧客Quota、ModelSelectionPolicy、Plan、契約、決済を実装せず、Job／Budget schemaとMigrationを変更しない。
+
+GPT-5.6 LunaとGPT-5.4 nanoはいずれも正式採用前であり、実Provider受入は未実施である。APIキー未設定、Provider無効、外部通信なし、費用発生なしを維持する。OpenAI側の標準abuse monitoring保持最大30日は2C-1時点で許容し、ZDRと国内処理は正式公開前に再評価する。Providerの学習不使用と、Bot自身が学習・Embedding・プロフィール生成を行わない方針は別々に維持する。
+
+## 2C 公開前環境受入（2C-1完了条件外）
+
+- [x] Python 3.14.4／WSL2 Linux x86_64で公式`openai` packageの依存解決、import、実SDK＋Mock transport contractを確認し、package metadata上の対応と実機確認を区別する。
+- [ ] 正式な常時稼働候補と同等のARM64 Linux実機で、公式SDKと必須native wheelの依存解決、import、Mock transport contract、shutdownを確認する。
+
+ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置architecture確定後の公開前環境受入とする。package metadataやx86_64での成功だけをARM64確認済みとは扱わない。実Provider品質、請求、保持、Project dashboard設定も別の明示受入であり、上記自動隔離受入へ含めない。
 
 ## Migration接続先安全性 自動隔離受入
 

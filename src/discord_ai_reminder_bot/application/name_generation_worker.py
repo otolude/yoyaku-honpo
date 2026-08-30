@@ -14,6 +14,9 @@ from discord_ai_reminder_bot.application.name_generation import (
     NameGenerationClaimService,
     NameGenerationResultService,
     NameGenerator,
+    NameGeneratorError,
+    NameGeneratorInvalidResponseError,
+    NameGeneratorUnavailableError,
 )
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.enums import NameGenerationResultCode
@@ -25,10 +28,6 @@ from discord_ai_reminder_bot.domain.name_generation import (
 from discord_ai_reminder_bot.infrastructure.database.name_generation_repositories import (
     NameGenerationJobRepository,
 )
-
-
-class NameGeneratorError(Exception):
-    """Typed provider-independent generator failure without provider details."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +56,10 @@ async def generate_without_db(
         raise
     except TimeoutError:
         return GenerationOutcome(NameGenerationResultCode.TIMEOUT)
+    except NameGeneratorInvalidResponseError:
+        return GenerationOutcome(NameGenerationResultCode.INVALID_RESPONSE)
+    except NameGeneratorUnavailableError:
+        return GenerationOutcome(NameGenerationResultCode.GENERATOR_UNAVAILABLE)
     except NameGeneratorError:
         return GenerationOutcome(NameGenerationResultCode.GENERATOR_ERROR)
     except Exception:  # noqa: BLE001 - provider details must not cross this boundary
@@ -159,6 +162,13 @@ class NameGenerationWorker:
                         self._logger.error("name_generation_shutdown_finalize_failed")
             self._active_job_id = None
             self._active_task = None
+            close = getattr(self._generator, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 - provider details stay behind the boundary
+                    if self._logger is not None:
+                        self._logger.error("name_generation_generator_close_failed")
 
     async def _claim(self) -> ClaimedNameGeneration | None:
         async with self._sessions() as session, session.begin():

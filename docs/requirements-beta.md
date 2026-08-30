@@ -472,6 +472,13 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 2B-2はpendingを安定順で1件claimし、Schedule、Job、JST daily、JST monthlyの順にlockして回数と最大想定費用を悲観予約する。commitとSession close後だけGeneratorを最大1回呼び、自動再試行せず、5秒timeoutと固定result codeで別transactionへfinalizeする。
 - startupでは既存Recoveryとともにlease切れJobを先に回収し、利用可能なGeneratorがある場合だけpollを開始する。shutdownでは新規pollを止め、実行中taskをcancel・awaitし、可能なら`abandoned/shutdown_unknown`を保存する。cleanup loopはJob30日、bucket90日を適用し、pending／processingとSchedule blockerを維持する。
 - 本番DIは`DisabledNameGenerator`だけで、AI初期無効、Provider SDK・HTTP client・APIキーなしを維持する。2B-2では外部AI、Entitlement、Plan、顧客Quota、決済を実装しない。
+- 2C-1はOpenAI公式Python SDKをAdapter内部だけで使用し、Domain、Application、WorkerからSDKを参照しない。Provider／AI初期無効、APIキー未設定を維持し、全設定が有効な場合だけAdapterを構成できる。通常pytest、CI、通常起動から実APIを呼ばない。
+- OpenAIの通常候補は`gpt-5.6-luna`、品質優先比較候補は`gpt-5.4-nano-2026-03-17`とする。前者に日付付きsnapshotが公式公開されていないためaliasを定期監査し、後者は比較時に固定snapshotを優先する。Deprecatedの`gpt-5-nano`、日付固定されない`gpt-5.4-nano`、未知モデルを拒否する。実API限定比較前はどちらも正式採用済みとしない。
+- AdapterはstatelessなResponses API、構造化出力、`store=false`を使い、tools、web／file search、background、conversationを使わない。本文、固定instruction、`ja-JP`、32文字・単一行・禁止文字なしという条件だけを送信し、ID、UUID、version、日時、投稿先、契約情報を送信しない。
+- 既存本文上限2,000文字に加えてUTF-8 byte数と保守的token上限を適用し、超過または不正応答をProvider非依存の固定分類へ変換する。JSON型、候補数、空、複数行、32文字超過、Cc／Cf／Csを検証後、既存Domain validatorを最終防御とする。
+- SDK自動再試行は0、接続timeoutとrequest timeoutは既存5秒未満とする。429、5xx、接続失敗、timeout、cancel、認証・モデルエラーで再呼び出しせず、既存Budgetを返却しない。APIキー、本文、生成名、応答、Provider request ID、実usage、例外全文をJob、Budget、OperationLog、通常ログへ保存しない。
+- 将来は`AI設定 → Entitlement → 顧客プランQuota → ModelSelectionPolicy → 運営Budget → Job → Generator`とする。2C-1では運営設定の単一モデルだけを扱い、Plan、Entitlement、顧客Quota、ModelSelectionPolicy、契約、決済を実装しない。運営Budgetと顧客Quotaは別責務・別集計を維持する。
+- Provider側の標準的なabuse monitoring保持最大30日を2C-1時点では許容する。学習利用のopt-inは行わず、ZDRと国内処理要件は正式公開前に再評価する。ProviderがAPIデータを既定で学習に使わないことと、Bot自身が文体学習、過去投稿学習、Embedding、プロフィール生成を持たないことを別の方針として維持する。
 - 利用者が実用上問題なく使える品質、回数、応答速度を確保し、そのうえで重複呼び出し、無制限再試行、不要な長文入力・過剰出力、不要な高価格モデル、無期限保存を避ける。コスト削減によって通常利用を困難にしたり、頻繁にフォールバックへ落としたりしない。
 - AI無効、上限到達、timeout、異常応答でも予約の作成、編集、投稿を成功させる。
 - 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerからAIを呼ばない。

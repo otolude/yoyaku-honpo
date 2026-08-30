@@ -2,6 +2,10 @@ import asyncio
 
 import pytest
 
+from discord_ai_reminder_bot.application.name_generation import (
+    NameGeneratorInvalidResponseError,
+    NameGeneratorUnavailableError,
+)
 from discord_ai_reminder_bot.application.name_generation_worker import (
     NameGeneratorError,
     generate_without_db,
@@ -50,6 +54,19 @@ async def test_generate_without_db_success_typed_error_and_invalid_response() ->
         generator=FakeGenerator("unvalidated"), request=request, timeout_seconds=1
     )
     assert invalid.result_code is NameGenerationResultCode.INVALID_RESPONSE
+
+    unavailable = await generate_without_db(
+        generator=FakeGenerator(NameGeneratorUnavailableError()),
+        request=request,
+        timeout_seconds=1,
+    )
+    assert unavailable.result_code is NameGenerationResultCode.GENERATOR_UNAVAILABLE
+    provider_invalid = await generate_without_db(
+        generator=FakeGenerator(NameGeneratorInvalidResponseError()),
+        request=request,
+        timeout_seconds=1,
+    )
+    assert provider_invalid.result_code is NameGenerationResultCode.INVALID_RESPONSE
 
 
 @pytest.mark.asyncio

@@ -408,7 +408,13 @@ Phase 3と一般公開の詳細は[開発・公開ロードマップ](developmen
 
 50回／日、500回／月、100円相当／月はProvider未選定・未接続の2B初期実装・隔離テスト用の変更可能な安全設定値であり、販売価格や正式リリース時の恒久上限ではない。2Cと商品仕様策定時に実単価、利用量、収益、インフラ・保存・監視・決済等の原価、予備費、実用上必要な品質から再計算する。正式リリース後の必要な運用費はサブスクリプション収益で賄い、通常利用が困難になるほど低い上限や0円運用を運用要件にしない。運営Budgetと顧客Quotaを分離し、利用状況、原価、解約率、障害率に応じて見直す。
 
-2Bの設定名は`.env.example`を参照する。初期状態は`AI_NAME_GENERATION_ENABLED=false`で、本番DIも`DisabledNameGenerator`だけなので外部AI通信や費用は発生しない。2B-2ではRecovery、poll、shutdown、cleanupをBot lifecycleへ接続したが、設定無効またはGenerator unavailableならJob登録もpoll task作成も行わない。設定値、本文、生成名、ID、例外全文を通常ログへ列挙しない。
+2B／2C-1の設定名は`.env.example`を参照する。初期状態は`AI_NAME_GENERATION_ENABLED=false`かつ`AI_NAME_GENERATION_PROVIDER=disabled`で、APIキーも設定しないため外部AI通信や費用は発生しない。有効フラグだけではOpenAI Adapterを構成せず、Provider、許可モデル、秘密キー、監査済み単価、為替、入出力上限、安全係数が揃った場合だけ利用可能になる。設定無効またはGenerator unavailableならJob登録もpoll task作成も行わない。設定値、本文、生成名、ID、Provider request ID、例外全文を通常ログへ列挙しない。
+
+実Provider受入は通常pytest、CI、Bot通常起動から分離し、利用者の明示許可後だけ行う。専用OpenAI Project、制限付きAPIキー、Project予算・アラート、最大呼出回数・最大費用を事前確認し、`gpt-5.6-luna`と`gpt-5.4-nano-2026-03-17`へ同一の匿名テストケースを各1回ずつ送る。日本語品質、32文字、応答時間、usage、timeout、cancel、請求を比較し、本文・生成名を通常テストログへ出さない。APIキーをcommand引数、Git、`.env.example`へ記載しない。実施前にモデル提供状態、単価、Luna alias、標準保持最大30日、ZDR、国内処理を公式資料で再監査する。
+
+実Provider受入前はどちらのモデルも正式採用済みとせず、ProviderとAIを無効のまま維持する。AI枠超過、Provider障害、AI無効でも予約作成・投稿、JSTフォールバック名、手動名編集を継続する。将来のプラン別モデル・回数・機能は商品仕様で決め、2C-1の運営Budgetへ顧客Quotaを混ぜない。
+
+OpenAI SDK依存は`pyproject.toml`の2.54 minor範囲を正式`.venv`へ通常の`python -m pip install -e '.[dev]'`で解決する。本リポジトリはlock fileを管理していないため新規作成せず、SDK patch更新時は実APIへ接続しないMock transport contract testを必須にする。AdapterにはPython 3.14／WSL2での初回platform検出停止を避けるため、SDK 2.54.xだけを対象とした非公開のinstance-local platform cache初期化がある。これは公式に保証された公開APIではないため、未知version、private symbolまたは型の変更時は外部通信前にfail-closedとし、無通信contract testが成功するまでProviderを有効化しない。module symbolのmonkey patchやprocess-wide global変更は認めず、SDKが公開手段を提供した時点で撤去を検討する。package metadataのOS-independent表記だけをARM64実機受入の代替にせず、配置architecture確定後に同等ARM64 Linux上で依存解決、import、Mock transport、shutdownを確認する。
 
 将来のAI機能は初期状態で無効とし、明示的に有効化した場合も固定イベントと安全な集計だけを監視する。APIキー、本文、AI入力全文、AI応答全文を通常ログへ記録しない。ログは14日、DBバックアップは日次7世代かつ最大14日保持する方針とし、配置環境決定時に自動削除、アクセス制御、復元後cleanupの具体手順を確定する。
 
