@@ -447,7 +447,7 @@ READMEの再現手順は安全な最短入口に限定し、DB操作、Discord�
 6B-2では撮影用private channelと合成データだけで4画像を作成し、一覧・詳細の完全UUIDを不透明に焼き込み、画素だけの新規PNGへflattenした。元画像・編集layerは追跡せず、構造・hash・掲載先は[asset manifest](portfolio/assets/manifest.md)へ記録する。毎日・毎週の合成予約は正式Bot操作で論理削除し、投稿済み単発予約は既存保持規則に従う。撮影用channelは6Cまで保持し、DB直接削除やVolume削除をcleanup手段にしない。
 ## 23. GitHub Actions CI（公開前構成）
 
-CIはdevelopへのpushとPull Requestで実行する構成である。GitHub上での成功はまだ未確認で、badge、deploy、release、public化を行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
+CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
 
 公式ActionはNode.js 24対応の`actions/checkout@v7`と`actions/setup-python@v7`を使用する。正確なfull commit SHAを独立検証できない状態では推測でpinせず、version更新時にworkflow構文と実行結果を再確認する。
 

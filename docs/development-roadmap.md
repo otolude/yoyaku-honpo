@@ -140,4 +140,4 @@ AI入力本文をアプリケーション側の別履歴として保存しない
 
 公開前監査の前提として、オープンソースライセンスを付与しないCopyright Notice、Security Policy、Contribution方針、bug／improvement Issue Form、GitHub Actions CIを整備する。独自コード・文書はall rights reservedとし、GitHub利用規約上の閲覧・fork以外の利用は明示的な書面許可を必要とする。CIはPython 3.14、Ruff、通常pytest、一時PostgreSQL統合pytest、Migration安全ラッパーを対象とし、Discord、OpenAI、決済、開発DB、productionへ接続しない。
 
-構成追加とローカル検証は6C-1で扱う。GitHub上でのworkflow成功、Private vulnerability reporting有効化、repository visibility、dependency license、商標条件、公開可否は6Cの未確認ゲートとして維持する。public化は6C合格後に利用者が最終承認して手動実施する。
+構成追加とローカル検証に加え、2026-08-31に対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のGitHub Actions成功を確認した。Private vulnerability reporting有効化、repository visibility、dependency license、商標条件、公開可否は6Cの未確認ゲートとして維持する。public化は6C合格後に利用者が最終承認して手動実施する。

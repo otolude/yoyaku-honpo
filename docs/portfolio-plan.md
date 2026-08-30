@@ -166,7 +166,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | SECURITY.md | ファイルなし | 公開前に脆弱性報告窓口と非公開報告方法を決定。実在しない窓口を書かない |
 | Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
 | Issue／PR template | ファイルなし | 公開後の受付範囲が決まってから要否を決定 |
-| GitHub Actions／CI | 追跡ファイルなし | CI実行実績やbadgeを表示しない。導入は別実装として判断 |
+| GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |
 | dependency license | 未監査 | direct／transitive依存のライセンスとNOTICE要否を6Cまでに監査 |
 | Discord／OpenAIの名称・画面・ロゴ | 未監査 | 最新の商標・ブランド・画面掲載条件を公式情報で確認 |
 | 第三者素材 | 現在なし | 追加assetごとに出典、ライセンス、改変可否をmanifestで管理 |
@@ -255,13 +255,13 @@ Aの12件は本書と関連文書の整合、ローカルリンク、Markdown、
 
 採用する考え方は、冒頭で価値を伝える、技術stackを明示する、画面資料への導線を後から追加する、安全なsetup入口を設ける、architectureとdirectory責務を説明する、課題・設計判断・test・error handling・文書化を示す、完成度の高い少数repositoryを優先することである。
 
-LICENSEの自動決定、GitHub Actions、CI badge、GitHub Pages、live demo、Issue／PR template、完全な日英併記、個人連絡先掲載は現段階では採用しない。継続的な開発履歴は実際のcommitと文書で示し、毎日commitすること自体を目的にしない。
+GitHub Pages、live demo、PR template、完全な日英併記、個人連絡先掲載は現段階では採用しない。著作権方針、GitHub Actions、bug／improvement Issue Form、CI badgeは6C-1の利用者判断と成功証跡に基づいて追加した。継続的な開発履歴は実際のcommitと文書で示し、毎日commitすること自体を目的にしない。
 
 ## 17. repository完成後の応募導線
 
 6Cと公開判断後の別作業として、GitHub profile READMEへ得意領域と学習・開発中技術を整理し、本repositoryをpin留めする。クラウドワークス等のportfolio欄からGitHubへリンクし、必要に応じてQiita／Zennへ原因調査や設計判断を匿名化してまとめる。氏名、mail、SNS、案件媒体URL、稼働条件を本書から推測して追加せず、連絡導線は利用者が別途決定する。
 ## 16. 6C-1 リポジトリ運営基盤
 
-利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of Conduct、PR template、CI badgeは現段階では追加しない。外部PRは積極募集せず、Issueは受け付ける。
+利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of ConductとPR templateは追加せず、外部PRは積極募集しない。Issueは受け付け、成功確認済みworkflowのCI badgeを掲載する。
 
-Private vulnerability reportingの有効化、GitHub上のCI成功、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。
+GitHub上のCI成功は2026-08-31に利用者が確認済みである。Private vulnerability reportingの有効化、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。

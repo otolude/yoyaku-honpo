@@ -617,4 +617,4 @@ Phase 3第6項は6A要件定義、6B成果物作成、6C最終監査に分割す
 - 公開Issueはbugとimprovementの定型Formだけを入口とし、blank Issueを無効にする。外部PRは積極募集せず、事前Issue相談を求める。
 - 脆弱性は公開Issueで受け付けない。Private vulnerability reportingをpublic化直前に手動で有効化し、個人メール等の未確定窓口を記載しない。
 - CIはdevelopへのpushとPull Requestで、Python 3.14、依存整合、Ruff、通常pytest、専用PostgreSQL統合pytest、Migration安全照合を行う。資格情報、実`.env`、外部Provider、開発・production DBを必要としない。
-- CI構成済み、ローカル検証済み、GitHub上で実行成功済みを区別する。badgeは実成功確認後まで掲載しない。
+- CI構成、ローカル検証、GitHub上の実行成功を対象commitと日付で区別して記録し、成功確認済みの実workflowだけをbadgeから参照する。CI成功をpublic化や6C全体の完了証跡にしない。

@@ -59,6 +59,6 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 文書だけの変更では過去の検証を再実行したように記載せず、コード基準との関係を明示する。実Discord、実Provider、ARM64、隔離セットアップはそれぞれ別の人手受入として記録する。
 ## 7. 6C-1検証の扱い
 
-6C-1ではCopyright Notice、Security、Contribution、Issue Form、CI workflowをローカルで静的・自動検証する。GitHub Actions上の実行結果はpush前には存在しないため、本snapshotへ成功済みとは記録しない。初回push後にworkflow、permissions、PostgreSQL service、Migration安全照合の結果をGitHub上で確認し、日付・commitとともに別途更新する。
+6C-1ではCopyright Notice、Security、Contribution、Issue Form、CI workflowをローカルで静的・自動検証した。2026-08-31にOtoがGitHub画面で、commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2、実行時間1分8秒、test job成功、Artifactsなし、Node.js 20 deprecated警告なしを確認した。workflowは`actions/checkout@v7`と`actions/setup-python@v7`を使用する。
 
-初回CIは旧commitで成功したが、Node.js 20 Actionの非推奨警告を受けたため、履歴置換版では公式`actions/checkout@v7`と`actions/setup-python@v7`へ更新する。新commitのCI結果はpush後の利用者確認まで未確認とする。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
+旧著作権方針版を参照したActions run #1は利用者がGitHub画面から削除し、Actions一覧にはrun #2だけを残した。repositoryはPrivateでpublic化前、Private vulnerability reportingは未有効である。CI成功は依存license、第三者素材・商標、Git履歴、visibility、公開可否、実Provider、ARM64の確認を代替しない。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
