@@ -1025,7 +1025,7 @@ Phase 1から全予約に `guild_id` を持たせる。Phase 2では環境変数
 
 ## 24. Phase 3とPhase 2後の将来設計
 
-本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1の永続基盤と安全Policyは実装済みである。2B-2のWorker／Generator実行と実Provider接続2Cは未実装である。
+本章はPhase 2の完了条件に含めないPhase 3の設計である。24.1、2A、2B-1、2B-2のProvider非依存基盤は実装済みである。実Provider接続2Cは未実装である。
 
 ### 24.1 `/post show`の削除済み候補
 
@@ -1062,6 +1062,16 @@ AI providerは`infrastructure/ai/`のインターフェース背後へ置き、�
 `name_generation_budget_buckets`はJSTの日次・月次期間、予約回数、JPY microunits、versionだけを保持する。暫定上限はCHECKへ埋め込まず設定から不変`BudgetPolicy`へ渡す。Jobまたはbucketが存在するdowngradeは明示的に拒否する。AI名のCAS保存はSchedule version、source、本文を再検証し、成功しても利用者操作用`Schedule.version`と`updated_at`を増やさない。名前全文を含まないsystem OperationLogだけを追加する。
 
 作成・本文編集はsavepointでJob登録失敗を隔離するが、DB接続全体の障害は基本処理の成功として隠さない。Recoveryとcleanupは再利用可能なApplication Serviceとして実装し、2B-1ではBot lifecycleへ接続しない。2B-2ではDB Session、transaction、row lockを閉じてからGeneratorを呼ぶpoll loopとshutdown回収を追加する。
+
+#### 24.2.2 2B-2 生成制御
+
+Application coordinatorは`AI設定 → 将来Entitlement → 運営Budget → Job → Generator`を責務順とする。Entitlementの位置は境界として示すだけで実装しない。claim transactionはpendingを`created_at, id`順に選び、Schedule→Job→daily bucket→monthly bucketをlockする。Schedule version、source、名前NULL、本文、状態、Generator availability、最大費用を再検証し、Budget予約とprocessing化を同時commitする。
+
+Generatorへ渡すのは本文と最大32文字、固定locale、出力制約を持つ不変DTOだけである。Session、Repository、ORM、ID、UUID、guild、契約情報を渡さない。claim Sessionを完全に閉じてから、最大並行1、timeout 5秒、自動再試行なしで呼ぶ。成功、timeout、cancel、typed error、invalid responseを閉じたresult codeへ変換し、本文、生成名、例外全文を通常ログへ出さない。
+
+finalizeは新しい短いtransactionでSchedule→Jobをlockする。成功時もversion、source、名前NULL、本文、draft／active／pausedを再検証し、条件を失っていれば生成結果を破棄する。保存時は`Schedule.version`と`updated_at`を維持し、名前全文なしのsystem OperationLogを追加する。commit結果不明、timeout、cancel、失敗でProviderを再呼び出さず、予約済みBudgetを返さない。
+
+Bot startupはschema確認後、既存Recoveryの列へName Generation Recoveryを追加し、完了後だけpollを開始する。Disabledまたは設定無効ではpoll taskを作らない。pollは5秒間隔、1 cycle 1件で、例外後も次cycleを維持する。shutdownはname poll停止、Generator cancel・await、`shutdown_unknown` finalizeの後に既存Worker・View回収とEngine disposeへ進む。cleanup loopはJob30日・bucket90日の独立transactionを先に実施し、失敗を個別rollbackする。
 
 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerはAIユースケースへ依存しない。AI無効、上限到達、timeout、異常応答、費用集計失敗でも既存の予約処理を継続する。
 

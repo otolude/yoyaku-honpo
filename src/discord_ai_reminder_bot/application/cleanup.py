@@ -8,6 +8,9 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from discord_ai_reminder_bot.application.name_generation_maintenance import (
+    NameGenerationCleanupService,
+)
 from discord_ai_reminder_bot.domain.cleanup import retention_cutoff, validate_cleanup_batch_size
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.infrastructure.database.cleanup_repositories import (
@@ -20,6 +23,7 @@ from discord_ai_reminder_bot.infrastructure.database.cleanup_repositories import
 class CleanupResult:
     cleanup_cutoff: datetime
     name_generation_jobs_deleted: int = 0
+    name_generation_budget_buckets_deleted: int = 0
     schedules_deleted: int = 0
     global_notifications_deleted: int = 0
     notification_attempts_deleted: int = 0
@@ -36,6 +40,7 @@ class CleanupResult:
 @dataclass(slots=True)
 class _MutableCounts:
     name_generation_jobs_deleted: int = 0
+    name_generation_budget_buckets_deleted: int = 0
     schedules_deleted: int = 0
     global_notifications_deleted: int = 0
     notification_attempts_deleted: int = 0
@@ -76,11 +81,15 @@ class CleanupService:
         clock: Clock,
         schedule_batch_size: int = 100,
         global_notification_batch_size: int = 100,
+        name_generation_job_retention_days: int = 30,
+        name_generation_budget_retention_days: int = 90,
     ) -> None:
         self._sessions = session_factory
         self._clock = clock
         self._schedule_batch_size = validate_cleanup_batch_size(schedule_batch_size)
         self._global_batch_size = validate_cleanup_batch_size(global_notification_batch_size)
+        self._name_job_retention_days = name_generation_job_retention_days
+        self._name_budget_retention_days = name_generation_budget_retention_days
 
     async def run_cycle(self) -> CleanupResult:
         cleanup_cutoff = self._clock.now()
@@ -88,6 +97,20 @@ class CleanupService:
         counts = _MutableCounts()
         failed_schedule_ids: set[int] = set()
         failed_notification_ids: set[int] = set()
+
+        try:
+            async with self._sessions() as session, session.begin():
+                name_cleanup = await NameGenerationCleanupService(session).cleanup(
+                    now=cleanup_cutoff,
+                    job_retention_days=self._name_job_retention_days,
+                    budget_retention_days=self._name_budget_retention_days,
+                )
+            counts.name_generation_jobs_deleted += name_cleanup.jobs_deleted
+            counts.name_generation_budget_buckets_deleted += name_cleanup.budget_buckets_deleted
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - isolated rollback and fixed aggregate only
+            counts.internal_errors += 1
 
         for _ in range(self._schedule_batch_size):
             try:
@@ -140,6 +163,7 @@ class CleanupService:
         return CleanupResult(
             cleanup_cutoff=cleanup_cutoff,
             name_generation_jobs_deleted=counts.name_generation_jobs_deleted,
+            name_generation_budget_buckets_deleted=(counts.name_generation_budget_buckets_deleted),
             schedules_deleted=counts.schedules_deleted,
             global_notifications_deleted=counts.global_notifications_deleted,
             notification_attempts_deleted=counts.notification_attempts_deleted,

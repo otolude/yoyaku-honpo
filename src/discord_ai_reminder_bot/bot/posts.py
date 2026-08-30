@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from discord_ai_reminder_bot.application.name_generation import NameGenerationRegistrationPolicy
 from discord_ai_reminder_bot.application.schedule_creation import (
     DuplicateScheduleWarning,
     OnceScheduleCreationService,
@@ -867,6 +868,7 @@ class PostCommands(app_commands.Group):
         configured_guild_id: int,
         allowed_role_ids: tuple[int, ...],
         logger: logging.Logger,
+        name_generation_policy: NameGenerationRegistrationPolicy | None = None,
     ) -> None:
         super().__init__(name="post", description="予約投稿を確認します")
         self._queries = queries
@@ -875,6 +877,7 @@ class PostCommands(app_commands.Group):
         self._configured_guild_id = configured_guild_id
         self._allowed_role_ids = allowed_role_ids
         self._logger = logger
+        self._name_generation_policy = name_generation_policy or NameGenerationRegistrationPolicy()
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
         self._create_views: set[OnceScheduleConfirmView] = set()
         self._resume_views: set[ResumeChoiceView] = set()
@@ -884,6 +887,35 @@ class PostCommands(app_commands.Group):
         self._name_edit_modals: set[ScheduleNameEditModal] = set()
         self._list_views: set[ScheduleListView] = set()
         self._detail_views: set[ScheduleDetailView] = set()
+
+    def _editing_service(self, session: AsyncSession) -> ScheduleEditingService:
+        if not self._name_generation_policy.permits_registration:
+            return ScheduleEditingService(session)
+        return ScheduleEditingService(
+            session,
+            name_generation_policy=self._name_generation_policy,
+            logger=self._logger,
+        )
+
+    def _once_creation_service(self, session: AsyncSession) -> OnceScheduleCreationService:
+        if not self._name_generation_policy.permits_registration:
+            return OnceScheduleCreationService(session)
+        return OnceScheduleCreationService(
+            session,
+            name_generation_policy=self._name_generation_policy,
+            logger=self._logger,
+        )
+
+    def _recurring_creation_service(
+        self, session: AsyncSession
+    ) -> RecurringScheduleCreationService:
+        if not self._name_generation_policy.permits_registration:
+            return RecurringScheduleCreationService(session)
+        return RecurringScheduleCreationService(
+            session,
+            name_generation_policy=self._name_generation_policy,
+            logger=self._logger,
+        )
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
@@ -1226,7 +1258,7 @@ class PostCommands(app_commands.Group):
             return
         try:
             async with self._session_factory() as session, session.begin():
-                edited = await ScheduleEditingService(session).edit(
+                edited = await self._editing_service(session).edit(
                     guild_id=interaction.guild_id,
                     public_id=public_id,
                     actor_user_id=current_actor.user_id,
@@ -1713,7 +1745,7 @@ class PostCommands(app_commands.Group):
                 return
             try:
                 async with self._session_factory() as session, session.begin():
-                    created = await OnceScheduleCreationService(session).create(
+                    created = await self._once_creation_service(session).create(
                         guild_id=self._configured_guild_id,
                         channel_id=channel_id,
                         creator_user_id=actor.user_id,
@@ -2419,7 +2451,7 @@ class PostCommands(app_commands.Group):
             return
         try:
             async with self._session_factory() as session, session.begin():
-                edited = await ScheduleEditingService(session).edit(
+                edited = await self._editing_service(session).edit(
                     guild_id=self._configured_guild_id,
                     public_id=str(view.context.public_id),
                     actor_user_id=actor.user_id,
@@ -2891,7 +2923,7 @@ class PostCommands(app_commands.Group):
             return
         try:
             async with self._session_factory() as session, session.begin():
-                created = await RecurringScheduleCreationService(session).create(
+                created = await self._recurring_creation_service(session).create(
                     guild_id=interaction.guild_id,
                     channel_id=channel_id,
                     creator_user_id=actor.user_id,

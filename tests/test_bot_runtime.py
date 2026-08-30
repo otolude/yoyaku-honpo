@@ -17,6 +17,7 @@ from discord_ai_reminder_bot.application.draft_notification_bootstrap import (
     DraftNotificationBootstrapSummary,
 )
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.name_generation_worker import NameGenerationPollResult
 from discord_ai_reminder_bot.application.notification_recovery import NotificationRecoverySummary
 from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
 from discord_ai_reminder_bot.application.worker import PollResult
@@ -68,6 +69,7 @@ def make_bot() -> ReminderBot:
     bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
         return_value=NotificationRecoverySummary()
     )
+    bot.recover_name_generation = AsyncMock(return_value=0)  # type: ignore[method-assign]
     return bot
 
 
@@ -87,8 +89,98 @@ def test_bot_configuration_is_minimal_and_does_not_connect() -> None:
     assert bot.allowed_mentions.replied_user is False
     assert bot.http.max_ratelimit_timeout == MAX_RATELIMIT_TIMEOUT_SECONDS == 30.0
     assert bot.polling_loop.seconds == 7.0
+    assert bot.name_generation_polling_loop.seconds == 5.0
+    assert bot.name_generation_worker.available is False
     assert isinstance(bot.gateway, MessageGateway)
     assert not bot.is_ready()
+
+
+@pytest.mark.asyncio
+async def test_name_generation_recovery_precedes_existing_recovery_and_disabled_starts_no_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    order: list[str] = []
+    bot.recover_expired_processing = AsyncMock(
+        side_effect=lambda **unused: order.append("run") or 0
+    )  # type: ignore[method-assign]
+    bot.recover_name_generation = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda unused: order.append("name") or 0
+    )
+    bot.recover_overdue_pending = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda **unused: order.append("pending") or PendingRecoverySummary()
+    )
+    bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=NotificationRecoverySummary()
+    )
+    bot.bootstrap_draft_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=DraftNotificationBootstrapSummary()
+    )
+    for loop in (bot.polling_loop, bot.notification_polling_loop, bot.maintenance_loop):
+        monkeypatch.setattr(loop, "start", MagicMock())
+        monkeypatch.setattr(loop, "is_running", lambda: False)
+    name_start = MagicMock()
+    monkeypatch.setattr(bot.name_generation_polling_loop, "start", name_start)
+    monkeypatch.setattr(bot.name_generation_polling_loop, "is_running", lambda: False)
+    await bot.on_ready()
+    assert order[:3] == ["run", "name", "pending"]
+    name_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_available_name_generator_starts_poll_only_after_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    bot.name_generation_worker._enabled = True
+    bot.name_generation_worker._generator = MagicMock(available=True)
+    bot.recover_expired_processing = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    bot.recover_overdue_pending = AsyncMock(return_value=PendingRecoverySummary())  # type: ignore[method-assign]
+    bot.bootstrap_draft_notifications = AsyncMock(  # type: ignore[method-assign]
+        return_value=DraftNotificationBootstrapSummary()
+    )
+    for loop in (bot.polling_loop, bot.notification_polling_loop, bot.maintenance_loop):
+        monkeypatch.setattr(loop, "start", MagicMock())
+        monkeypatch.setattr(loop, "is_running", lambda: False)
+    name_start = MagicMock()
+    monkeypatch.setattr(bot.name_generation_polling_loop, "start", name_start)
+    monkeypatch.setattr(bot.name_generation_polling_loop, "is_running", lambda: False)
+    await bot.on_ready()
+    assert bot._recovery_complete.is_set()
+    name_start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_name_generation_cycle_logs_fixed_summary_and_survives_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = make_bot()
+    bot.name_generation_worker.poll_once = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            RuntimeError("private-exception-canary"),
+            NameGenerationPollResult(selected=1, failed=1, result_code="timeout"),
+        ]
+    )
+    with caplog.at_level(logging.INFO):
+        await bot.name_generation_polling_loop()
+        await bot.name_generation_polling_loop()
+    assert "name_generation_poll_cycle_failed" in caplog.messages
+    assert "name_generation_poll_cycle_complete" in caplog.messages
+    assert "private-exception-canary" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_close_shuts_name_generation_once_before_engine_dispose() -> None:
+    bot = make_bot()
+    order: list[str] = []
+    bot.name_generation_worker.shutdown = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda: order.append("name_shutdown")
+    )
+    bot.engine.dispose = AsyncMock(side_effect=lambda: order.append("dispose"))
+    await bot.close()
+    await bot.close()
+    bot.name_generation_worker.shutdown.assert_awaited_once()  # type: ignore[attr-defined]
+    assert order == ["name_shutdown", "dispose"]
 
 
 @pytest.mark.asyncio

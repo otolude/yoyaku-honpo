@@ -1,15 +1,16 @@
 # Phase 3 受入
 
-Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1のProvider非依存永続基盤を対象とする。2B-2のWorker・Generator実行、実AI Provider、決済、Plan、顧客Quotaは収録しない。
+Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階、2A、2B-1、2B-2のProvider非依存基盤を対象とする。実AI Provider、APIキー、実費、決済、Plan、顧客Quotaは収録しない。
 
 - 実施日: 2026-08-30
 - 実施者: Codex（自動テスト）
 - 証跡: 重点テスト322件、通常pytest 815件成功／297件skip、専用PostgreSQL込み全pytest 1112件成功
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
-- 集計: 確認済み 52件／未確認 0件（合計52件）
+- 集計: 確認済み 66件／未確認 0件（合計66件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
+- Phase 3第2段階2B-2隔離受入判定: 完了（本番AI機能は利用不能）
 
 ## 自動テスト受入
 
@@ -111,3 +112,22 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - [x] 保守的CAS保存はSchedule version、source、本文を再検証し、AI名保存時にSchedule version／updated_atを増やさず、名前全文なしのsystem OperationLogを残す。
 - [x] lease切れprocessingを再試行・Budget返却せず`abandoned/startup_abandoned`へ移し、pendingを維持するRecovery基盤と保持期限cleanup基盤を維持する。
 - [x] Migrationは2テーブル、制約、index、FKを追加し、backfillせず、データ存在時downgradeを拒否してsingle headを維持する。
+
+## 第2段階2B-2 自動隔離受入
+
+- [x] pendingを`created_at, id`順に選択し、Schedule→Jobをlockしてversion、source、名前NULL、本文、draft／active／pausedを再検証する。
+- [x] AI無効、Generator unavailable、価格不明・不正、stale、manual、本文なし、terminalをGenerator呼び出し前に固定result codeで安全に終端化する。
+- [x] JST daily→monthlyの固定lock順で日次回数、月次回数、月次最大費用を同一transactionへ悲観予約し、50／51、500／501、費用ちょうど／超過、設定変更を検証する。
+- [x] 複数claimと部分一意indexでも全processのprocessing最大1を維持し、Budget DB失敗時はtransaction rollbackでpendingを再評価可能にする。
+- [x] claim commitとSession close後だけ、本文と非識別制約だけの不変DTOをFake Generatorへ渡し、Session、Repository、ORM、IDを保持しない。
+- [x] Fake Generatorの成功、timeout、cancel、typed error、invalid responseを自動再試行なしで固定分類し、1 cycle最大1回、process内Semaphore 1を維持する。
+- [x] Generator待機中も別transactionがScheduleをlockでき、不要なDB connection、transaction、row lockを保持しない。
+- [x] finalizeは新transactionでSchedule→Jobをlockし、CAS成功時だけAI名を保存してSchedule version／updated_atを維持する。
+- [x] manual化、version変更、本文解除、terminal化、Recovery先行では生成結果を破棄し、別予約、Run、Budgetを変更しない。
+- [x] system OperationLog、Job、Budget、通常ログへ本文、生成名、応答、UUID、内部ID、Discord ID、guild、契約情報、例外全文を保存しない。
+- [x] startup schema確認後にName Generation Recoveryを実行し、lease切れをBudget返却・再試行なしで`abandoned/startup_abandoned`へ移し、pendingを維持する。
+- [x] Recovery完了後、AI有効かつGenerator availableの場合だけ5秒間隔のpollを開始し、cycle例外後もloopを維持する。
+- [x] shutdownは新規poll停止、Generator cancel・await、`abandoned/shutdown_unknown`、既存View／Worker、Engine disposeの順を維持し、二重closeとTask回収を安全に扱う。
+- [x] 既存cleanup loopへJob30日・bucket90日を個別rollback可能なtransactionで接続し、pending／processingとSchedule blockerを維持する。
+
+本番DIは外部通信しない`DisabledNameGenerator`だけで、`AI_NAME_GENERATION_ENABLED=false`が初期値である。2B-2完了時点でも外部AI機能は利用できず、実Discord受入は行わない。

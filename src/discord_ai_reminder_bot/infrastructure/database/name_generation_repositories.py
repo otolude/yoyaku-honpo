@@ -26,6 +26,11 @@ class PendingNameGenerationJob:
     id: int
     schedule_id: int
     expected_schedule_version: int
+    schedule_version: int
+    content: str | None
+    display_name: str | None
+    display_name_source: str
+    schedule_status: str
 
 
 class NameGenerationJobRepository:
@@ -50,6 +55,12 @@ class NameGenerationJobRepository:
         )
         return (await self._session.scalar(statement)) is not None
 
+    async def result_code(self, *, job_id: int) -> NameGenerationResultCode | None:
+        value = await self._session.scalar(
+            select(NameGenerationJob.result_code).where(NameGenerationJob.id == job_id)
+        )
+        return NameGenerationResultCode(value) if value is not None else None
+
     async def lock_schedule_then_pending(self) -> PendingNameGenerationJob | None:
         candidate = (
             await self._session.execute(
@@ -62,9 +73,13 @@ class NameGenerationJobRepository:
         if candidate is None:
             return None
         job_id, schedule_id = candidate
-        await self._session.scalar(
-            select(Schedule.id).where(Schedule.id == schedule_id).with_for_update()
-        )
+        schedule = (
+            await self._session.execute(
+                select(Schedule).where(Schedule.id == schedule_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if schedule is None:
+            return None
         job = await self._session.scalar(
             select(NameGenerationJob)
             .where(
@@ -75,7 +90,64 @@ class NameGenerationJobRepository:
         )
         if job is None:
             return None
-        return PendingNameGenerationJob(job.id, job.schedule_id, job.expected_schedule_version)
+        return PendingNameGenerationJob(
+            job.id,
+            job.schedule_id,
+            job.expected_schedule_version,
+            schedule.version,
+            schedule.content,
+            schedule.display_name,
+            schedule.display_name_source,
+            schedule.status,
+        )
+
+    async def mark_pending_terminal(
+        self,
+        *,
+        job_id: int,
+        status: NameGenerationJobStatus,
+        result_code: NameGenerationResultCode,
+        finished_at: datetime,
+    ) -> bool:
+        result = await self._session.execute(
+            update(NameGenerationJob)
+            .where(
+                NameGenerationJob.id == job_id,
+                NameGenerationJob.status == NameGenerationJobStatus.PENDING.value,
+            )
+            .values(
+                status=status.value,
+                result_code=result_code.value,
+                finished_at=finished_at,
+                updated_at=finished_at,
+            )
+        )
+        return bool(result.rowcount)
+
+    async def mark_processing(
+        self,
+        *,
+        job_id: int,
+        reserved_cost_microunits: int,
+        claimed_at: datetime,
+        lease_expires_at: datetime,
+    ) -> bool:
+        result = await self._session.execute(
+            update(NameGenerationJob)
+            .where(
+                NameGenerationJob.id == job_id,
+                NameGenerationJob.status == NameGenerationJobStatus.PENDING.value,
+            )
+            .values(
+                status=NameGenerationJobStatus.PROCESSING.value,
+                reserved_cost_microunits=reserved_cost_microunits,
+                claimed_at=claimed_at,
+                started_at=claimed_at,
+                lease_expires_at=lease_expires_at,
+                updated_at=claimed_at,
+            )
+        )
+        return bool(result.rowcount)
 
     async def abandon_expired_processing(self, *, now: datetime) -> int:
         result = await self._session.execute(

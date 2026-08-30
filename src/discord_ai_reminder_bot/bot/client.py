@@ -18,6 +18,15 @@ from discord_ai_reminder_bot.application.draft_notification_bootstrap import (
     DraftNotificationBootstrapSummary,
 )
 from discord_ai_reminder_bot.application.gateway import MessageGateway
+from discord_ai_reminder_bot.application.name_generation import (
+    DisabledNameGenerator,
+    NameGenerationRegistrationPolicy,
+    NameGenerator,
+)
+from discord_ai_reminder_bot.application.name_generation_maintenance import (
+    NameGenerationRecoveryService,
+)
+from discord_ai_reminder_bot.application.name_generation_worker import NameGenerationWorker
 from discord_ai_reminder_bot.application.notification_gateway import NotificationGateway
 from discord_ai_reminder_bot.application.notification_recovery import (
     NotificationRecoveryService,
@@ -75,6 +84,7 @@ class ReminderBot(commands.Bot):
         clock: Clock,
         worker_id: uuid.UUID,
         logger: logging.Logger,
+        name_generator: NameGenerator | None = None,
     ) -> None:
         super().__init__(
             command_prefix=SLASH_ONLY_PREFIX,
@@ -90,6 +100,7 @@ class ReminderBot(commands.Bot):
         self.session_factory = session_factory
         self.worker_id = worker_id
         self.logger = logger
+        self.name_generator = name_generator or DisabledNameGenerator()
         self.gateway: MessageGateway = DiscordMessageGateway(
             client=self,
             configured_guild_id=settings.discord_guild_id,
@@ -131,6 +142,20 @@ class ReminderBot(commands.Bot):
         self.cleanup_service = CleanupService(
             session_factory=session_factory,
             clock=clock,
+            name_generation_job_retention_days=settings.ai_name_generation_job_retention_days,
+            name_generation_budget_retention_days=(
+                settings.ai_name_generation_budget_retention_days
+            ),
+        )
+        self.name_generation_worker = NameGenerationWorker(
+            session_factory=session_factory,
+            generator=self.name_generator,
+            clock=clock,
+            enabled=settings.ai_name_generation_enabled,
+            budget_policy=settings.name_generation_budget_policy(),
+            timeout_seconds=settings.ai_name_generation_timeout_seconds,
+            processing_lease_seconds=settings.ai_name_generation_processing_lease_seconds,
+            logger=logger,
         )
         self._clock = clock
         self._recovery_complete = asyncio.Event()
@@ -149,11 +174,18 @@ class ReminderBot(commands.Bot):
             configured_guild_id=settings.discord_guild_id,
             allowed_role_ids=settings.discord_allowed_role_ids,
             logger=logger,
+            name_generation_policy=NameGenerationRegistrationPolicy(
+                enabled=settings.ai_name_generation_enabled,
+                generator_available=self.name_generator.available,
+            ),
         )
         self.add_guild_command(self.post_commands)
         self.polling_loop.change_interval(seconds=settings.scheduler_poll_interval_seconds)
         self.notification_polling_loop.change_interval(
             seconds=settings.notification_poll_interval_seconds
+        )
+        self.name_generation_polling_loop.change_interval(
+            seconds=settings.ai_name_generation_poll_interval_seconds
         )
 
     async def setup_hook(self) -> None:
@@ -216,6 +248,7 @@ class ReminderBot(commands.Bot):
     async def _recover_and_start(self) -> None:
         recovery_cutoff = require_utc(self._clock.now())
         recovered = await self.recover_expired_processing(recovery_cutoff=recovery_cutoff)
+        name_generation_recovered = await self.recover_name_generation(recovery_cutoff)
         pending = await self.recover_overdue_pending(recovery_cutoff=recovery_cutoff)
         notification = await self.recover_expired_notifications(recovery_cutoff=recovery_cutoff)
         draft_bootstrap = await self.bootstrap_draft_notifications(recovery_cutoff=recovery_cutoff)
@@ -227,6 +260,7 @@ class ReminderBot(commands.Bot):
             extra={
                 "worker_id": str(self.worker_id),
                 "processing_recovered": recovered,
+                "name_generation_abandoned": name_generation_recovered,
                 "initial_pending_preserved": pending.initial_pending_preserved,
                 "retry_pending_preserved": pending.retry_pending_preserved,
                 "runs_skipped": pending.runs_skipped,
@@ -245,6 +279,22 @@ class ReminderBot(commands.Bot):
             self.notification_polling_loop.start()
         if not self.maintenance_loop.is_running():
             self.maintenance_loop.start()
+        if (
+            self.name_generation_worker.available
+            and not self.name_generation_polling_loop.is_running()
+        ):
+            self.name_generation_polling_loop.start()
+
+    async def recover_name_generation(self, recovery_cutoff: datetime) -> int:
+        async with self.session_factory() as session, session.begin():
+            recovered = await NameGenerationRecoveryService(session).abandon_expired(
+                now=require_utc(recovery_cutoff)
+            )
+        self.logger.info(
+            "startup_name_generation_recovery_complete",
+            extra={"abandoned": recovered},
+        )
+        return recovered
 
     async def recover_expired_processing(self, *, recovery_cutoff: datetime | None = None) -> int:
         recovery_cutoff = require_utc(recovery_cutoff or self._clock.now())
@@ -427,6 +477,10 @@ class ReminderBot(commands.Bot):
                 "delivery_attempts_deleted": result.delivery_attempts_deleted,
                 "operation_logs_deleted": result.operation_logs_deleted,
                 "schedule_runs_deleted": result.schedule_runs_deleted,
+                "name_generation_jobs_deleted": result.name_generation_jobs_deleted,
+                "name_generation_budget_buckets_deleted": (
+                    result.name_generation_budget_buckets_deleted
+                ),
                 "internal_errors": result.internal_errors,
                 "schedules_remaining_due": result.schedules_remaining_due,
                 "global_notifications_remaining_due": result.global_notifications_remaining_due,
@@ -441,11 +495,48 @@ class ReminderBot(commands.Bot):
         if self._closing:
             self.maintenance_loop.stop()
 
+    @tasks.loop(seconds=5.0, reconnect=False, name="name-generation-polling-loop")
+    async def name_generation_polling_loop(self) -> None:
+        if self._closing:
+            return
+        try:
+            result = await self.name_generation_worker.poll_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - one cycle must not terminate the loop
+            self.logger.error("name_generation_poll_cycle_failed")
+            return
+        self.logger.info(
+            "name_generation_poll_cycle_complete",
+            extra={
+                "selected": result.selected,
+                "generated": result.generated,
+                "failed": result.failed,
+                "internal_errors": result.internal_errors,
+                "result_code": result.result_code,
+            },
+        )
+
+    @name_generation_polling_loop.before_loop
+    async def before_name_generation_polling_loop(self) -> None:
+        await self.wait_until_ready()
+        await self._recovery_complete.wait()
+        if self._closing or not self.name_generation_worker.available:
+            self.name_generation_polling_loop.stop()
+
     async def close(self) -> None:
         if self._closed_once:
             return
         self._closed_once = True
         self._closing = True
+
+        self.name_generation_polling_loop.stop()
+        self.name_generation_polling_loop.cancel()
+        name_polling_task = self.name_generation_polling_loop.get_task()
+        if name_polling_task is not None and name_polling_task is not asyncio.current_task():
+            with contextlib.suppress(asyncio.CancelledError):
+                await name_polling_task
+        await self.name_generation_worker.shutdown()
 
         self.polling_loop.stop()
         self.notification_polling_loop.stop()

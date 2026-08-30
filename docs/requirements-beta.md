@@ -462,6 +462,9 @@ ScheduleまたはRunに関連する通知を含む関連行にpending、processi
 - 運営者全体のBudgetは設定から`BudgetPolicy`へ渡す。不正値、未設定、価格不明、集計失敗、上限到達時は安全側でAIを呼ばない。顧客プランQuotaは将来の別Policy・別集計とし、2Bでは決済や顧客Quotaを実装しない。
 - 2B-1では`name_generation_jobs`と全体Budget bucketを永続化し、AI有効・Generator利用可能・本文あり・名前unsetの場合だけ作成または本文実変更と同じtransactionでJobを冪等登録する。AI無効、manual名、本文消去、本文以外の編集、no-opでは登録せず、既存予約を自動backfillしない。
 - 2B-1のRecoveryはlease切れprocessingを再呼び出さず`abandoned/startup_abandoned`へ移し、予約済みBudgetを返却しない。Jobは完了後30日、Budget bucketは期間終了後90日保持する。Worker、Generator実行、Bot lifecycle接続は2B-2で実装する。
+- 2B-2はpendingを安定順で1件claimし、Schedule、Job、JST daily、JST monthlyの順にlockして回数と最大想定費用を悲観予約する。commitとSession close後だけGeneratorを最大1回呼び、自動再試行せず、5秒timeoutと固定result codeで別transactionへfinalizeする。
+- startupでは既存Recoveryとともにlease切れJobを先に回収し、利用可能なGeneratorがある場合だけpollを開始する。shutdownでは新規pollを止め、実行中taskをcancel・awaitし、可能なら`abandoned/shutdown_unknown`を保存する。cleanup loopはJob30日、bucket90日を適用し、pending／processingとSchedule blockerを維持する。
+- 本番DIは`DisabledNameGenerator`だけで、AI初期無効、Provider SDK・HTTP client・APIキーなしを維持する。2B-2では外部AI、Entitlement、Plan、顧客Quota、決済を実装しない。
 - 利用者が実用上問題なく使える品質、回数、応答速度を確保し、そのうえで重複呼び出し、無制限再試行、不要な長文入力・過剰出力、不要な高価格モデル、無期限保存を避ける。コスト削減によって通常利用を困難にしたり、頻繁にフォールバックへ落としたりしない。
 - AI無効、上限到達、timeout、異常応答でも予約の作成、編集、投稿を成功させる。
 - 一覧、詳細、Autocomplete、投稿Worker、Recovery、通知WorkerからAIを呼ばない。

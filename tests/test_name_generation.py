@@ -19,6 +19,7 @@ class FakeNameGenerator:
     """Test-only DI fake; no production setting can select it."""
 
     available = True
+    maximum_cost_microunits = 1
 
     def __init__(self, result: str) -> None:
         self.result = GeneratedScheduleName(result)
