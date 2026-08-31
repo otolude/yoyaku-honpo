@@ -445,6 +445,42 @@ READMEの再現手順は安全な最短入口に限定し、DB操作、Discord�
 6B-1の本文成果物は[architecture](portfolio/architecture.md)、[feature flows](portfolio/feature-flows.md)、[security and privacy](portfolio/security-and-privacy.md)、[verification](portfolio/verification.md)、[screenshot policy](portfolio/screenshot-policy.md)、[asset manifest](portfolio/assets/manifest.md)へ分離し、English summaryは利用者承認済みの最終文面を使用する。GitHub profile、pin留め、案件媒体からの導線はrepository成果物完成後の別作業とし、氏名、連絡先、稼働条件を本repositoryへ推測で追加しない。
 
 6B-2では撮影用private channelと合成データだけで4画像を作成し、一覧・詳細の完全UUIDを不透明に焼き込み、画素だけの新規PNGへflattenした。元画像・編集layerは追跡せず、構造・hash・掲載先は[asset manifest](portfolio/assets/manifest.md)へ記録する。毎日・毎週の合成予約は正式Bot操作で論理削除し、投稿済み単発予約は既存保持規則に従う。撮影用channelは6Cまで保持し、DB直接削除やVolume削除をcleanup手段にしない。
+
+### 22.1 撮影専用DBの分離と再起動
+
+既存開発DBは撮影用に初期化せず、Compose project `discord-ai-reminder-bot`、container `discord-ai-reminder-bot-postgres-1`、Volume `discord-ai-reminder-bot_postgres_data`を停止状態で保持する。撮影用はCompose project `discord-ai-reminder-bot-portfolio`、container `discord-ai-reminder-bot-portfolio-postgres-1`、専用Volume `discord-ai-reminder-bot-portfolio_postgres_data`を使用する。DB内部名はMigration安全ガードに合わせて`discord_bot_dev`とするが、同じDB名だけを分離の根拠にしない。リリース時も開発DBや撮影DBを流用せず、新しい本番DBを用意する。DB、Volume、backup、`.env`、秘密情報はGit公開対象に含めない。
+
+現行Composeは`container_name`、外部Volume、bind mountを使用せず、projectごとの名前付きVolumeを`/var/lib/postgresql`へmountし、`127.0.0.1:5432`を公開する。したがって既存環境と撮影環境は同時起動せず、再起動前に毎回、展開後Compose設定とDocker実体のproject label、service label、container名、Volume名・mount先、portを照合する。Compose変更後はこの前提を再監査し、project名だけで分離済みと判断しない。
+
+撮影環境を再起動するときは、Bot processがなく、既存projectの`postgres`が停止し、撮影用Volumeが想定名で存在することを先に確認する。想定外のprocess、container、Volume、bind mount、外部Volume、port利用があれば起動せず調査する。確認後、撮影用PostgreSQLだけを起動する。
+
+```bash
+docker compose config
+docker compose ps
+docker compose -p discord-ai-reminder-bot-portfolio up -d postgres
+docker compose -p discord-ai-reminder-bot-portfolio ps
+docker inspect discord-ai-reminder-bot-portfolio-postgres-1
+docker volume inspect discord-ai-reminder-bot-portfolio_postgres_data
+```
+
+`docker inspect`では出力をそのまま公開せず、projectが`discord-ai-reminder-bot-portfolio`、serviceが`postgres`、mountが専用Volumeから`/var/lib/postgresql`、公開先が`127.0.0.1:5432`、既存開発containerが停止中であることだけを確認する。`.env`は変更・表示せず、設定loaderとMigration安全処理でdriver、loopback endpoint、DB名を検証する。撮影用containerだけがこのportを保持すると確定してから、正式ラッパーで次を実行する。
+
+```bash
+python -m discord_ai_reminder_bot.infrastructure.database.health
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
+python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
+python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev check
+```
+
+新規の空Volumeへ初めてschemaを作る場合だけ、接続先照合後に`--confirm development:discord_bot_dev:upgrade`を付けた正式ラッパーの`upgrade head`を実行する。既存撮影用Volumeの通常再起動ではupgradeを自動実行せず、`current`／`heads`／`check`の結果とRevision変更の有無から別途判断する。Alembic CLI、guard迂回、`stamp`、既存開発DBへのMigrationを使用しない。
+
+撮影準備前は、接続後にも`current_database()`が`discord_bot_dev`であることを確認し、read-only transactionの集計で業務8表が想定状態であることを確認する。2026-08-31の初期構築直後は業務8表がすべて0件だったが、これは確認時点の証跡であり、将来も空であることを保証しない。本文、予約名、実ID、接続URL、資格情報を取得・出力しない。撮影作業を終えたらBotを正常停止した後、撮影用PostgreSQLだけを停止し、専用Volumeは削除せず保持する。
+
+```bash
+docker compose -p discord-ai-reminder-bot-portfolio stop postgres
+docker compose -p discord-ai-reminder-bot-portfolio ps
+```
+
 ## 23. GitHub Actions CI（公開前構成）
 
 CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
