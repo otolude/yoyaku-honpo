@@ -70,6 +70,7 @@ OpenAI Adapterと手動受入CLIは無通信のMock transportで確認済みだ�
 
 - Git履歴、tracked files、画像metadata、復元可能性を含む秘密情報監査
 - Discord／OpenAIの名称、UI、商標・画面掲載条件
+- 採用予定名「よやく本舗」の商標確認（利用者提供の初期検索だけで使用可否を判断しない）
 - dependency license、LICENSE、著作権表記、SECURITY連絡先
 - 隔離環境でのREADME再現と、配置環境の監視・バックアップ・ARM64確認
 - 実Providerを明示許可後に限定実行する品質・保持・請求受入

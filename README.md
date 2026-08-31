@@ -1,16 +1,18 @@
-# Discord AI Reminder Bot
+# よやく本舗（Yoyaku Honpo）
 
 [![CI](https://github.com/otolude/discord-ai-reminder-bot/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/otolude/discord-ai-reminder-bot/actions/workflows/ci.yml?query=branch%3Adevelop)
 
-PythonとPostgreSQLで、単発・毎日・毎週の予約投稿に加え、競合制御・障害復旧・誤操作防止まで実装した、安全な運用を重視するDiscord Botです。
+「よやく本舗」は、日本語で使いやすいDiscordの予約投稿・リマインダーBotとして採用を予定している製品名です。日本語UIとJSTを前提に、単発・毎日・毎週の予約投稿に加え、競合制御・障害復旧・誤操作防止まで実装しています。
 
-> Discord AI Reminder Bot is a Python and PostgreSQL-based bot for scheduling one-time, daily, and weekly Discord posts. It uses PostgreSQL-backed durable workers and startup recovery, with explicit boundaries for interactions, authorization, concurrency control, and database migrations. It also includes a provider-isolated foundation for AI-assisted schedule naming, which is disabled by default. The project is currently in local development and portfolio preparation; it is not publicly deployed, and live AI provider validation remains pending.
+> Yoyaku Honpo is the planned product name for a Japanese-friendly Discord bot for scheduling one-time, daily, and weekly posts in JST. It uses Python and PostgreSQL, durable workers, and startup recovery. A provider-isolated foundation for AI-assisted schedule naming is implemented but disabled by default, and live AI provider validation remains pending. Broader AI-assisted scheduling is a future concept, not a currently available feature. The project is independently developed, is not affiliated with or endorsed by Discord, and is not publicly deployed.
 
 ## 概要
 
 Discordで後から投稿したい内容を予約し、一覧、詳細、編集、一時停止、再開、削除まで管理する個人開発プロジェクトです。要件定義、技術設計、実装、自動テスト、実Discord受入、運用RunbookをPhaseごとに整備しています。
 
 操作画面だけでなく、PostgreSQL上の競合制御、Bot再起動時のRecovery、保持期限cleanup、Migrationの接続先誤り防止、AI Provider障害時の非AI継続までを開発範囲に含めました。現在はローカル開発・GitHubポートフォリオ整備段階で、一般公開や常時稼働はしていません。
+
+「よやく本舗」は採用予定名であり、公開前の商標確認が残っています。本プロジェクトは独立した個人開発で、Discordの公式製品・公認製品・提携製品ではありません。リポジトリ名、Pythonパッケージ名、コマンド、DB名、環境変数等の技術識別子には、互換性維持のため従来名を残しています。
 
 ## 解決する課題
 
@@ -40,6 +42,7 @@ Discordで後から投稿したい内容を予約し、一覧、詳細、編集�
 | 手動予約名とJSTフォールバック | 実装済み・実Discord確認済み | 一覧や候補へ本文previewを表示しない |
 | AI Job／Budget／Worker | 基盤のみ実装済み・自動隔離テスト済み | ProviderとAIは初期無効 |
 | OpenAI Adapterと受入CLI | 基盤のみ実装済み・無通信テスト済み | 実API品質、保持、請求は未確認 |
+| より広いAI予約支援 | 将来構想 | 予約内容や日時の提案等は未実装。現在のAI実装は予約名生成基盤に限定 |
 | ARM64 Linux | 未確認 | 公開前の配置環境で確認予定 |
 | 常時稼働・一般公開 | 未実装 | 現在はローカル開発・ポートフォリオ段階 |
 | subscription・payment | 将来計画 | Plan、Quota、契約、決済は未実装 |
@@ -49,6 +52,8 @@ Discordで後から投稿したい内容を予約し、一覧、詳細、編集�
 ## 代表画面
 
 専用開発guildの合成データだけで撮影し、完全な予約UUIDを不透明に焼き込み匿名化した画面です。一覧は撮影用予約全5件のうち、代表3件が見える範囲を掲載しています。
+
+画像は採用予定名の決定前に撮影したため、投稿結果には撮影時の開発用表示名 `D AI Reminder Bot Dev` が写っています。画像とSHA-256は過去証跡として変更せず、採用予定名での再撮影は公開前の後続事項とします。
 
 ![単発・毎日・毎週の合成予約を表示した予約一覧](docs/portfolio/assets/schedule-list.png)
 

@@ -51,6 +51,7 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 - 24時間常時稼働、一般公開、実利用者利用、本番監視
 - Plan、Entitlement、顧客Quota、契約、決済、Webhook
 - LICENSE、dependency license、商標・画面掲載条件、Git履歴の公開前最終監査
+- 採用予定名「よやく本舗」の商標クリアランス（利用者提供のJ-PlatPat初期検索記録だけでは未完了）
 
 ## 6. 更新手順
 

@@ -52,6 +52,7 @@
 - [x] manifestへ実guild名、実ID、Project ID、秘密、local pathを記録していない。
 - [ ] 6Cで全画像の写り込み、metadata、復元可能性、元画像／編集layer非追跡を再監査した。
 - [ ] 6Cの商標・第三者素材・公開可否の利用者判断が完了した。
+- [ ] 採用予定名「よやく本舗」で必要な画面を再撮影し、既存画像の差し替え要否と新しいSHA-256を監査した。
 
 ## 8. 実施結果と限界
 
@@ -65,6 +66,7 @@
 - repository上でPNG signature、寸法、chunk CRC、IEND、trailing dataなしを確認した。privacy関連のtext／EXIF／XMP chunkは存在しない。
 - 4枚を独立して目視し、写り込み、復元可能なmask、不自然な欠け、判読不能な主要表示がないことを確認した。一覧は代表3件より下を意図的にcropした旨をcaptionとmanifestへ記録した。
 - file名、alt text、用途、掲載先、匿名化、metadata、確認日、確認者、SHA-256を[manifest](assets/manifest.md)へ対応付けた。
+- 投稿結果画像の `D AI Reminder Bot Dev` は撮影時の開発用表示名であり、現在の採用予定名ではない。既存画像とSHA-256は過去証跡として維持し、再撮影は公開前の後続事項とした。
 - 毎日・毎週の合成予約はBotの正式操作で論理削除し、投稿済み単発予約は既存保持規則に従う。撮影用channelは6Cまで保持する。
 
 6Cで行う全画像・Git履歴・商標・公開状態の最終監査は、この6B-2記録によって完了扱いにしない。

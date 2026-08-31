@@ -8,6 +8,8 @@
 
 ## 2. 目的と対象読者
 
+製品の採用予定名は「よやく本舗」、英字表記は「Yoyaku Honpo」とする。日本語で使いやすいDiscordの予約投稿・リマインダーBotとして、日本語UI、JST、単発・毎日・毎週の予約投稿という実装済み範囲を紹介する。現在のAI実装は予約名生成のProvider非依存基盤に限定され、初期無効かつ実Provider未検証である。より広いAI予約支援は将来構想として分離し、現在利用できる機能とは表現しない。本製品は独立開発であり、Discordの公式・公認・提携製品と誤認させない。
+
 ポートフォリオの目的は、GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募において、第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。対象読者は採用担当者、技術担当者、発注者とする。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
 
 現在は公開前準備中であり、実際のrepository visibilityは6Cで確認する。public化時期は6C監査合格後を候補とし、6B文書整備だけで公開可否を確定しない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
@@ -124,6 +126,8 @@ READMEは短時間で全体像を把握する入口とし、長い設計理由�
 
 Discordの名称、UI、商標・ブランド利用条件は6Cまでの調査対象とし、Discord公式画面または公式提携を誤認させる表現、ロゴ改変、不要なロゴ掲載を避ける。法的適合を本書だけで断定しない。
 
+採用予定名に関して、利用者提供のJ-PlatPat検索結果では「よやく本舗」「予約本舗」「Yoyaku Honpo」は各0件、「ヨヤクホンポ」の称呼類似検索は2件であった。その内訳として、登録5453553「よやくーぽん！」（第42類、類似群コード42P02・42X11）と登録6836621「ヨヤクーポン」（第35・36類）は登録存続中と報告されている。これは利用者が行った検索の記録であり、法的な使用可否の判断、網羅的な類似調査、商標クリアランス完了を意味しない。「よやく本舗」は採用予定として管理し、公開前に専門家への相談要否を含む商標確認を行う。この記録だけで6Cまたは公開受入を完了にしない。
+
 ## 9. 構成図・フロー図の安全境界
 
 構成図にはDiscord Interaction、Bot Application、Domain／Application／Infrastructure、PostgreSQL、Schedule worker、Notification worker、Name generation worker、NameGenerator Port、Disabled／OpenAI Adapter、外部AI Provider候補、将来Entitlement境界、Migration安全ラッパー、cleanup／Recoveryを掲載できる。
@@ -169,6 +173,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |
 | dependency license | 未監査 | direct／transitive依存のライセンスとNOTICE要否を6Cまでに監査 |
 | Discord／OpenAIの名称・画面・ロゴ | 未監査 | 最新の商標・ブランド・画面掲載条件を公式情報で確認 |
+| 採用予定名「よやく本舗」 | 利用者提供の初期検索記録あり・未クリアランス | 公開前に商標確認を完了し、この記録だけで公開可としない |
 | 第三者素材 | 現在なし | 追加assetごとに出典、ライセンス、改変可否をmanifestで管理 |
 | 個人情報・著作権 | 実データ非掲載を要件化 | 合成データ、撮影者権限、UI内素材、本文の権利を6Cで人手確認 |
 | repository visibility | ローカルGitだけでは判定不能 | GitHub上のpublic／privateを利用者が確認 |

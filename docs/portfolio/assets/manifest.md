@@ -8,6 +8,8 @@
 
 本manifestは6B-2の組み込み監査を記録する。Discordの最新商標・画面掲載条件、Git履歴、全公開状態の最終判断は6Cに残す。
 
+画像は製品名「よやく本舗」の採用予定決定前に撮影した。`scheduled-post-delivered.png`には撮影時の開発用Bot表示名 `D AI Reminder Bot Dev` が含まれる。これは現在の製品名ではなく過去証跡である。画像とSHA-256は変更せず、採用予定名での再撮影と差し替え判断を公開前の後続事項とする。
+
 ## 2. Asset records
 
 ### `schedule-list.png`
@@ -67,7 +69,7 @@
 | --- | --- |
 | 用途 | Botが通常channelへ合成本文を投稿した結果を示す |
 | 掲載先 | `docs/portfolio/feature-flows.md` |
-| Synthetic scenario | 公開前チェック用の合成本文と公開可能な撮影用Bot名だけを使用 |
+| Synthetic scenario | 公開前チェック用の合成本文と、撮影時の開発用Bot表示名 `D AI Reminder Bot Dev` だけを使用。現在の採用予定名ではない |
 | Crop | 投稿message以外のguild、channel chrome、他message、利用者情報を除外 |
 | Irreversible redaction | 実IDを撮影範囲へ含めず、画素だけを新しいPNGへflatten |
 | Metadata removal | 画素を新規PNGへ再描画。privacy関連chunkなしをrepository上で再確認 |
