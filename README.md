@@ -130,16 +130,18 @@ flowchart LR
 
 ## テスト・受入状況
 
-2026-08-31までの記録です。件数は明記した対象commitのスナップショットであり、現在のコードや品質、可用性、セキュリティを恒久保証する値ではありません。
+2026-09-01までの記録です。件数は明記した対象commitのスナップショットであり、現在のコードや品質、可用性、セキュリティを恒久保証する値ではありません。
 
 - commit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`のDB非依存隔離検証: 1,019 passed、通常pytestは1,019 passed／349 skipped
 - 上記349件は`TEST_DATABASE_URL`未設定によるPostgreSQL統合testのskipであり、DB統合確認ではない
 - 同commitの新規venv・`env -i`・公開PyPI・テスト時外向きsocket遮断環境で、依存install、sdist、sdist由来wheel、pip check、Ruffが成功
-- 専用PostgreSQL込みpytest: 1,368 passed
+- commit `d984a1af3560cd4ea1caf48a3926665094b45318`のDocker internal network隔離検証: 通常pytest 1,019 passed／349 skipped、PostgreSQL integration 349 passed／0 skipped／0 errors、算術合計1,368 passed
+- 同検証はrunnerとtmpfs専用PostgreSQLのnetwork namespaceを共有し、`127.0.0.1:5432`だけをDB接続先として、公開IPv4／IPv6への直接接続遮断、正式Migration、single head、主要8表0件、secret非露出、両containerの正常停止を確認
+- 同commitについて利用者がGitHub画面でworkflowとtest jobの成功、新しい警告なし、Artifactsなし、CI badgeからworkflow画面へ移動可能であることを確認。ローカル隔離検証とは別の利用者画面確認として扱う
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: DB非依存隔離検証監査後121／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
-- DB統合再確認、実OpenAI Provider受入、ARM64 Linux実機確認、対象commitのGitHub CIは未確認
+- Phase 3: PostgreSQL隔離再現確認後122／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- 実OpenAI Provider受入、ARM64 Linux実機確認、法的配布可否、最終公開判断は未確認
 
 環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
 
@@ -196,4 +198,4 @@ python -m discord_ai_reminder_bot
 
 本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を参照してください。
 
-GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-08-31に対象commitで成功を確認したworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。
+GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-01に利用者がcommit `d984a1af3560cd4ea1caf48a3926665094b45318`で成功を確認し、badgeからworkflow画面へ移動できたworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。

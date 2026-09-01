@@ -483,7 +483,7 @@ docker compose -p discord-ai-reminder-bot-portfolio ps
 
 ## 23. GitHub Actions CI（公開前構成）
 
-CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
+CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。さらに2026-09-01に利用者がcommit `d984a1af3560cd4ea1caf48a3926665094b45318`について、workflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。後者のrun番号と所要時間は提供されていない。これらは利用者画面確認でありローカル隔離検証と混同しない。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
 
 公式ActionはNode.js 24対応の`actions/checkout@v7`と`actions/setup-python@v7`を使用する。正確なfull commit SHAを独立検証できない状態では推測でpinせず、version更新時にworkflow構文と実行結果を再確認する。
 
@@ -504,3 +504,13 @@ Security Policy、Contribution方針、Issue Formの運用開始はrepository公
 build isolationではHatchling 1.32.0等6依存をfrontend出力、pip log、cache wheelで確認した。frontendが一時build用venvを削除したため、そのsite-packages実体は事後検査していない。本repositoryにはlock fileがなく、将来の依存解決再現性を保証しない。
 
 wheelは76 memberで`RECORD`整合だが`COPYRIGHT.md`未収録、sdistは追跡176ファイルと`PKG-INFO`を収録し`COPYRIGHT.md`を含む。両方ともlicense metadataは未設定で、危険なarchive path、秘密情報、実`.env`、DB、backupの混入は確認されなかった。artifactを配布せず、これらの不足を運用判断で推測修正しない。詳細とhashは[検証スナップショット](portfolio/verification.md)を参照する。この証跡を現在のコード、DB統合、ARM64、実Provider、GitHub CI、法的配布可否、公開可能性、安全性の確認として扱わない。
+
+## 25. PostgreSQL込みREADMEセットアップ隔離証跡
+
+2026-09-01にcommit `d984a1af3560cd4ea1caf48a3926665094b45318`を対象として、Git管理外のclean archiveとDocker internal networkを使った隔離再現を行った。runnerは専用postgres_testとnetwork namespaceを共有し、local-only guardを変更せず`127.0.0.1:5432`だけへ接続した。PostgreSQLだけが専用internal network endpointを持ち、公開port、named Volume、既存DB・撮影DB・既存Volumeへの接続はなく、test DBはtmpfsだけに置いた。runnerは非root、read-only、全capability drop、no-new-privilegesで、Docker socket、host source、既存`.env`・`.venv`をmountしなかった。
+
+公開IPv4／IPv6への直接接続は`ENETUNREACH`となり、bridge gatewayの既知portとloopback 55432も接続できなかった。依存取得はbuild段階の公開PyPI接続で完了し、test段階では外部取得を行っていない。PostgreSQL health、アプリケーションhealthの`SELECT 1`、正式Migrationラッパーの`upgrade head`／`current`／`heads`／`check`が成功し、`a41f8c7d2e90`のsingle headを確認した。通常pytestは1,019 passed／349 skipped、専用integrationは349 passed／0 skipped／0 errors、合計1,368 passedで、warningはなかった。主要8表はMigration直後、integration後、停止直前に全て0件で、両containerは`Exited (0)`となった。
+
+この手順は通常の開発・CI手順へ追加するものではなく、保存証跡の再現時だけ個別承認して実行する。接続URLやcredentialをcommand引数へ置かず、0600のCompose secretを検査wrapperからchild processだけへ渡す。通常・integrationログで合成secret完全一致0件を確認したが、Git管理外の永続証跡には再監査用の専用secretファイルとして合成値が残る。実credentialではないものの、証跡を公開、配布、Git追加しない。
+
+internal networkはDocker Desktop daemon、WSL2 kernel、管理者侵害への耐性を保証せず、runnerとDBは同一network namespace内で相互到達可能である。test DBはtmpfsで停止後に失われるため、停止前のMigration・件数・testログを証跡とする。lock fileはなく、将来の依存再現性を保証しない。ARM64、実Provider、法的配布可否、最終公開判断をこの結果から完了扱いにしない。証跡の件数・hash・詳細は[検証スナップショット](portfolio/verification.md)を正本とする。
