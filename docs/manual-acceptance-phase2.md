@@ -46,7 +46,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 ### 2026-08-30 自動テストによる隔離受入
 
 - 実施者: Oto
-- 証跡commit: `a751fc8db7287d398b9518840bd6ec0cc2dc73fe`
+- 証跡対象: identity書換え前の非公開対応commit
 - 証跡種別: 自動テストによる隔離受入
 - 実行結果: 専用PostgreSQL込み全pytest 1028件成功（通常pytest 746件成功／282件skip、重点テスト31件成功）
 
@@ -84,7 +84,7 @@ Autocompleteは空入力とchannel名検索で概ね3秒以内に候補が表示
 
 - 実施者: Oto
 - 既存証跡種別: 既存自動テストによる隔離受入
-- 既存証跡commit: `e9c4e4974b009381626c5a730baf4230808fab67`
+- 既存証跡対象: identity書換え前の非公開対応commit
 - 追加証跡種別: Fake Interaction／固定Clock／専用PostgreSQLによる隔離受入
 
 「本人境界」「管理者境界」は`tests/integration/test_schedule_queries_integration.py::test_autocomplete_owner_admin_guild_deleted_limit_and_stable_order`と`tests/test_schedule_queries.py::test_autocomplete_scopes_creator_and_returns_immutable_projection`で、本人だけへのcreator絞り込み、管理者のguild内全作成者参照、別guild除外、不要情報を持たないimmutable DTOを確認した。「認可失敗」は`tests/test_interactions.py::test_unsafe_or_unauthorized_interaction_is_rejected`と`tests/test_interactions.py::test_tree_denies_autocomplete_with_only_empty_choices`で、DM、設定外guild、非member、許可ロールなしを拒否し、Autocompleteには通常メッセージを送らず空候補だけを返すことを確認した。

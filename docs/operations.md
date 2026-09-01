@@ -483,7 +483,7 @@ docker compose -p discord-ai-reminder-bot-portfolio ps
 
 ## 23. GitHub Actions CI（公開前構成）
 
-CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。さらに2026-09-01に利用者がcommit `d984a1af3560cd4ea1caf48a3926665094b45318`について、workflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。後者のrun番号と所要時間は提供されていない。これらは利用者画面確認でありローカル隔離検証と混同しない。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
+CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoがidentity書換え前の対応commitのActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。さらに2026-09-01に利用者が別のidentity書換え前対応commitについて、workflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。後者のrun番号と所要時間は提供されていない。これらは過去の利用者画面確認であり、ローカル隔離検証や新履歴のCIと混同しない。2026-09-02には新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、利用者がStatus Success、test job成功、新しい警告なし、Artifactsなし、badgeから新workflowへ移動可能であることと、commitのGitHub accountへの関連付けを画面確認した。badgeはこのworkflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
 
 公式ActionはNode.js 24対応の`actions/checkout@v7`と`actions/setup-python@v7`を使用する。正確なfull commit SHAを独立検証できない状態では推測でpinせず、version更新時にworkflow構文と実行結果を再確認する。
 
@@ -499,7 +499,7 @@ Security Policy、Contribution方針、Issue Formの運用開始はrepository公
 
 ## 24. DB非依存の隔離build・test証跡
 
-2026-08-31にcommit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`を対象として、Linux x86_64／Python 3.14.4／pip 25.1.1／build 1.6.0の新規venvを`env -i`で使用し、公開PyPIから依存を解決した保存証跡がある。対象commitの追跡176ファイルはGit blob hash一致で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件が成功した。通常pytestは1,019 passed／349 skippedで、全skipは`TEST_DATABASE_URL`未設定によるPostgreSQL統合testである。テスト時の外向きsocket作成はOS sandboxで遮断されたが、filesystem namespaceは分離していない。
+2026-08-31にidentity書換え前の対応commitを対象として、Linux x86_64／Python 3.14.4／pip 25.1.1／build 1.6.0の新規venvを`env -i`で使用し、公開PyPIから依存を解決した保存証跡がある。対象commitの追跡176ファイルはGit blob hash一致で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件が成功した。通常pytestは1,019 passed／349 skippedで、全skipは`TEST_DATABASE_URL`未設定によるPostgreSQL統合testである。テスト時の外向きsocket作成はOS sandboxで遮断されたが、filesystem namespaceは分離していない。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
 
 build isolationではHatchling 1.32.0等6依存をfrontend出力、pip log、cache wheelで確認した。frontendが一時build用venvを削除したため、そのsite-packages実体は事後検査していない。本repositoryにはlock fileがなく、将来の依存解決再現性を保証しない。
 
@@ -507,10 +507,16 @@ wheelは76 memberで`RECORD`整合だが`COPYRIGHT.md`未収録、sdistは追跡
 
 ## 25. PostgreSQL込みREADMEセットアップ隔離証跡
 
-2026-09-01にcommit `d984a1af3560cd4ea1caf48a3926665094b45318`を対象として、Git管理外のclean archiveとDocker internal networkを使った隔離再現を行った。runnerは専用postgres_testとnetwork namespaceを共有し、local-only guardを変更せず`127.0.0.1:5432`だけへ接続した。PostgreSQLだけが専用internal network endpointを持ち、公開port、named Volume、既存DB・撮影DB・既存Volumeへの接続はなく、test DBはtmpfsだけに置いた。runnerは非root、read-only、全capability drop、no-new-privilegesで、Docker socket、host source、既存`.env`・`.venv`をmountしなかった。
+2026-09-01にidentity書換え前の対応commitを対象として、Git管理外のclean archiveとDocker internal networkを使った隔離再現を行った。runnerは専用postgres_testとnetwork namespaceを共有し、local-only guardを変更せず`127.0.0.1:5432`だけへ接続した。PostgreSQLだけが専用internal network endpointを持ち、公開port、named Volume、既存DB・撮影DB・既存Volumeへの接続はなく、test DBはtmpfsだけに置いた。runnerは非root、read-only、全capability drop、no-new-privilegesで、Docker socket、host source、既存`.env`・`.venv`をmountしなかった。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
 
 公開IPv4／IPv6への直接接続は`ENETUNREACH`となり、bridge gatewayの既知portとloopback 55432も接続できなかった。依存取得はbuild段階の公開PyPI接続で完了し、test段階では外部取得を行っていない。PostgreSQL health、アプリケーションhealthの`SELECT 1`、正式Migrationラッパーの`upgrade head`／`current`／`heads`／`check`が成功し、`a41f8c7d2e90`のsingle headを確認した。通常pytestは1,019 passed／349 skipped、専用integrationは349 passed／0 skipped／0 errors、合計1,368 passedで、warningはなかった。主要8表はMigration直後、integration後、停止直前に全て0件で、両containerは`Exited (0)`となった。
 
 この手順は通常の開発・CI手順へ追加するものではなく、保存証跡の再現時だけ個別承認して実行する。接続URLやcredentialをcommand引数へ置かず、0600のCompose secretを検査wrapperからchild processだけへ渡す。通常・integrationログで合成secret完全一致0件を確認したが、Git管理外の永続証跡には再監査用の専用secretファイルとして合成値が残る。実credentialではないものの、証跡を公開、配布、Git追加しない。
 
 internal networkはDocker Desktop daemon、WSL2 kernel、管理者侵害への耐性を保証せず、runnerとDBは同一network namespace内で相互到達可能である。test DBはtmpfsで停止後に失われるため、停止前のMigration・件数・testログを証跡とする。lock fileはなく、将来の依存再現性を保証しない。ARM64、実Provider、法的配布可否、最終公開判断をこの結果から完了扱いにしない。証跡の件数・hash・詳細は[検証スナップショット](portfolio/verification.md)を正本とする。
+
+## 26. identity書換え後の履歴監査
+
+2026-09-02にmain／developの83 commitを同一mappingで書き換え、完全一致leaseを指定したatomic pushで両branchを同時更新した。旧新83組のtree、message byte hash、author／committer日時、parent mappingは全件一致し、blob集合は旧新とも708件で完全一致した。root 1件、merge 0件、signed commit 0件で、Git管理ファイルの内容は変えていない。新履歴のauthor／committerはOto＋GitHub noreplyの1種類、旧identity一致は0件である。完全なidentity値、mapping、旧履歴bundle、保存pathは公開せずGit管理外で保持する。
+
+書換え後の83 commit／708 blobを再監査し、高確度secret候補は0件だった。現行・旧版のPNG 8 blobも従来SHAと一致した。画像のsignature、CRC、IEND、trailing data、metadata chunk、alphaと黒矩形、目視上の写り込み、匿名化前画像・編集layer・生成前画像の非到達を確認した。専用secret scannerは未導入で、GitHub内部object、cache、旧Actions run、既存cloneや画像編集前データの不存在は保証しない。旧main／develop／MIT commitはbranch・tagから到達不能だが、非公開復旧証跡と元cloneのreflogは保持する。

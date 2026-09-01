@@ -4,7 +4,7 @@
 
 本書はPhase 3ロードマップ第6項「ポートフォリオを整備する」の6A成果物であり、掲載要件、匿名化基準、6B成果物、6C監査範囲を定義する。6B-1ではREADMEと文章・Mermaid成果物を作成し、6B-2の画面資料と6C監査は分離する。
 
-基準はcommit `bd2c9be91e8ddeb936a4b37888099d649b177375`時点である。Phase 1は63／63、Phase 2は47／47、Phase 3は6A項目追加前で99／101であり、実OpenAI Provider受入とARM64 Linux実機確認は未確認である。数値は品質を恒久保証するものではなく、その時点の受入記録への索引として扱う。
+基準はidentity書換え後commit `bd2c9be91e8ddeb936a4b37888099d649b177375`時点である。Phase 1は63／63、Phase 2は47／47、Phase 3は6A項目追加前で99／101であり、実OpenAI Provider受入とARM64 Linux実機確認は未確認である。これはtree内容上の文書基準であり、過去の実行証跡を新commitで再実行したという意味ではない。数値は品質を恒久保証するものではなく、その時点の受入記録への索引として扱う。
 
 ## 2. 目的と対象読者
 
@@ -218,7 +218,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 
 ### 15.1 初回16条件の再分類
 
-pytest nodeは6Aの文書要件そのものを検証しないため、A項目に対応するpytest node IDはない。直接証跡は本書の該当節、README、roadmap、requirements、technical design、operations、Phase 3受入表の文書差分とする。Git証跡は、基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`から変更したものがこの7文書だけで、Phase 1・Phase 2受入文書、Python、テスト、DBモデル、Migration、`.env`に差分がなく、画像が追跡されていない状態である。6B／6Cの実物が必要な条件は既存テストを代替証跡にしない。
+pytest nodeは6Aの文書要件そのものを検証しないため、A項目に対応するpytest node IDはない。直接証跡は本書の該当節、README、roadmap、requirements、technical design、operations、Phase 3受入表の文書差分とする。Git証跡は、identity書換え後の基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`から変更したものがこの7文書だけで、Phase 1・Phase 2受入文書、Python、テスト、DBモデル、Migration、`.env`に差分がなく、画像が追跡されていない状態である。書換え時に旧新tree OID一致を確認しており、このSHA更新は文書基準の移行であって過去検証の再実行記録ではない。6B／6Cの実物が必要な条件は既存テストを代替証跡にしない。
 
 | No. | 元の条件 | 分類 | 直接証跡・判定 |
 | --- | --- | --- | --- |

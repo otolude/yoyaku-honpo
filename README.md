@@ -130,17 +130,19 @@ flowchart LR
 
 ## テスト・受入状況
 
-2026-09-01までの記録です。件数は明記した対象commitのスナップショットであり、現在のコードや品質、可用性、セキュリティを恒久保証する値ではありません。
+2026-09-02までの記録です。件数は明記した検証対象のスナップショットであり、現在のコードや品質、可用性、セキュリティを恒久保証する値ではありません。過去の実行証跡はidentity書換え前の対応commitを対象としており、書換え時に対応する旧新commitのtree一致を確認したものの、新commitで再実行した結果としては扱いません。完全な対応表はGit管理外の非公開証跡で保持します。
 
-- commit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`のDB非依存隔離検証: 1,019 passed、通常pytestは1,019 passed／349 skipped
+- identity書換え前の対応commitで行ったDB非依存隔離検証: 1,019 passed、通常pytestは1,019 passed／349 skipped
 - 上記349件は`TEST_DATABASE_URL`未設定によるPostgreSQL統合testのskipであり、DB統合確認ではない
-- 同commitの新規venv・`env -i`・公開PyPI・テスト時外向きsocket遮断環境で、依存install、sdist、sdist由来wheel、pip check、Ruffが成功
-- commit `d984a1af3560cd4ea1caf48a3926665094b45318`のDocker internal network隔離検証: 通常pytest 1,019 passed／349 skipped、PostgreSQL integration 349 passed／0 skipped／0 errors、算術合計1,368 passed
+- 同じidentity書換え前対応commitの新規venv・`env -i`・公開PyPI・テスト時外向きsocket遮断環境で、依存install、sdist、sdist由来wheel、pip check、Ruffが成功
+- identity書換え前の対応commitで行ったDocker internal network隔離検証: 通常pytest 1,019 passed／349 skipped、PostgreSQL integration 349 passed／0 skipped／0 errors、算術合計1,368 passed
 - 同検証はrunnerとtmpfs専用PostgreSQLのnetwork namespaceを共有し、`127.0.0.1:5432`だけをDB接続先として、公開IPv4／IPv6への直接接続遮断、正式Migration、single head、主要8表0件、secret非露出、両containerの正常停止を確認
-- 同commitについて利用者がGitHub画面でworkflowとtest jobの成功、新しい警告なし、Artifactsなし、CI badgeからworkflow画面へ移動可能であることを確認。ローカル隔離検証とは別の利用者画面確認として扱う
+- identity書換え前の同対応commitについて利用者がGitHub画面でworkflowとtest jobの成功、新しい警告なし、Artifactsなし、CI badgeからworkflow画面へ移動可能であることを確認。ローカル隔離検証とは別の過去の利用者画面確認として扱う
+- identity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、利用者がGitHub画面でStatus Success、test job成功、新しい警告なし、Artifactsなし、CI badgeから新workflowへ移動可能であることと、commitのGitHub accountへの関連付けを確認
+- identity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。GitHub内部保持や画像編集前データの不存在は保証しない
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: PostgreSQL隔離再現確認後122／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- Phase 3: Git履歴・画像・秘密情報最終監査後123／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
 - 実OpenAI Provider受入、ARM64 Linux実機確認、法的配布可否、最終公開判断は未確認
 
 環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
@@ -176,7 +178,7 @@ python -m discord_ai_reminder_bot
 - 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
 - 完了: Phase 3第6項6C-1の運営ファイル・CI構成、ローカル隔離受入、GitHub Actions初回成功確認
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
-- 今後: 6C公開前監査、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
+- 今後: 6Cのdependency license・第三者素材・商標／画面条件・公開状態／最終判断、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
 詳細は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
 
@@ -198,4 +200,4 @@ python -m discord_ai_reminder_bot
 
 本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を参照してください。
 
-GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-01に利用者がcommit `d984a1af3560cd4ea1caf48a3926665094b45318`で成功を確認し、badgeからworkflow画面へ移動できたworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。
+GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認し、badgeから新workflow画面へ移動できたworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。

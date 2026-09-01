@@ -8,9 +8,10 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2A証跡: 基盤重点テスト372件、Modal dispatch・ViewStore・競合重点テスト44件、残る認可境界6 node・17ケース、通常pytest 859件成功／324件skip、専用PostgreSQL込み全pytest 1183件成功。Migration upgrade／downgrade／upgrade、既存行backfill、downgrade guard、Alembic current／heads／check成功
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
-- 6C-1証跡: YAML／Issue Form／workflow静的検査、通常pytest 1019件成功／349件skip、専用PostgreSQL integration 349件成功、Ruff check／format、pip check、Migration current／heads／check成功、主要8表は終了時0件。2026-08-31にOtoがcommit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2（1分8秒、test job成功、Artifactsなし、Node.js 20警告なし）をGitHub画面で確認し、旧著作権方針版のrun #1を削除した
-- 6C-3証跡: commit `d984a1af3560cd4ea1caf48a3926665094b45318`のWSL2 Linux x86_64／Python 3.14.4／PostgreSQL 18.4隔離環境で、通常pytest 1019 passed／349 skipped、PostgreSQL integration 349 passed、合計1368 passed、正式Migration、single head、主要8表の3時点0件、外向きIPv4／IPv6遮断、secret非露出、両containerの正常停止を確認した。同commitのGitHub Actionsは利用者が画面でworkflowとtest job成功、新しい警告なし、Artifactsなし、CI badgeの遷移を別途確認した
-- 集計: 確認済み 122件／未確認 5件（合計127件）
+- 6C-1証跡: YAML／Issue Form／workflow静的検査、通常pytest 1019件成功／349件skip、専用PostgreSQL integration 349件成功、Ruff check／format、pip check、Migration current／heads／check成功、主要8表は終了時0件。identity書換え前の対応commitに対する2026-08-31のActions run #2（1分8秒、test job成功、Artifactsなし、Node.js 20警告なし）をOtoがGitHub画面で確認し、旧著作権方針版のrun #1を削除した
+- 6C-3証跡: identity書換え前の対応commitをWSL2 Linux x86_64／Python 3.14.4／PostgreSQL 18.4隔離環境で検証し、通常pytest 1019 passed／349 skipped、PostgreSQL integration 349 passed、合計1368 passed、正式Migration、single head、主要8表の3時点0件、外向きIPv4／IPv6遮断、secret非露出、両containerの正常停止を確認した。同対応commitのGitHub Actionsは利用者が画面でworkflowとtest job成功、新しい警告なし、Artifactsなし、CI badgeの遷移を別途確認した。これらをidentity書換え後commitでの再実行結果として扱わない
+- 6C履歴監査証跡: identity書換え後の83 commit／708 blobを読み取り再監査し、author／committerはOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補は0件、現行・旧版PNG 8 blobは従来SHAと一致した。利用者は新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`のActions成功とGitHub accountへの関連付けを画面確認した
+- 集計: 確認済み 123件／未確認 4件（合計127件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -21,7 +22,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - Phase 3第6項6B-1受入判定: 完了（2件／2件）
 - Phase 3第6項6B-2受入判定: 完了（1件／1件）
 - Phase 3第6項6C-1隔離受入判定: 完了（6件／6件、GitHub Actions初回成功確認済み）
-- Phase 3第6項6C受入判定: 未完了（1件／4件、利用者判断を含む）
+- Phase 3第6項6C受入判定: 未完了（2件／4件、利用者判断を含む）
 
 ## 自動テスト受入
 
@@ -203,7 +204,7 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 
 ## Phase 3第6項6A 要件・掲載境界・匿名化基準・成果物範囲
 
-以下は[ポートフォリオ掲載計画](portfolio-plan.md)と関連文書の差分だけで全条件を直接確認した隔離受入である。pytest nodeは文書要件を検証しないため証跡に使用せず、基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`からの文書差分、Git状態、Markdown・リンク・秘密情報検査を証跡とする。成果物が基準へ準拠したことは6B／6Cへ分離する。
+以下は[ポートフォリオ掲載計画](portfolio-plan.md)と関連文書の差分だけで全条件を直接確認した隔離受入である。pytest nodeは文書要件を検証しないため証跡に使用せず、identity書換え後の基準commit `bd2c9be91e8ddeb936a4b37888099d649b177375`からの文書差分、Git状態、Markdown・リンク・秘密情報検査を証跡とする。これはtree内容上の文書基準であり、過去の実行証跡を新commitで再実行したという意味ではない。成果物が基準へ準拠したことは6B／6Cへ分離する。
 
 - [x] 目的と、採用担当者、技術者、運用・セキュリティ確認者、将来の協力者という対象読者、および日本語本文＋短いEnglish summaryの言語方針を定義する。
 - [x] READMEを短い入口、`docs/portfolio/`を第三者向け要約、既存要件・設計・運用・受入文書を正本とする役割分担を定義する。
@@ -235,16 +236,16 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 
 以下は6B成果物完成後の最終監査または利用者判断を必要とするため未確認とする。
 
-- [x] READMEと全詳細文書のリンク、隔離環境での再現手順、実装主張とコード・Migration・受入証跡の対応を確認する。commit `d984a1af3560cd4ea1caf48a3926665094b45318`のGit管理外clean archive、Docker internal network、namespace共有runner、tmpfs専用DBによる保存証跡で、追跡176ファイル、source・依存・wrapper、通信遮断、正式Migration、通常／integration pytest、主要8表0件、secret非露出、正常停止を直接確認した。
-- [ ] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。
+- [x] READMEと全詳細文書のリンク、隔離環境での再現手順、実装主張とコード・Migration・受入証跡の対応を確認する。identity書換え前の対応commitのGit管理外clean archive、Docker internal network、namespace共有runner、tmpfs専用DBによる保存証跡で、追跡176ファイル、source・依存・wrapper、通信遮断、正式Migration、通常／integration pytest、主要8表0件、secret非露出、正常停止を直接確認した。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
+- [x] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。identity書換え後のmain／developから到達可能な83 commit、708 blob、全追跡pathを再監査し、identityはOto＋GitHub noreplyの1種類、旧個人名・旧Gmail一致とtoken等の高確度候補は0件だった。現行4枚＋旧版4枚のPNGは従来SHAと一致し、signature、全chunk CRC、IEND、trailing dataなし、metadata chunkなし、全画素alpha 255と黒矩形の完全不透明を確認した。目視上の個人名、実サーバー名、sidebar、DM、通知、実IDはなく、匿名化前画像・編集layer・生成前画像も到達履歴になかった。
 - [ ] 採用LICENSE・著作権表記、dependency license、第三者素材、Discord／OpenAIの商標・画面掲載条件を確認し、Discord画面を掲載するか利用者判断を記録する。
 - [ ] repository visibilityとpublic化時期、SECURITYの連絡先、外部Contribution、Code of Conduct、公開Issue／PR、CI・badgeの利用者判断と実際の公開状態を確認し、最終公開可否を判定する。
 
 ## Phase 3第6項6C-1 リポジトリ運営基盤とCI 自動隔離受入
 
-以下はローカルのファイル内容、YAML schema、無通信テスト、専用test DBと、利用者がGitHub画面で確認したActions runを直接証跡とする。CI成功だけで6C全体を完了扱いにせず、Private vulnerability reporting有効化、repository visibility、依存license、第三者素材・商標、Git履歴、公開可否は上記6Cの未確認条件へ残す。
+以下はローカルのファイル内容、YAML schema、無通信テスト、専用test DBと、利用者がGitHub画面で確認したActions runを直接証跡とする。CI成功だけで6C全体を完了扱いにせず、Private vulnerability reporting有効化、repository visibility、依存license、第三者素材・商標、公開可否は上記6Cの未確認条件へ残す。Git履歴・画像監査は6Cの別項目として2026-09-02に完了した。
 
-2026-09-01に利用者がcommit `d984a1af3560cd4ea1caf48a3926665094b45318`について、workflow実行成功、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。run番号と所要時間は提供されていないため推測せず、ローカルのPostgreSQL隔離検証とは別の画面確認証跡として扱う。
+2026-09-01に利用者がidentity書換え前の対応commitについて、workflow実行成功、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。run番号と所要時間は提供されていないため推測せず、ローカルのPostgreSQL隔離検証とは別の過去の画面確認証跡として扱う。2026-09-02には新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について同じ成功条件とcommitのGitHub accountへの関連付けを利用者が画面確認した。これは新履歴のCI証跡であり、過去のローカル隔離検証を新commitで再実行したことを意味しない。
 
 - [x] オープンソースライセンスを付与せず、`Copyright (c) 2026 Oto. All rights reserved.`、公開目的、書面による個別許諾、GitHub上の閲覧・fork、第三者素材の除外、無保証をCopyright Noticeへ明記する。
 - [x] SECURITYで公開Issueへの脆弱性投稿を禁止し、public化直前に有効化するPrivate vulnerability reporting、秘密非添付、対応期限非保証、個人連絡先なしを明記する。
@@ -255,13 +256,13 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 
 ## Phase 3第6項6C-2 DB非依存隔離検証
 
-- [x] commit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`の追跡176ファイルをGit blob hash一致で展開し、新規venv、`env -i`、公開PyPI、テスト時外向きsocket遮断のLinux x86_64／Python 3.14.4環境で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件を完了した保存証跡を監査する。通常pytestの349 skipを`TEST_DATABASE_URL`未設定によるPostgreSQL統合testとして区別し、artifact内容、build依存、著作権・license metadata不足、filesystem namespace非分離、build用venv削除、lock file不在の限界を記録する。
+- [x] identity書換え前の対応commitの追跡176ファイルをGit blob hash一致で展開し、新規venv、`env -i`、公開PyPI、テスト時外向きsocket遮断のLinux x86_64／Python 3.14.4環境で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件を完了した保存証跡を監査する。通常pytestの349 skipを`TEST_DATABASE_URL`未設定によるPostgreSQL統合testとして区別し、artifact内容、build依存、著作権・license metadata不足、filesystem namespace非分離、build用venv削除、lock file不在の限界を記録する。
 
-本項目は保存済み証跡のmanifest・inventory・`final-summary`・`build-dependencies`・`artifact-audit`等が相互に一致したことだけを直接証跡とする。このcommit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`の証跡単独ではDB統合確認、ARM64、実Provider、同commitのGitHub Actions、法的配布可否は未確認であり、6Cの残る未確認3項目や2Cの既存未確認2項目を完了扱いにしない。後続commitのDB統合とGitHub画面確認は次の6C-3へ分離する。
+本項目は保存済み証跡のmanifest・inventory・`final-summary`・`build-dependencies`・`artifact-audit`等が相互に一致したことだけを直接証跡とする。このidentity書換え前commitの証跡単独ではDB統合確認、ARM64、実Provider、同commitのGitHub Actions、法的配布可否は未確認である。完全な旧新対応はGit管理外の非公開mappingで保持し、書換え時のtree一致を確認したが、新commitでの再実行結果とは扱わない。後続のDB統合とGitHub画面確認は次の6C-3へ分離する。
 
 ## Phase 3第6項6C-3 PostgreSQL internal network隔離再現
 
-commit `d984a1af3560cd4ea1caf48a3926665094b45318`のGit管理外clean archiveを、WSL2 Linux x86_64、Python 3.14.4、pip 25.1.1、pytest 9.1.1、`postgres:18.4-bookworm`で検証した。追跡176ファイルはGit blob不一致0件で、runner内source、44行の依存一覧、wrapper hashが一致し、pip checkが成功した。runnerは非root、read-only、全capability drop、no-new-privilegesでDocker socketを持たず、postgres_testのnetwork namespaceをcontainer IDとinodeで共有した。PostgreSQLはinternal networkだけに接続し、公開port・named Volumeなし、DBはtmpfsである。
+identity書換え前の対応commitのGit管理外clean archiveを、WSL2 Linux x86_64、Python 3.14.4、pip 25.1.1、pytest 9.1.1、`postgres:18.4-bookworm`で検証した。追跡176ファイルはGit blob不一致0件で、runner内source、44行の依存一覧、wrapper hashが一致し、pip checkが成功した。runnerは非root、read-only、全capability drop、no-new-privilegesでDocker socketを持たず、postgres_testのnetwork namespaceをcontainer IDとinodeで共有した。PostgreSQLはinternal networkだけに接続し、公開port・named Volumeなし、DBはtmpfsである。この実行をidentity書換え後commitでの再実行結果とは扱わない。
 
 `127.0.0.1:5432`の専用DBだけへ接続でき、公開IPv4／IPv6への直接接続は`ENETUNREACH`、gatewayの既知portとloopback 55432は接続拒否だった。healthと`SELECT 1`、正式Migrationラッパーの`upgrade`／`current`／`heads`／`check`、`a41f8c7d2e90`のsingle headを確認した。主要8表はMigration直後、integration後、停止直前の3時点で全て0件だった。通常pytestは1,019 passed／349 skipped、integrationは349 passed／0 skipped／0 errors、合計1,368 passedでwarningなし、両ログの合成secret完全一致0件、両containerは`Exited (0)`だった。
 

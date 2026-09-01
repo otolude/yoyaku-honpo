@@ -15,7 +15,7 @@ Phase 3は次の順序で進める。
 3. AIを使わない場合の予約名フォールバックを実装する。（実装・受入完了）
 4. 予約詳細画面から予約名を編集できるようにする。（実装・受入完了）
 5. 一覧、詳細、Autocomplete、確認画面へ予約名を表示する。（実装・受入完了）
-6. ポートフォリオを整備する。（6A、6B-1、6B-2は完了。6C最終監査は未完了）
+6. ポートフォリオを整備する。（6A、6B-1、6B-2は完了。6CはGit履歴・画像・秘密情報監査まで2／4件完了し、最終監査は未完了）
 7. 公開前限定テストを実施する。
 8. 常時稼働環境を構築し、本番リリースする。
 
@@ -140,4 +140,6 @@ AI入力本文をアプリケーション側の別履歴として保存しない
 
 公開前監査の前提として、オープンソースライセンスを付与しないCopyright Notice、Security Policy、Contribution方針、bug／improvement Issue Form、GitHub Actions CIを整備する。独自コード・文書はall rights reservedとし、GitHub利用規約上の閲覧・fork以外の利用は明示的な書面許可を必要とする。CIはPython 3.14、Ruff、通常pytest、一時PostgreSQL統合pytest、Migration安全ラッパーを対象とし、Discord、OpenAI、決済、開発DB、productionへ接続しない。
 
-構成追加とローカル検証に加え、2026-08-31に対象commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のGitHub Actions成功を確認した。Private vulnerability reporting有効化、repository visibility、dependency license、商標条件、公開可否は6Cの未確認ゲートとして維持する。public化は6C合格後に利用者が最終承認して手動実施する。
+構成追加とローカル検証に加え、2026-08-31にidentity書換え前の対応commitのGitHub Actions成功を確認した。2026-09-02にはidentity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`についても、利用者がSuccess、test job成功、新しい警告なし、Artifactsなし、badge遷移、GitHub accountへの関連付けを画面確認した。過去runを新履歴の証跡として扱わない。Private vulnerability reporting有効化、repository visibility、dependency license、商標条件、公開可否は6Cの未確認ゲートとして維持する。public化は6C合格後に利用者が最終承認して手動実施する。
+
+2026-09-02にidentity書換え後の83 commit／708 blobと現行・旧版PNG 8 blobを再監査し、Oto＋GitHub noreply以外の到達可能identity、旧個人名・旧Gmail、高確度secret候補、匿名化前画像・編集layer・生成前画像を検出しなかった。旧新tree、message、日時、parentとblob集合の一致を確認し、旧main／develop／MIT commitはbranch・tagから到達不能である。専用secret scanner未導入、GitHub内部保持、画像編集前データの不存在を保証できない限界を残し、6CのGit履歴・画像項目だけを完了とした。
