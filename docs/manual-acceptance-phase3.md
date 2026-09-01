@@ -9,7 +9,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 2C-1証跡: OpenAI Adapter・設定・Worker・Bot lifecycle重点テスト128件、通常pytest 967件成功／349件skip、専用PostgreSQL込み全pytest 1316件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 2C-2証跡: 手動受入安全基盤重点テスト52件、2C-1回帰込み重点テスト180件、通常pytest 1019件成功／349件skip、専用PostgreSQL込み全pytest 1368件成功。Alembic current／heads／check成功、既存6表＋AI Job／Budget 2表は終了時0件
 - 6C-1証跡: YAML／Issue Form／workflow静的検査、通常pytest 1019件成功／349件skip、専用PostgreSQL integration 349件成功、Ruff check／format、pip check、Migration current／heads／check成功、主要8表は終了時0件。2026-08-31にOtoがcommit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2（1分8秒、test job成功、Artifactsなし、Node.js 20警告なし）をGitHub画面で確認し、旧著作権方針版のrun #1を削除した
-- 集計: 確認済み 120件／未確認 6件（合計126件）
+- 集計: 確認済み 121件／未確認 6件（合計127件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -249,3 +249,9 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 - [x] CIをdevelop push／Pull Request、`contents: read`、concurrency cancel、Python 3.14、pip check、Ruff、通常pytest、専用PostgreSQL integrationへ限定する。
 - [x] CIのMigrationを安全ラッパー経由のtest targetと実DB名照合だけにし、開発・production DB、実`.env`、Discord、OpenAI、決済、live acceptance、deploy、releaseへ接続しない。
 - [x] YAML・Issue Form・workflow境界、通常／PostgreSQL pytest、Ruff、Migration current／heads／check、秘密情報、既存画像hashをローカルで検証し、GitHub上の成功やARM64確認の代替にしない。
+
+## Phase 3第6項6C-2 DB非依存隔離検証
+
+- [x] commit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`の追跡176ファイルをGit blob hash一致で展開し、新規venv、`env -i`、公開PyPI、テスト時外向きsocket遮断のLinux x86_64／Python 3.14.4環境で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件を完了した保存証跡を監査する。通常pytestの349 skipを`TEST_DATABASE_URL`未設定によるPostgreSQL統合testとして区別し、artifact内容、build依存、著作権・license metadata不足、filesystem namespace非分離、build用venv削除、lock file不在の限界を記録する。
+
+本項目は保存済み証跡のmanifest・inventory・`final-summary`・`build-dependencies`・`artifact-audit`等が相互に一致したことだけを直接証跡とする。DB統合確認、ARM64、実Provider、対象commitのGitHub Actions、法的配布可否は未確認であり、6Cの未確認4項目や2Cの既存未確認2項目を完了扱いにしない。

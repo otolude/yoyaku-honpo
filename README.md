@@ -130,16 +130,18 @@ flowchart LR
 
 ## テスト・受入状況
 
-2026-08-30時点の記録です。件数は対象commitのスナップショットであり、品質、可用性、セキュリティを恒久保証する値ではありません。
+2026-08-31までの記録です。件数は明記した対象commitのスナップショットであり、現在のコードや品質、可用性、セキュリティを恒久保証する値ではありません。
 
-- 通常pytest: 1,019 passed／349 skipped
+- commit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`のDB非依存隔離検証: 1,019 passed、通常pytestは1,019 passed／349 skipped
+- 上記349件は`TEST_DATABASE_URL`未設定によるPostgreSQL統合testのskipであり、DB統合確認ではない
+- 同commitの新規venv・`env -i`・公開PyPI・テスト時外向きsocket遮断環境で、依存install、sdist、sdist由来wheel、pip check、Ruffが成功
 - 専用PostgreSQL込みpytest: 1,368 passed
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: 6C-1ローカル隔離受入後120／126。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
-- 実OpenAI Provider受入とARM64 Linux実機確認は未確認
+- Phase 3: DB非依存隔離検証監査後121／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- DB統合再確認、実OpenAI Provider受入、ARM64 Linux実機確認、対象commitのGitHub CIは未確認
 
-環境、対象commit、Ruff、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。
+環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
 
 ## 最短セットアップ入口
 

@@ -496,3 +496,11 @@ CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoが対象
 通常pytest stepでは`TEST_DATABASE_URL`を空にし、開発DBや`.env`へfallbackさせない。CI serviceは永続Volumeを使わず、production、開発用postgres、実Discord、外部AI、決済へ接続しない。workflow変更時はYAML、permissions、trigger、concurrency、action参照、秘密情報、Migration commandをローカルで再監査する。
 
 Security Policy、Contribution方針、Issue Formの運用開始はrepository公開後である。Private vulnerability reportingはpublic化直前にGitHub上で手動有効化し、有効化前に利用可能と案内しない。脆弱性を公開Issueへ移さず、秘密情報をIssueやlogへ貼らない。
+
+## 24. DB非依存の隔離build・test証跡
+
+2026-08-31にcommit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`を対象として、Linux x86_64／Python 3.14.4／pip 25.1.1／build 1.6.0の新規venvを`env -i`で使用し、公開PyPIから依存を解決した保存証跡がある。対象commitの追跡176ファイルはGit blob hash一致で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件が成功した。通常pytestは1,019 passed／349 skippedで、全skipは`TEST_DATABASE_URL`未設定によるPostgreSQL統合testである。テスト時の外向きsocket作成はOS sandboxで遮断されたが、filesystem namespaceは分離していない。
+
+build isolationではHatchling 1.32.0等6依存をfrontend出力、pip log、cache wheelで確認した。frontendが一時build用venvを削除したため、そのsite-packages実体は事後検査していない。本repositoryにはlock fileがなく、将来の依存解決再現性を保証しない。
+
+wheelは76 memberで`RECORD`整合だが`COPYRIGHT.md`未収録、sdistは追跡176ファイルと`PKG-INFO`を収録し`COPYRIGHT.md`を含む。両方ともlicense metadataは未設定で、危険なarchive path、秘密情報、実`.env`、DB、backupの混入は確認されなかった。artifactを配布せず、これらの不足を運用判断で推測修正しない。詳細とhashは[検証スナップショット](portfolio/verification.md)を参照する。この証跡を現在のコード、DB統合、ARM64、実Provider、GitHub CI、法的配布可否、公開可能性、安全性の確認として扱わない。

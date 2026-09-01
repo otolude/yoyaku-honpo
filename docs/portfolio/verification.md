@@ -63,3 +63,22 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 6C-1ではCopyright Notice、Security、Contribution、Issue Form、CI workflowをローカルで静的・自動検証した。2026-08-31にOtoがGitHub画面で、commit `7d47ae36d2e47aa6f74d0bc583e4d2181d82b660`のActions run #2、実行時間1分8秒、test job成功、Artifactsなし、Node.js 20 deprecated警告なしを確認した。workflowは`actions/checkout@v7`と`actions/setup-python@v7`を使用する。
 
 旧著作権方針版を参照したActions run #1は利用者がGitHub画面から削除し、Actions一覧にはrun #2だけを残した。repositoryはPrivateでpublic化前、Private vulnerability reportingは未有効である。CI成功は依存license、第三者素材・商標、Git履歴、visibility、公開可否、実Provider、ARM64の確認を代替しない。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
+
+## 8. 2026-08-31 DB非依存隔離検証
+
+この節はcommit `a5e21b7511e9a1aed6805cb25448ca2fa7697e86`だけを対象とする保存証跡の事後監査記録であり、現在の作業ツリーや後続commitの検証結果ではない。証跡は2026-08-31にLinux x86_64（WSL2）、CPython 3.14.4、pip 25.1.1、build 1.6.0で取得された。新規venvを作り、`env -i`で環境を制限し、公開PyPIから依存を解決したうえで、テスト時はOS sandboxが外向きsocket作成を`EPERM`で拒否した。filesystem namespace自体は分離していない。
+
+保存証跡は通常ファイル7,899件、directory 1,252件、symlink 5件、全entry 9,156件で、root directoryはdirectory数と全entry数に含めない。全通常ファイルの相対path順SHA-256 manifestは`d471b04f17ce5270e996e487b3748f178d95093ad071503fc7854185ac04a9f2`、保存時inventoryは`12c8c6992812b3a1c6645b641cec2db81dbecba78410c0b643455d125a1c773c`と一致した。対象commitから展開した追跡176ファイルは全件でGit blob hashが一致した。証跡そのものはrepositoryへ追加しない。
+
+| 区分 | 結果 |
+| --- | --- |
+| 依存install | 成功。lock fileはなく、将来も同一versionが解決される保証はない |
+| build isolation | sdist用とsdist由来wheel用を確認。Hatchling 1.32.0、packaging 26.3、pathspec 1.1.1、pluggy 1.6.0、tomlkit 0.15.1、trove-classifiers 2026.6.1.19 |
+| sdist／wheel | 両方成功。wheelはsdistから作成 |
+| pip check／Ruff | pip check、Ruff check、Ruff format checkが成功 |
+| DB非依存pytest | 1,019 passed、skipなし |
+| 通常pytest | 1,019 passed／349 skipped。全skipは`TEST_DATABASE_URL`未設定によるPostgreSQL統合test |
+
+wheelは76 memberで`RECORD`整合、危険なarchive path、symlink、疑わしい名前、資格情報URLを検出しなかった。ただし`COPYRIGHT.md`を収録せず、`License-Expression`と`License` metadataはいずれも未設定だった。sdistは追跡176ファイルと`PKG-INFO`の177 memberで、追跡ファイルの欠落・余分な未追跡ファイルがなく、`COPYRIGHT.md`を収録したが、同じくlicense metadataは未設定だった。sdistの資格情報URL候補1件は統合テスト内の固定ダミー値であり、実資格情報ではない。両artifactに危険なarchive path、秘密情報、実`.env`、DB、backupの混入は確認されなかった。
+
+build frontendは一時build用venvを削除したため、build依存versionはfrontend出力、pip log、専用cacheのwheelで確認しており、削除済みsite-packagesの実体は事後検査できていない。artifactは配布せず、wheelの著作権表示不足やlicense metadata未設定を推測で補正しない。この証跡はDB統合、ARM64、実Provider、GitHub Actions、法的な配布可否、一般公開可能性、安全性を確認または保証しない。
