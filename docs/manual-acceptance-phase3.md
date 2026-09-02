@@ -11,6 +11,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 6C-1証跡: YAML／Issue Form／workflow静的検査、通常pytest 1019件成功／349件skip、専用PostgreSQL integration 349件成功、Ruff check／format、pip check、Migration current／heads／check成功、主要8表は終了時0件。identity書換え前の対応commitに対する2026-08-31のActions run #2（1分8秒、test job成功、Artifactsなし、Node.js 20警告なし）をOtoがGitHub画面で確認し、旧著作権方針版のrun #1を削除した
 - 6C-3証跡: identity書換え前の対応commitをWSL2 Linux x86_64／Python 3.14.4／PostgreSQL 18.4隔離環境で検証し、通常pytest 1019 passed／349 skipped、PostgreSQL integration 349 passed、合計1368 passed、正式Migration、single head、主要8表の3時点0件、外向きIPv4／IPv6遮断、secret非露出、両containerの正常停止を確認した。同対応commitのGitHub Actionsは利用者が画面でworkflowとtest job成功、新しい警告なし、Artifactsなし、CI badgeの遷移を別途確認した。これらをidentity書換え後commitでの再実行結果として扱わない
 - 6C履歴監査証跡: identity書換え後の83 commit／708 blobを読み取り再監査し、author／committerはOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補は0件、現行・旧版PNG 8 blobは従来SHAと一致した。利用者は新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`のActions成功とGitHub accountへの関連付けを画面確認した
+- 6C第三者notice証跡: `alembic/script.py.mako`をAlembic 1.19.1公式配布物のgeneric templateと照合し、公式LICENSEと配布物同梱LICENSEで一致した`Copyright 2009-2026 Michael Bayer.`およびMIT License全文を`THIRD_PARTY_NOTICES.md`へ収録した。これはAlembic由来templateのnotice不足だけを解消するもので、dependency全体、Discord UI、商標、repository visibility、public化を完了扱いにしない
 - 集計: 確認済み 123件／未確認 4件（合計127件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
@@ -235,6 +236,8 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 ## Phase 3第6項6C 再現確認・秘密情報・ライセンス・公開状態の最終監査
 
 以下は6B成果物完成後の最終監査または利用者判断を必要とするため未確認とする。
+
+Alembic由来templateのMIT notice不足は`THIRD_PARTY_NOTICES.md`で解消した。現在wheel、sdist、container、実行ファイルは配布せず、将来の配布物に含まれるdependencyの全面的なnotice監査は配布前事項として残す。以下の第三項はdependency全体、第三者素材、Discord／OpenAI条件とDiscord画面掲載判断を含む複合条件のため、今回の限定対応だけでは確認済みに変更しない。
 
 - [x] READMEと全詳細文書のリンク、隔離環境での再現手順、実装主張とコード・Migration・受入証跡の対応を確認する。identity書換え前の対応commitのGit管理外clean archive、Docker internal network、namespace共有runner、tmpfs専用DBによる保存証跡で、追跡176ファイル、source・依存・wrapper、通信遮断、正式Migration、通常／integration pytest、主要8表0件、secret非露出、正常停止を直接確認した。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
 - [x] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。identity書換え後のmain／developから到達可能な83 commit、708 blob、全追跡pathを再監査し、identityはOto＋GitHub noreplyの1種類、旧個人名・旧Gmail一致とtoken等の高確度候補は0件だった。現行4枚＋旧版4枚のPNGは従来SHAと一致し、signature、全chunk CRC、IEND、trailing dataなし、metadata chunkなし、全画素alpha 255と黒矩形の完全不透明を確認した。目視上の個人名、実サーバー名、sidebar、DM、通知、実IDはなく、匿名化前画像・編集layer・生成前画像も到達履歴になかった。

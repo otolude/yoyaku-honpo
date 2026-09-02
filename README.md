@@ -142,7 +142,7 @@ flowchart LR
 - identity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。GitHub内部保持や画像編集前データの不存在は保証しない
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: Git履歴・画像・秘密情報最終監査後123／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- Phase 3: Git履歴・画像・秘密情報最終監査とAlembic第三者notice対応後123／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
 - 実OpenAI Provider受入、ARM64 Linux実機確認、法的配布可否、最終公開判断は未確認
 
 環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
@@ -198,6 +198,6 @@ python -m discord_ai_reminder_bot
 
 ## ライセンス・公開状態
 
-本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を参照してください。
+本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を、リポジトリへ含まれる第三者由来ファイルの個別表示は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を参照してください。現在wheel、sdist、container、実行ファイルを配布しておらず、将来の配布物に実際に含まれる依存物のnotice整備は配布前事項です。
 
 GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認し、badgeから新workflow画面へ移動できたworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。

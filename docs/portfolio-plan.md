@@ -171,10 +171,10 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
 | Issue／PR template | ファイルなし | 公開後の受付範囲が決まってから要否を決定 |
 | GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |
-| dependency license | 未監査 | direct／transitive依存のライセンスとNOTICE要否を6Cまでに監査 |
+| dependency license | Alembic由来templateのMIT notice対応済み・全体監査未完了 | direct／transitive依存のライセンスと将来配布物のNOTICE要否を6Cと配布前監査で確認 |
 | Discord／OpenAIの名称・画面・ロゴ | 未監査 | 最新の商標・ブランド・画面掲載条件を公式情報で確認 |
 | 採用予定名「よやく本舗」 | 利用者提供の初期検索記録あり・未クリアランス | 公開前に商標確認を完了し、この記録だけで公開可としない |
-| 第三者素材 | 現在なし | 追加assetごとに出典、ライセンス、改変可否をmanifestで管理 |
+| 第三者素材 | Alembic由来templateを個別noticeで管理 | 追加assetごとに出典、ライセンス、改変可否をmanifestまたは第三者noticeで管理 |
 | 個人情報・著作権 | 実データ非掲載を要件化 | 合成データ、撮影者権限、UI内素材、本文の権利を6Cで人手確認 |
 | repository visibility | ローカルGitだけでは判定不能 | GitHub上のpublic／privateを利用者が確認 |
 | Git履歴の秘密情報 | 今回は未完了 | 公開前に履歴全体を値非表示の方法で監査し、発見時は公開を止める |
