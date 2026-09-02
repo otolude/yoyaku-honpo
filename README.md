@@ -1,6 +1,6 @@
 # よやく本舗（Yoyaku Honpo）
 
-[![CI](https://github.com/otolude/discord-ai-reminder-bot/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/otolude/discord-ai-reminder-bot/actions/workflows/ci.yml?query=branch%3Adevelop)
+[![CI](https://github.com/otolude/yoyaku-honpo/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/otolude/yoyaku-honpo/actions/workflows/ci.yml?query=branch%3Adevelop)
 
 「よやく本舗」は、日本語で使いやすいDiscordの予約投稿・リマインダーBotとして採用を予定している製品名です。日本語UIとJSTを前提に、単発・毎日・毎週の予約投稿に加え、競合制御・障害復旧・誤操作防止まで実装しています。
 
@@ -12,7 +12,7 @@ Discordで後から投稿したい内容を予約し、一覧、詳細、編集�
 
 操作画面だけでなく、PostgreSQL上の競合制御、Bot再起動時のRecovery、保持期限cleanup、Migrationの接続先誤り防止、AI Provider障害時の非AI継続までを開発範囲に含めました。現在はローカル開発・GitHubポートフォリオ整備段階で、一般公開や常時稼働はしていません。
 
-「よやく本舗」は採用予定名であり、公開前の商標確認が残っています。本プロジェクトは独立した個人開発で、Discordの公式製品・公認製品・提携製品ではありません。リポジトリ名、Pythonパッケージ名、コマンド、DB名、環境変数等の技術識別子には、互換性維持のため従来名を残しています。
+「よやく本舗」は採用予定名であり、公開前の商標確認が残っています。本プロジェクトは独立した個人開発で、Discordの公式製品・公認製品・提携製品ではありません。GitHubリポジトリは公開前に`yoyaku-honpo`へ改名済みです。Pythonパッケージ名、module/import path、ローカルdirectory、Compose、DB名、環境変数等の技術識別子には、互換性と過去証跡の維持のため従来名を残しています。
 
 ## 解決する課題
 
@@ -200,4 +200,4 @@ python -m discord_ai_reminder_bot
 
 本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を、リポジトリへ含まれる第三者由来ファイルの個別表示は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を参照してください。現在wheel、sdist、container、実行ファイルを配布しておらず、将来の配布物に実際に含まれる依存物のnotice整備は配布前事項です。
 
-GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募に使用する予定ですが、現在は公開前準備中です。実際のrepository visibilityは6Cで確認し、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認し、badgeから新workflow画面へ移動できたworkflowを参照します。Code of Conduct、PR template、個人連絡先は追加していません。
+[GitHubリポジトリ](https://github.com/otolude/yoyaku-honpo)は`yoyaku-honpo`へ改名済みですが、現在もPrivateで公開前準備中です。就職活動での企業提示とクラウドワークス等の案件応募への使用を予定しており、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingはpublic化直前に有効化予定です。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認したworkflowを、新repository URLから参照します。Code of Conduct、PR template、個人連絡先は追加していません。

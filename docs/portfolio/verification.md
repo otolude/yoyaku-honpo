@@ -53,7 +53,9 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 - dependency全体のlicense、Alembic以外の第三者素材、商標・画面掲載条件、repository visibility、最終公開判断
 - 採用予定名「よやく本舗」の商標クリアランス（利用者提供のJ-PlatPat初期検索記録だけでは未完了）
 
-`alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。この限定対応は6C全体、repository改名、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしない。
+`alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。この限定対応は6C全体、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしない。
+
+2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンク、Issue FormのSecurity Policyリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。repositoryはPrivateかつpublic化前で、Discord UI画像、「よやく本舗」の商標、実Provider、ARM64、最終公開判断、6C全体は未完了である。
 
 ## 6. 更新手順
 

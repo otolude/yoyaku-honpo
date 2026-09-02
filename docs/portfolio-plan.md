@@ -12,7 +12,7 @@
 
 ポートフォリオの目的は、GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募において、第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。対象読者は採用担当者、技術担当者、発注者とする。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
 
-現在は公開前準備中であり、実際のrepository visibilityは6Cで確認する。public化時期は6C監査合格後を候補とし、6B文書整備だけで公開可否を確定しない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
+GitHub repositoryは公開前に`yoyaku-honpo`へ改名済みだが、現在もPrivateで公開前準備中である。public化時期は6C監査合格後を候補とし、改名や6B文書整備だけで公開可否を確定しない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
 
 対象読者と最初に提示する情報は次のとおりとする。
 
@@ -176,7 +176,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | 採用予定名「よやく本舗」 | 利用者提供の初期検索記録あり・未クリアランス | 公開前に商標確認を完了し、この記録だけで公開可としない |
 | 第三者素材 | Alembic由来templateを個別noticeで管理 | 追加assetごとに出典、ライセンス、改変可否をmanifestまたは第三者noticeで管理 |
 | 個人情報・著作権 | 実データ非掲載を要件化 | 合成データ、撮影者権限、UI内素材、本文の権利を6Cで人手確認 |
-| repository visibility | ローカルGitだけでは判定不能 | GitHub上のpublic／privateを利用者が確認 |
+| repository name／visibility | `yoyaku-honpo`へ改名済み・Private | public化時期と最終公開可否を利用者が判断 |
 | Git履歴の秘密情報 | 今回は未完了 | 公開前に履歴全体を値非表示の方法で監査し、発見時は公開を止める |
 | `.env`・一時ファイル | `.gitignore`あり、`.env.example`だけ追跡 | 6Cでtracked／untracked／履歴を再監査 |
 
@@ -269,4 +269,4 @@ GitHub Pages、live demo、PR template、完全な日英併記、個人連絡先
 
 利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of ConductとPR templateは追加せず、外部PRは積極募集しない。Issueは受け付け、成功確認済みworkflowのCI badgeを掲載する。
 
-GitHub上のCI成功は2026-08-31に利用者が確認済みである。Private vulnerability reportingの有効化、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。
+GitHub上のCI成功は2026-08-31に利用者が確認済みである。repositoryはPrivateのまま`yoyaku-honpo`へ改名済みで、現行のbadgeとSecurity Policy導線は新repository URLを使用する。Private vulnerability reportingの有効化、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。

@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/otolude/discord-ai-reminder-bot/security/policy
+    url: https://github.com/otolude/yoyaku-honpo/security/policy
     about: 公開Issueを作成せず、SECURITY.mdを確認してください。Private vulnerability reportingはpublic化直前に有効化予定です。
