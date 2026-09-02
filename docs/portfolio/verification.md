@@ -77,7 +77,7 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 
 2026-09-02には利用者がidentity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、Status Success、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeから新workflowへ移動可能であることと、commitがGitHub accountへ関連付いていることを画面確認した。run番号と所要時間は提供されていないため推測しない。localではauthor／committer nameがOto、emailがGitHub noreply形式であることを値を掲載せず確認した。
 
-GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、利用者はdevelopのStatus Success、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致、repositoryがPrivateのままであることを画面確認した。これは今回の新tipに対するCI・導線確認であり、過去のtest・build・DB検証を新SHAで再実行した証跡ではない。username変更前を含む旧Actions runの削除は未実施で、利用者作業待ちである。
+GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、利用者はdevelopのStatus Success、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致、repositoryがPrivateのままであることを画面確認した。これは今回の新tipに対するCI・導線確認であり、過去のtest・build・DB検証を新SHAで再実行した証跡ではない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、All workflowsには新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runだけが残り、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしである。この削除はGitHub上の表示整理であり、内部object、cache、既存clone、過去取得物からの完全回収を保証しない。
 
 ## 8. 2026-08-31 DB非依存隔離検証
 

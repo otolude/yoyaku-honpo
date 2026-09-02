@@ -141,7 +141,7 @@ flowchart LR
 - 以前のidentity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。この以前の操作ではtree／blob内容を変更していない
 - GitHub username変更後はmain／developの88 commitを同一mappingで再構築し、author／committer email、usernameを含む履歴上の記述、対応するcommit SHA参照だけを更新した。新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で旧identity metadata、旧username、旧SHA参照、高確度secret候補は0件、745 reachable blobとPNG履歴8 blobの対象外内容は不変と確認
 - 新tipのdevelopについて、利用者がGitHub画面でStatus Success、test job成功、警告なし、Artifactsなし、CI badgeから`otolude/yoyaku-honpo`のworkflowへ移動でき、作者OtoからGitHub profileへ遷移することを確認。過去のtest・build・DB検証を新tipで再実行した証跡ではない
-- GitHub内部object、cache、過去のActions run、既存cloneから旧履歴を完全回収できたとは保証しない。username変更前を含む旧Actions runの削除は未実施で、利用者作業待ち
+- 利用者は旧username・旧履歴に紐づくActions runをGitHub画面から全件削除した。個別件数は記録しておらず、All workflowsには新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runだけが残り、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしと確認した。この画面整理によってGitHub内部object、cache、既存clone、過去取得物から旧履歴を完全回収できたとは保証しない
 - Phase 1: 63／63
 - Phase 2: 47／47
 - Phase 3: 6Cのdependency license・第三者素材・商標／画面条件に関する利用者判断後124／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする

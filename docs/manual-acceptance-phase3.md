@@ -255,7 +255,7 @@ GitHub repositoryはPrivateのまま`yoyaku-honpo`へ改名済みである。公
 
 2026-09-01に利用者がidentity書換え前の対応commitについて、workflow実行成功、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。run番号と所要時間は提供されていないため推測せず、ローカルのPostgreSQL隔離検証とは別の過去の画面確認証跡として扱う。2026-09-02には新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について同じ成功条件とcommitのGitHub accountへの関連付けを利用者が画面確認した。これは新履歴のCI証跡であり、過去のローカル隔離検証を新commitで再実行したことを意味しない。
 
-GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`についても、利用者がdevelopのSuccess、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を画面確認した。このrunだけを今回の新tipに対するCI証跡とし、identity書換え前のtest・build・DB検証を新SHAで再実行したとは扱わない。username変更前を含む旧Actions runの削除は未実施で、利用者作業待ちである。
+GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`についても、利用者がdevelopのSuccess、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を画面確認した。このrunだけを今回の新tipに対するCI証跡とし、identity書換え前のtest・build・DB検証を新SHAで再実行したとは扱わない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、All workflowsに残る新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runは、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしである。
 
 - [x] オープンソースライセンスを付与せず、`Copyright (c) 2026 Oto. All rights reserved.`、公開目的、書面による個別許諾、GitHub上の閲覧・fork、第三者素材の除外、無保証をCopyright Noticeへ明記する。
 - [x] SECURITYで公開Issueへの脆弱性投稿を禁止し、現在未有効のPrivate vulnerability reportingをpublic化直後の最優先操作として有効化して通知設定と`Report a vulnerability`導線を確認する方針、秘密非添付、対応期限非保証、個人連絡先なしを明記する。
