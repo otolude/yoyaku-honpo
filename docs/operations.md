@@ -499,6 +499,8 @@ repository改名後のcommit `cdfa4de00fb5c6796c2250a890fcc1d4d8e54abe`につい
 
 Security Policy、Contribution方針、Issue FormはPublic repositoryで運用中である。Private vulnerability reportingは有効化済みで、GitHub標準の`Report a vulnerability`導線へ一本化する。重複するcustom security contact linkは置かず、脆弱性を公開Issueへ移さず、秘密情報をIssueやlogへ貼らない。
 
+2026-09-02に利用者が匿名／ログアウト状態で公開repositoryとIssue作成画面を確認した。bug／improvement Form、一般利用者向けblank Issue無効、GitHub標準`Report a security vulnerability`、README・画像・権利表示・CI badgeは正常で、Private vulnerability reportingはEnabledだった。管理者画面のblank IssueはMaintainers onlyである。この確認でソース閲覧用portfolioの6C最終公開受入を完了したが、binary、wheel、sdist、container、実行ファイルの配布運用は開始しない。
+
 ## 24. DB非依存の隔離build・test証跡
 
 2026-08-31にidentity書換え前の対応commitを対象として、Linux x86_64／Python 3.14.4／pip 25.1.1／build 1.6.0の新規venvを`env -i`で使用し、公開PyPIから依存を解決した保存証跡がある。対象commitの追跡176ファイルはGit blob hash一致で、依存install、build isolationによるsdistとsdist由来wheel、pip check、Ruff、DB非依存pytest 1,019件が成功した。通常pytestは1,019 passed／349 skippedで、全skipは`TEST_DATABASE_URL`未設定によるPostgreSQL統合testである。テスト時の外向きsocket作成はOS sandboxで遮断されたが、filesystem namespaceは分離していない。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
@@ -529,4 +531,4 @@ internal networkはDocker Desktop daemon、WSL2 kernel、管理者侵害への�
 
 main／developはbranchごとの完全一致leaseを指定した単一のatomic pushで更新し、通常のforce、逐次push、merge、rebase、resetは使用していない。新tipは`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で、local／originのmain／developは一致し、ahead／behindは0／0だった。通常公開ref上の旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件である。対応表、bundle、identity値、旧username、非公開保存先はGit管理外で保持し、公開文書へ記載しない。
 
-この再構築は過去のtest、build、DB検証を新SHAで再実行したものではない。非公開対応表によるcommit対応と対象外内容の一致を境界として既存証跡を参照する。新tipのdevelop Actionsは利用者がSuccess、test job成功、警告なし、Artifactsなし、badge遷移と作者profile遷移を画面確認した。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、All workflowsには新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runだけが残り、両方ともSuccess、test job成功、Artifactsなし、警告なし、旧username表示なしである。run削除はGitHub上の表示整理であり、GitHub内部object、cache、既存clone、過去取得物からの完全回収は保証しない。
+この再構築は過去のtest、build、DB検証を新SHAで再実行したものではない。非公開対応表によるcommit対応と対象外内容の一致を境界として既存証跡を参照する。新tipのdevelop Actionsは利用者がSuccess、test job成功、警告なし、Artifactsなし、badge遷移と作者profile遷移を画面確認した。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、最終公開受入時のAll workflowsには新履歴の`6a1f7c0`、`1943b81`、`4f9742a`、`b6e92e2`の4 runだけが残り、すべてSuccess、test job成功、Artifactsなし、警告なし、旧username表示なしである。run削除はGitHub上の表示整理であり、GitHub内部object、cache、既存clone、過去取得物からの完全回収は保証しない。

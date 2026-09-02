@@ -40,7 +40,7 @@ OpenAI Adapterのcontract testは実SDKとMock transportを使用し、実OpenAI
 | --- | --- | --- |
 | Phase 1 | 63／63 | [Phase 1受入](../manual-acceptance-phase1.md) |
 | Phase 2 | 47／47 | [Phase 2受入](../manual-acceptance-phase2.md) |
-| Phase 3 | 6Cのdependency・第三者素材・商標／画面条件に関する利用者判断後124／127 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
+| Phase 3 | 6C最終公開受入後125／127。未確認は実ProviderとARM64の2件 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
 
 Phase 1・2には自動テストと実Discord／隔離環境の人手受入が含まれる。Phase 3では自動隔離受入、実ViewStore、専用PostgreSQL、実Discordの証跡を項目ごとに記録している。件数だけで未列挙の動作を保証しない。
 
@@ -51,14 +51,13 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 - 24時間常時稼働、一般公開、実利用者利用、本番監視
 - Plan、Entitlement、顧客Quota、契約、決済、Webhook
 - wheel、sdist、container、実行ファイルへ実際に含めるdependencyと第三者素材の配布前監査
-- 匿名Issue作成画面の確認と最終公開受入
 - 採用予定名「よやく本舗」のclosed test／商用利用前の商標確認（portfolio掲載承認は商標クリアランス完了を意味しない）
 
 `alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。このnotice対応単独では6C全体、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしなかった。
 
-2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。その後repositoryはPublic化され、Private vulnerability reportingもEnabledになったが、実Provider、ARM64、匿名Issue作成画面の確認、最終公開受入、6C全体は未完了である。
+2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。その後repositoryをPublic化し、Private vulnerability reportingをEnabledにした。匿名公開ページとIssue／Security導線も確認し、6C全体を完了した。実ProviderとARM64は未確認のままである。
 
-同日、利用者はDiscord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。これは法的助言ではなく、ソース閲覧用portfolioへの限定掲載判断である。Alembic noticeとrepository改名により監査で指摘された2つの公開前blockerは解消した。repositoryはPublic、Private vulnerability reportingはEnabledだが、配布前監査、実Provider、ARM64、匿名Issue作成画面の確認、最終公開受入は未完了である。
+同日、利用者はDiscord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。これは法的助言ではなく、ソース閲覧用portfolioへの限定掲載判断である。Alembic noticeとrepository改名により監査で指摘された2つの公開前blockerは解消した。repositoryはPublic、Private vulnerability reportingはEnabledで、最終公開受入も完了したが、配布前監査、実Provider、ARM64、商標確認は別の未完了事項である。
 
 ## 6. 更新手順
 
@@ -77,7 +76,9 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 
 2026-09-02には利用者がidentity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、Status Success、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeから新workflowへ移動可能であることと、commitがGitHub accountへ関連付いていることを画面確認した。run番号と所要時間は提供されていないため推測しない。localではauthor／committer nameがOto、emailがGitHub noreply形式であることを値を掲載せず確認した。
 
-GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、利用者はdevelopのStatus Success、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致、repositoryがPrivateのままであることを画面確認した。これは今回の新tipに対するCI・導線確認であり、過去のtest・build・DB検証を新SHAで再実行した証跡ではない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、All workflowsには新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runだけが残り、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしである。この削除はGitHub上の表示整理であり、内部object、cache、既存clone、過去取得物からの完全回収を保証しない。
+GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、利用者はdevelopのStatus Success、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致、repositoryがPrivateのままであることを画面確認した。これは当時のCI・導線確認であり、過去のtest・build・DB検証を新SHAで再実行した証跡ではない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、最終公開受入時のAll workflowsには新履歴の`6a1f7c0`、`1943b81`、`4f9742a`、`b6e92e2`の4 runだけが残り、すべてStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしだった。この削除はGitHub上の表示整理であり、内部object、cache、既存clone、過去取得物からの完全回収を保証しない。
+
+同日の最終公開受入では、匿名／ログアウト状態でrepository、README、README画像、feature flowsの4画像、CI badge、`COPYRIGHT.md`、`THIRD_PARTY_NOTICES.md`、bug／improvement Issue Forms、一般利用者向けblank Issue無効、GitHub標準`Report a security vulnerability`を確認した。管理者画面のblank IssueはMaintainers only、Private vulnerability reportingはEnabledで、custom Security contact linkの重複はない。Releases、Packages、Deployments／Environmentsはなく、main／develop／originの4 ref、default branch／origin HEAD、作者profile、clone・badge・workflow・Security Policy URLも整合した。repository全体へMIT Licenseは付与せず、独自部分のAll rights reservedとAlembic由来部分の個別MIT noticeを維持する。
 
 ## 8. 2026-08-31 DB非依存隔離検証
 
@@ -126,4 +127,4 @@ mainとdevelopから到達可能だった83 commitのauthor／committerを、同
 
 main／developはbranchごとの完全一致leaseを指定した単一atomic pushで更新し、通常のforce、逐次push、merge、rebase、resetは使用していない。新tipは`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で、local／originの4 refは一致し、ahead／behindは0／0、作業ツリーはcleanだった。通常公開ref上の旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件である。非公開mappingは以前の83件、今回の88件、合成83件について両側一意と検証したが、その内容、identity値、旧username、bundle、保存pathは公開しない。
 
-identity書換え前に実行したtest、build、DB検証、過去Actionsを新SHAで再実行したとは扱わない。非公開mappingによるcommit対応と対象外内容の一致を境界として既存証跡を参照する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。repositoryはPublic、Private vulnerability reportingはEnabledだが、匿名Issue作成画面の確認と6C最終公開受入は未完了で、実ProviderとARM64も未確認のままである。
+identity書換え前に実行したtest、build、DB検証、過去Actionsを新SHAで再実行したとは扱わない。非公開mappingによるcommit対応と対象外内容の一致を境界として既存証跡を参照する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。repositoryはPublic、Private vulnerability reportingはEnabledで、6C最終公開受入は完了した。実ProviderとARM64は未確認のままである。

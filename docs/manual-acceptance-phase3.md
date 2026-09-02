@@ -14,8 +14,9 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - 6C第三者notice証跡: `alembic/script.py.mako`をAlembic 1.19.1公式配布物のgeneric templateと照合し、公式LICENSEと配布物同梱LICENSEで一致した`Copyright 2009-2026 Michael Bayer.`およびMIT License全文を`THIRD_PARTY_NOTICES.md`へ収録した。これはAlembic由来templateのnotice不足だけを解消するもので、dependency全体、Discord UI、商標、repository visibility、public化を完了扱いにしない
 - 6C repository改名証跡: 2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名し、originのfetch／push URLと現行公開用URL、CI badge、Security Policy導線を新名称へ整合した。ローカルdirectory、Python package／module、Compose、DB、環境変数、過去検証名は技術識別子または過去証跡として維持する。この改名だけでDiscord UI画像、「よやく本舗」の商標、visibility、public化、実Provider、ARM64、6C全体を完了扱いにしない
 - 6C利用者判断証跡: 2026-09-02に利用者は、Discord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性を示唆、表明または保証しない
+- 6C最終公開証跡: 2026-09-02に利用者が匿名／ログアウト状態でPublic repository、README、README画像、feature flowsの4画像、CI badge、Copyright Notice、Third-Party Notices、bug／improvement Issue Forms、一般利用者向けblank Issue無効、GitHub標準`Report a security vulnerability`を確認した。Private vulnerability reportingはEnabled、重複custom Security linkはなく、Releases、Packages、Deployments／Environmentsもない。新履歴4 runはすべてSuccess、test job成功、警告・Artifactsなしである。今回の最終文書commitに対するCIはまだ存在しないため証跡へ含めない
 - cdfa4de0 Actions証跡: 利用者がGitHub画面で`cdfa4de00fb5c6796c2250a890fcc1d4d8e54abe`のdevelop workflowを確認し、status Success、test job成功、Artifactsなし、警告なし、README badge正常表示、badgeから新しい`yoyaku-honpo` workflow画面への遷移、遷移先URLの旧repository名なしを確認した
-- 集計: 確認済み 124件／未確認 3件（合計127件）
+- 集計: 確認済み 125件／未確認 2件（合計127件）
 - Phase 3第1段階受入判定: 完了
 - Phase 3第2段階2A受入判定: 完了
 - Phase 3第2段階2B-1隔離受入判定: 完了
@@ -26,7 +27,7 @@ Phase 3の受入をPhase 1・Phase 2から分離して記録する。第1段階�
 - Phase 3第6項6B-1受入判定: 完了（2件／2件）
 - Phase 3第6項6B-2受入判定: 完了（1件／1件）
 - Phase 3第6項6C-1隔離受入判定: 完了（6件／6件、GitHub Actions初回成功確認済み）
-- Phase 3第6項6C受入判定: 未完了（3件／4件。repositoryはPublic、Private vulnerability reportingはEnabledだが、匿名Issue作成画面の確認と最終公開受入が残る）
+- Phase 3第6項6C受入判定: 完了（4件／4件。ソース閲覧用portfolioのPublic化受入であり、配布物の承認ではない）
 
 ## 自動テスト受入
 
@@ -242,20 +243,20 @@ ARM64実機確認は2C-1のAdapter隔離完了条件には含めず、配置arch
 
 Alembic由来templateのMIT notice不足は`THIRD_PARTY_NOTICES.md`で解消した。現在wheel、sdist、container、実行ファイルは配布せず、将来の配布物に含まれるdependencyの全面的なnotice監査は配布前事項として残す。第三項はソース閲覧用portfolioの範囲に限定した監査と2026-09-02の利用者判断により確認済みとする。
 
-GitHub repositoryはPrivateのまま`yoyaku-honpo`へ改名した後、Public化された。公開用URLとCI／Security導線は新名称へ更新する一方、技術識別子と過去証跡の旧名称は維持する。監査で指摘された公開前blockerであるAlembic由来templateのMIT notice不足と、Discord markを含むGitHub repository名／URLは解消済みである。Private vulnerability reportingはEnabledで、Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化する。匿名状態でのIssue作成画面確認と最終公開受入が残るため、以下の第四項は未確認のままとする。
+GitHub repositoryはPrivateのまま`yoyaku-honpo`へ改名した後、Public化された。公開用URLとCI／Security導線は新名称へ更新する一方、技術識別子と過去証跡の旧名称は維持する。監査で指摘された公開前blockerであるAlembic由来templateのMIT notice不足と、Discord markを含むGitHub repository名／URLは解消済みである。Private vulnerability reportingはEnabledで、Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化した。匿名状態での公開ページとIssue／Security導線も確認したため、第四項を確認済みとする。
 
 - [x] READMEと全詳細文書のリンク、隔離環境での再現手順、実装主張とコード・Migration・受入証跡の対応を確認する。identity書換え前の対応commitのGit管理外clean archive、Docker internal network、namespace共有runner、tmpfs専用DBによる保存証跡で、追跡176ファイル、source・依存・wrapper、通信遮断、正式Migration、通常／integration pytest、主要8表0件、secret非露出、正常停止を直接確認した。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
 - [x] Git追跡ファイルとGit履歴の秘密情報、および全画像のmetadata・写り込み・復元可能性・元画像／編集レイヤー非追跡を確認する。以前のidentity書換え後の83 commit／708 blobではtree・blob内容不変を確認した。GitHub username変更時は別の88 commit／745 blob再構築としてemail、username、mapping済みSHA参照だけを変更し、source、test、Migration、PNG、画像内容、著作権文書等の対象外byteを維持した。新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`の通常公開refで旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件だった。現行4枚＋旧版4枚のPNGは従来SHAと一致し、既存の構造・画素・目視監査結果を維持する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。
 - [x] 採用LICENSE・著作権表記、dependency license、第三者素材、Discord／OpenAIの商標・画面掲載条件を確認し、2026-09-02の利用者判断を記録する。独自部分はAll rights reserved、Alembic由来templateは個別MIT notice、dependency packageは非vendor・非配布として区別した。Discord UI画像4枚は現在の匿名化・最小crop・非提携表示を維持してソース閲覧用portfolioへ掲載し、「よやく本舗」は採用予定名・商標確認未完了と明記して掲載する。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。wheel、sdist、container、実行ファイルの配布前監査は将来事項として残す。
-- [ ] repositoryがPublic、Private vulnerability reportingがEnabledであることを前提に、匿名状態のIssue作成画面でbug／improvement、maintainer限定blank Issue、GitHub標準`Report a vulnerability`、Security Policy、CI・badgeを確認し、Phase 3の最終公開受入を判定する。
+- [x] repositoryがPublic、Private vulnerability reportingがEnabledであることを確認し、匿名／ログアウト状態でREADME、画像、Copyright Notice、Third-Party Notices、bug／improvement、一般利用者向けblank Issue無効、GitHub標準`Report a security vulnerability`、CI badge、URLを確認してPhase 3の最終公開受入を完了する。管理者画面のblank IssueはMaintainers onlyである。これはソース閲覧用portfolioの受入で、binary、wheel、sdist、container、実行ファイルの配布承認ではない。
 
 ## Phase 3第6項6C-1 リポジトリ運営基盤とCI 自動隔離受入
 
-以下はローカルのファイル内容、YAML schema、無通信テスト、専用test DBと、利用者がGitHub画面で確認したActions runを直接証跡とする。CI成功だけで6C全体を完了扱いにしない。repositoryはPublic、Private vulnerability reportingはEnabledだが、匿名Issue作成画面の確認と最終公開受入は上記6Cの未確認条件へ残す。ソース閲覧用portfolioのdependency license、第三者素材・商標・画面掲載条件と、Git履歴・画像監査は2026-09-02に完了したが、将来の配布前監査とは区別する。
+以下はローカルのファイル内容、YAML schema、無通信テスト、専用test DBと、利用者がGitHub画面で確認したActions runを直接証跡とする。repositoryはPublic、Private vulnerability reportingはEnabledで、匿名Issue作成画面と最終公開ページを確認した。ソース閲覧用portfolioのdependency license、第三者素材・商標・画面掲載条件、Git履歴・画像監査を含めて6Cは2026-09-02に完了したが、将来の配布前監査とは区別する。
 
 2026-09-01に利用者がidentity書換え前の対応commitについて、workflow実行成功、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。run番号と所要時間は提供されていないため推測せず、ローカルのPostgreSQL隔離検証とは別の過去の画面確認証跡として扱う。2026-09-02には新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について同じ成功条件とcommitのGitHub accountへの関連付けを利用者が画面確認した。これは新履歴のCI証跡であり、過去のローカル隔離検証を新commitで再実行したことを意味しない。
 
-GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`についても、利用者がdevelopのSuccess、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を画面確認した。このrunだけを今回の新tipに対するCI証跡とし、identity書換え前のtest・build・DB検証を新SHAで再実行したとは扱わない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、All workflowsに残る新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runは、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしである。
+GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`についても、利用者がdevelopのSuccess、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を画面確認した。このrunだけを今回の新tipに対するCI証跡とし、identity書換え前のtest・build・DB検証を新SHAで再実行したとは扱わない。その後、旧username・旧履歴に紐づくActions runを全件削除した。個別件数は未記録で、その確認時点のAll workflowsに残る新履歴2 runは両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしだった。最終公開受入時の4 runは本書冒頭の6C最終公開証跡へ分離して記録する。
 
 - [x] オープンソースライセンスを付与せず、`Copyright (c) 2026 Oto. All rights reserved.`、公開目的、書面による個別許諾、GitHub上の閲覧・fork、第三者素材の除外、無保証をCopyright Noticeへ明記する。
 - [x] SECURITYで公開Issueへの脆弱性投稿を禁止し、有効化済みのPrivate vulnerability reportingとGitHub標準の`Report a vulnerability`導線へ一本化する。秘密非添付、対応期限非保証、個人連絡先なしを維持する。

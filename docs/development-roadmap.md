@@ -15,7 +15,7 @@ Phase 3は次の順序で進める。
 3. AIを使わない場合の予約名フォールバックを実装する。（実装・受入完了）
 4. 予約詳細画面から予約名を編集できるようにする。（実装・受入完了）
 5. 一覧、詳細、Autocomplete、確認画面へ予約名を表示する。（実装・受入完了）
-6. ポートフォリオを整備する。（6A、6B-1、6B-2は完了。6CはGit履歴・画像・秘密情報監査まで2／4件完了し、最終監査は未完了）
+6. ポートフォリオを整備する。（6A、6B-1、6B-2、6Cの4／4件とソース閲覧用portfolioの最終公開受入まで完了）
 7. 公開前限定テストを実施する。
 8. 常時稼働環境を構築し、本番リリースする。
 
@@ -27,7 +27,7 @@ Phase 3の受入は[Phase 3受入表](manual-acceptance-phase3.md)でPhase 1・P
 
 実装順は、6Aで掲載要件を確定し、6B-1でREADMEと文書・Mermaid成果物、6B-2で匿名化画像4枚を作成した。最後に6Cでリンク、隔離再現、Git履歴・画像、ライセンス・商標、公開状態、実装主張と受入の整合を監査する。6Aの正本は[ポートフォリオ掲載計画](portfolio-plan.md)、6B成果物は[`docs/portfolio/`](portfolio/architecture.md)と[asset manifest](portfolio/assets/manifest.md)を参照する。外部サービスや有料処理は使用せず、DBモデルとMigrationを変更しない。
 
-Public repositoryは就職活動で企業へ提示し、クラウドワークス等の案件応募でも発注者への技術説明に使用する予定である。対象読者は採用担当者、技術担当者、発注者とする。repositoryはPublic、Private vulnerability reportingはEnabledであり、6Cの最終公開受入は匿名状態でのIssue作成画面確認が終わるまで未完了とする。GitHubプロフィールREADME、pin留め、連絡導線、案件媒体の掲載文は後続作業とする。
+Public repositoryは就職活動で企業へ提示し、クラウドワークス等の案件応募でも発注者への技術説明に使用する予定である。対象読者は採用担当者、技術担当者、発注者とする。2026-09-02に匿名／ログアウト状態の公開ページ、画像、Issue／Security導線を確認し、Private vulnerability reportingがEnabledであることを含めて6Cの最終公開受入を完了した。GitHubプロフィールREADME、pin留め、連絡導線、案件媒体の掲載文は後続作業とする。
 
 2B-2後の運用安全修正として、Migrationの正式経路をPythonラッパーへ統一し、`alembic/env.py`にもtarget、期待DB名、操作確認、接続後`current_database()`の最終ガードを追加する。test／development／productionのURL選択を分離し、直接Alembic CLI、offline mode、接続先不一致をDDL前に拒否する。
 
@@ -140,7 +140,7 @@ AI入力本文をアプリケーション側の別履歴として保存しない
 
 公開前監査の前提として、オープンソースライセンスを付与しないCopyright Notice、Security Policy、Contribution方針、bug／improvement Issue Form、GitHub Actions CIを整備する。独自コード・文書はall rights reservedとし、GitHub利用規約上の閲覧・fork以外の利用は明示的な書面許可を必要とする。CIはPython 3.14、Ruff、通常pytest、一時PostgreSQL統合pytest、Migration安全ラッパーを対象とし、Discord、OpenAI、決済、開発DB、productionへ接続しない。
 
-構成追加とローカル検証に加え、2026-08-31にidentity書換え前の対応commitのGitHub Actions成功を確認した。2026-09-02には以前のidentity書換え後のdevelopについても利用者が成功条件を画面確認した。さらにGitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、Success、test job成功、警告なし、Artifactsなし、badgeから`otolude/yoyaku-honpo`のworkflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を確認した。各runはその時点のcommitに対する証跡であり、過去runやローカル検証を新tipで再実行した扱いにしない。その後、利用者は旧username・旧履歴に紐づくrunを全件削除した。個別件数は未記録で、確認時のAll workflowsには新履歴のrunだけが残り、すべて成功、Artifactsなし、警告なし、旧username表示なしだった。repositoryはPublic、Private vulnerability reportingはEnabledであり、6Cの匿名Issue作成画面確認と最終公開受入だけを未完了として維持する。
+構成追加とローカル検証に加え、2026-08-31にidentity書換え前の対応commitのGitHub Actions成功を確認した。2026-09-02には以前のidentity書換え後のdevelopについても利用者が成功条件を画面確認した。さらにGitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、Success、test job成功、警告なし、Artifactsなし、badgeから`otolude/yoyaku-honpo`のworkflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致を確認した。各runはその時点のcommitに対する証跡であり、過去runやローカル検証を新tipで再実行した扱いにしない。その後、利用者は旧username・旧履歴に紐づくrunを全件削除した。個別件数は未記録で、最終確認時のAll workflowsには新履歴4 runだけが残り、すべてSuccess、test job成功、Artifactsなし、警告なしだった。repositoryの匿名画面と標準Security導線も確認し、6Cの最終公開受入を完了した。
 
 2026-09-02にidentity書換え後の83 commit／708 blobと現行・旧版PNG 8 blobを再監査し、Oto＋GitHub noreply以外の到達可能identity、旧個人名・旧Gmail、高確度secret候補、匿名化前画像・編集layer・生成前画像を検出しなかった。旧新tree、message、日時、parentとblob集合の一致を確認し、旧main／develop／MIT commitはbranch・tagから到達不能である。専用secret scanner未導入、GitHub内部保持、画像編集前データの不存在を保証できない限界を残し、6CのGit履歴・画像項目だけを完了とした。
 

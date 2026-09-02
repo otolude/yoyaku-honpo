@@ -68,13 +68,12 @@ OpenAI Adapterと手動受入CLIは無通信のMock transportで確認済みだ�
 
 ## 8. 公開前・配布前に残る確認
 
-- 匿名Issue作成画面の確認と最終公開受入
 - 少人数の無償closed test前の可能な範囲での商標専門家相談と、有償test・広告・契約・一般提供前の必須商標確認
 - wheel、sdist、container、実行ファイルへ含めるdependency、第三者素材、license／noticeの配布前監査
 - 隔離環境でのREADME再現と、配置環境の監視・バックアップ・ARM64確認
 - 実Providerを明示許可後に限定実行する品質・保持・請求受入
 
-Git履歴・画像・秘密情報、ソース閲覧公開範囲のdependency／第三者素材／商標・画面条件は6Cで監査し、Discord UI画像4枚の限定掲載を2026-09-02に利用者が承認した。これは公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性、Phase 3の最終公開受入を保証または表明するものではない。残る具体的な判定は[ポートフォリオ掲載計画](../portfolio-plan.md)の6Cと将来の配布前監査へ分離する。
+Git履歴・画像・秘密情報、ソース閲覧公開範囲のdependency／第三者素材／商標・画面条件は6Cで監査し、Discord UI画像4枚の限定掲載を2026-09-02に利用者が承認した。同日に匿名公開ページとIssue／Security導線を確認し、ソース閲覧用portfolioの最終公開受入を完了した。これは公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性、配布物の承認を保証または表明するものではない。残る具体的な判定は商標確認と将来の配布前監査へ分離する。
 ## 7. 公開リポジトリの報告境界
 
 公開Issueにはbug／improvementの定型Formだけを用意し、秘密情報除去と「脆弱性ではない」の確認を求める。脆弱性は公開Issueへ投稿させず、[Security Policy](../../SECURITY.md)から有効化済みのPrivate vulnerability reportingへ案内する。Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化し、重複するcustom security contact linkは置かない。個人メール、Discord DM、返信・修正期限の保証は設けない。

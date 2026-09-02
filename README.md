@@ -141,11 +141,11 @@ flowchart LR
 - 以前のidentity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。この以前の操作ではtree／blob内容を変更していない
 - GitHub username変更後はmain／developの88 commitを同一mappingで再構築し、author／committer email、usernameを含む履歴上の記述、対応するcommit SHA参照だけを更新した。新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で旧identity metadata、旧username、旧SHA参照、高確度secret候補は0件、745 reachable blobとPNG履歴8 blobの対象外内容は不変と確認
 - 新tipのdevelopについて、利用者がGitHub画面でStatus Success、test job成功、警告なし、Artifactsなし、CI badgeから`otolude/yoyaku-honpo`のworkflowへ移動でき、作者OtoからGitHub profileへ遷移することを確認。過去のtest・build・DB検証を新tipで再実行した証跡ではない
-- 利用者は旧username・旧履歴に紐づくActions runをGitHub画面から全件削除した。個別件数は記録しておらず、All workflowsには新履歴の`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`と`1943b819a3629d9c69267bec240d916174f7249d`の2 runだけが残り、両方ともStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしと確認した。この画面整理によってGitHub内部object、cache、既存clone、過去取得物から旧履歴を完全回収できたとは保証しない
+- 利用者は旧username・旧履歴に紐づくActions runをGitHub画面から全件削除した。個別件数は記録していない。最終公開受入時のAll workflowsには新履歴の`6a1f7c0`、`1943b81`、`4f9742a`、`b6e92e2`の4 runだけが残り、すべてStatus Success、test job成功、Artifactsなし、警告なし、旧username表示なしと確認した。この画面整理によってGitHub内部object、cache、既存clone、過去取得物から旧履歴を完全回収できたとは保証しない
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: 6Cのdependency license・第三者素材・商標／画面条件に関する利用者判断後124／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
-- 実OpenAI Provider受入、ARM64 Linux実機確認、法的配布可否、最終公開判断は未確認
+- Phase 3: Public repositoryの匿名画面確認と6C最終公開受入後125／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- 未確認は実OpenAI Provider受入とARM64 Linux実機確認の2件。binary、wheel、sdist、container、実行ファイルの配布可否は本公開受入に含めない
 
 環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
 
@@ -180,7 +180,7 @@ python -m discord_ai_reminder_bot
 - 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
 - 完了: Phase 3第6項6C-1の運営ファイル・CI構成、ローカル隔離受入、GitHub Actions初回成功確認
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
-- 今後: 6Cの匿名Issue作成画面確認と最終公開受入、公開後の限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
+- 今後: 公開後の限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
 詳細は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
 
@@ -202,4 +202,4 @@ python -m discord_ai_reminder_bot
 
 本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を、リポジトリへ含まれる第三者由来ファイルの個別表示は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を参照してください。現在wheel、sdist、container、実行ファイルを配布しておらず、将来の配布物に実際に含まれる依存物のnotice整備は配布前事項です。
 
-[GitHubリポジトリ](https://github.com/otolude/yoyaku-honpo)はPublicです。就職活動での企業提示とクラウドワークス等の案件応募への使用を予定していますが、Phase 3の最終公開受入は匿名状態でのIssue作成画面確認が終わるまで未完了です。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は有効化済みのPrivate vulnerability reportingを使用し、[Security Policy](SECURITY.md)を参照してください。Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化し、脆弱性を公開Issueへ投稿しません。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認したworkflowを、新repository URLから参照します。Code of Conduct、PR template、個人連絡先は追加していません。
+[GitHubリポジトリ](https://github.com/otolude/yoyaku-honpo)はPublicです。2026-09-02に利用者が匿名／ログアウト状態でrepository、README、掲載画像、文書、Issue／Security導線を確認し、ソース閲覧用portfolioのPhase 3最終公開受入を完了しました。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は有効化済みのPrivate vulnerability reportingを使用し、[Security Policy](SECURITY.md)を参照してください。Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化し、脆弱性を公開Issueへ投稿しません。この受入はbinary、wheel、sdist、container、実行ファイルの配布承認ではありません。Code of Conduct、PR template、個人連絡先は追加していません。
