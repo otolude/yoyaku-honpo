@@ -169,7 +169,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | --- | --- | --- |
 | LICENSE／COPYING | オープンソースライセンスは付与せず、`COPYRIGHT.md`で独自部分をAll rights reservedとしている | 第三者由来部分は`THIRD_PARTY_NOTICES.md`で分離し、wheel等の配布前監査は別途実施 |
 | CONTRIBUTING | 追加済み・外部PRを積極募集しない方針 | 公開後の受付方針を変更する場合に再確認 |
-| SECURITY.md | 追加済み・Private vulnerability reportingへ案内 | public化直前に同機能を手動有効化し、実際の公開状態を確認 |
+| SECURITY.md | 追加済み・Private vulnerability reportingは現在未有効 | public化直後の最優先操作として有効化し、通知設定と`Report a vulnerability`導線を確認 |
 | Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
 | Issue／PR template | bug／improvement Issue Form追加済み・PR templateなし | 公開後の受付範囲を変更する場合に再確認 |
 | GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |

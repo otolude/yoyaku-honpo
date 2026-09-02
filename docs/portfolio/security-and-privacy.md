@@ -77,7 +77,7 @@ OpenAI Adapterと手動受入CLIは無通信のMock transportで確認済みだ�
 Git履歴・画像・秘密情報、ソース閲覧公開範囲のdependency／第三者素材／商標・画面条件は6Cで監査し、Discord UI画像4枚の限定掲載を2026-09-02に利用者が承認した。これは公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性、最終public化を保証または表明するものではない。残る具体的な判定は[ポートフォリオ掲載計画](../portfolio-plan.md)の6Cと将来の配布前監査へ分離する。
 ## 7. 公開リポジトリの報告境界
 
-公開Issueにはbug／improvementの定型Formだけを用意し、秘密情報除去と「脆弱性ではない」の確認を求める。脆弱性は公開Issueへ投稿させず、[Security Policy](../../SECURITY.md)でPrivate vulnerability reportingへ案内する。同機能はpublic化直前に手動有効化予定であり、現時点で利用可能とは扱わない。個人メール、Discord DM、返信・修正期限の保証は設けない。
+公開Issueにはbug／improvementの定型Formだけを用意し、秘密情報除去と「脆弱性ではない」の確認を求める。脆弱性は公開Issueへ投稿させず、[Security Policy](../../SECURITY.md)でPrivate vulnerability reportingへ案内する。同機能は現在未有効であり、public化直後の最優先操作として手動有効化し、通知設定と`Report a vulnerability`導線を確認する。現時点で利用可能とは扱わず、個人メール、Discord DM、返信・修正期限の保証は設けない。
 
 CIはread-only permission、一時test DB、固定非秘密credentialだけを使用し、実`.env`、開発・production DB、Discord、OpenAI、決済へ接続しない。これは構成上の境界であり、GitHub上の実行成功や外部セキュリティ監査を意味しない。
 

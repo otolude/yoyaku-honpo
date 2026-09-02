@@ -6,7 +6,7 @@
 
 ## Reporting a vulnerability
 
-セキュリティ上の問題を公開Issueへ投稿しないでください。public化直前にGitHub Private vulnerability reportingを有効化し、以後はrepositoryのSecurity画面にあるprivate reporting経路を使用する方針です。まだその機能が利用できない場合は、秘密情報を公開せず、機能の有効化後に報告してください。個人メール、Discord DM、外部連絡先は現段階では設けていません。
+セキュリティ上の問題を公開Issueへ投稿しないでください。Private vulnerability reportingは現在未有効であり、public化直後の最優先操作として有効化し、通知設定とrepositoryのSecurity画面にある`Report a vulnerability`導線を確認する方針です。まだその機能が利用できない場合は、秘密情報を公開せず、機能の有効化後に報告してください。個人メール、Discord DM、外部連絡先は現段階では設けていません。
 
 報告には、秘密を含まない概要、影響範囲、最小限の再現条件を記載してください。次の情報は添付しないでください。
 

@@ -1142,4 +1142,4 @@ Phase 3第6項の掲載要件は[ポートフォリオ掲載計画](portfolio-pl
 
 DB資格情報はCI serviceだけの固定非秘密値で、Volumeを永続化しない。`TEST_DATABASE_URL`はworkflow processへ明示し、通常pytest stepでは未設定としてintegrationをskipする。開発・production URL、Bot token、OpenAI／決済keyを設定せず、live Provider CLI、deploy、release、repository書換えをworkflowへ含めない。GitHub上の初回成功は構成追加とは別に、対象commit、日付、run、job、Artifacts、警告の有無を人手証跡として記録する。
 
-Issue Formはbugとimprovementだけを提供し、blank Issueを無効化する。Security Policyは公開Issueへの脆弱性投稿を禁止し、public化直前に有効化するPrivate vulnerability reportingへ移行する。外部PRは事前Issue相談を求め、Code of ConductとPR templateは現段階では追加しない。
+Issue Formはbugとimprovementだけを提供し、blank Issueを無効化する。Security Policyは公開Issueへの脆弱性投稿を禁止し、現在未有効のPrivate vulnerability reportingをpublic化直後の最優先操作として有効化し、通知設定と`Report a vulnerability`導線を確認する。外部PRは事前Issue相談を求め、Code of ConductとPR templateは現段階では追加しない。
