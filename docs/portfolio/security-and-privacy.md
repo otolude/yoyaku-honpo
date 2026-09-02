@@ -66,16 +66,15 @@ OpenAI Adapterと手動受入CLIは無通信のMock transportで確認済みだ�
 | カード情報をBot DBへ保存しない | 将来の決済設計方針。決済自体は未実装 |
 | SECURITY報告窓口、外部監査・認証 | 未決定・未実施 |
 
-## 8. 公開前に残る確認
+## 8. 公開前・配布前に残る確認
 
-- Git履歴、tracked files、画像metadata、復元可能性を含む秘密情報監査
-- Discord／OpenAIの名称、UI、商標・画面掲載条件
-- 採用予定名「よやく本舗」の商標確認（利用者提供の初期検索だけで使用可否を判断しない）
-- dependency license、LICENSE、著作権表記、SECURITY連絡先
+- repository visibility、Private vulnerability reporting、最終public化判断
+- 少人数の無償closed test前の可能な範囲での商標専門家相談と、有償test・広告・契約・一般提供前の必須商標確認
+- wheel、sdist、container、実行ファイルへ含めるdependency、第三者素材、license／noticeの配布前監査
 - 隔離環境でのREADME再現と、配置環境の監視・バックアップ・ARM64確認
 - 実Providerを明示許可後に限定実行する品質・保持・請求受入
 
-公開前の具体的な判定は[ポートフォリオ掲載計画](../portfolio-plan.md)の6Cへ残す。
+Git履歴・画像・秘密情報、ソース閲覧公開範囲のdependency／第三者素材／商標・画面条件は6Cで監査し、Discord UI画像4枚の限定掲載を2026-09-02に利用者が承認した。これは公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性、最終public化を保証または表明するものではない。残る具体的な判定は[ポートフォリオ掲載計画](../portfolio-plan.md)の6Cと将来の配布前監査へ分離する。
 ## 7. 公開リポジトリの報告境界
 
 公開Issueにはbug／improvementの定型Formだけを用意し、秘密情報除去と「脆弱性ではない」の確認を求める。脆弱性は公開Issueへ投稿させず、[Security Policy](../../SECURITY.md)でPrivate vulnerability reportingへ案内する。同機能はpublic化直前に手動有効化予定であり、現時点で利用可能とは扱わない。個人メール、Discord DM、返信・修正期限の保証は設けない。

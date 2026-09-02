@@ -128,6 +128,8 @@ Discordの名称、UI、商標・ブランド利用条件は6Cまでの調査対
 
 採用予定名に関して、利用者提供のJ-PlatPat検索結果では「よやく本舗」「予約本舗」「Yoyaku Honpo」は各0件、「ヨヤクホンポ」の称呼類似検索は2件であった。その内訳として、登録5453553「よやくーぽん！」（第42類、類似群コード42P02・42X11）と登録6836621「ヨヤクーポン」（第35・36類）は登録存続中と報告されている。これは利用者が行った検索の記録であり、法的な使用可否の判断、網羅的な類似調査、商標クリアランス完了を意味しない。「よやく本舗」は採用予定として管理し、公開前に専門家への相談要否を含む商標確認を行う。この記録だけで6Cまたは公開受入を完了にしない。
 
+2026-09-02に利用者は、「よやく本舗」を採用予定名・商標確認未完了と明記してソース閲覧用portfolioへ掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供の開始前には商標確認を必須の判断事項とする。検索0件や今回の掲載判断を、商標上の安全性、非侵害、登録可能性の表明または保証として扱わない。
+
 ## 9. 構成図・フロー図の安全境界
 
 構成図にはDiscord Interaction、Bot Application、Domain／Application／Infrastructure、PostgreSQL、Schedule worker、Notification worker、Name generation worker、NameGenerator Port、Disabled／OpenAI Adapter、外部AI Provider候補、将来Entitlement境界、Migration安全ラッパー、cleanup／Recoveryを掲載できる。
@@ -165,22 +167,22 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 
 | 項目 | 状態 | 6B／6Cで必要な判断 |
 | --- | --- | --- |
-| LICENSE／COPYING | 未確認・ファイルなし | 利用者が採用ライセンスを決定し、依存・素材との整合を確認してから追加 |
-| CONTRIBUTING | ファイルなし | 外部contributionを受ける公開形態なら6Cまでに追加要否を決定 |
-| SECURITY.md | ファイルなし | 公開前に脆弱性報告窓口と非公開報告方法を決定。実在しない窓口を書かない |
+| LICENSE／COPYING | オープンソースライセンスは付与せず、`COPYRIGHT.md`で独自部分をAll rights reservedとしている | 第三者由来部分は`THIRD_PARTY_NOTICES.md`で分離し、wheel等の配布前監査は別途実施 |
+| CONTRIBUTING | 追加済み・外部PRを積極募集しない方針 | 公開後の受付方針を変更する場合に再確認 |
+| SECURITY.md | 追加済み・Private vulnerability reportingへ案内 | public化直前に同機能を手動有効化し、実際の公開状態を確認 |
 | Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
-| Issue／PR template | ファイルなし | 公開後の受付範囲が決まってから要否を決定 |
+| Issue／PR template | bug／improvement Issue Form追加済み・PR templateなし | 公開後の受付範囲を変更する場合に再確認 |
 | GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |
-| dependency license | Alembic由来templateのMIT notice対応済み・全体監査未完了 | direct／transitive依存のライセンスと将来配布物のNOTICE要否を6Cと配布前監査で確認 |
-| Discord／OpenAIの名称・画面・ロゴ | 未監査 | 最新の商標・ブランド・画面掲載条件を公式情報で確認 |
-| 採用予定名「よやく本舗」 | 利用者提供の初期検索記録あり・未クリアランス | 公開前に商標確認を完了し、この記録だけで公開可としない |
-| 第三者素材 | Alembic由来templateを個別noticeで管理 | 追加assetごとに出典、ライセンス、改変可否をmanifestまたは第三者noticeで管理 |
-| 個人情報・著作権 | 実データ非掲載を要件化 | 合成データ、撮影者権限、UI内素材、本文の権利を6Cで人手確認 |
+| dependency license | ソース閲覧公開範囲を監査済み・Alembic個別MIT notice対応済み | wheel等の実配布物に含まれるdependencyとNOTICEを配布前に再監査 |
+| Discord／OpenAIの名称・画面・ロゴ | 公式条件を監査し、限定掲載を利用者承認済み | 非提携表示を維持し、条件更新時と一般提供前に再確認 |
+| 採用予定名「よやく本舗」 | portfolio掲載承認済み・商標確認未完了 | closed test前は可能なら専門家相談、有償test・広告・契約・一般提供前は確認必須 |
+| 第三者素材 | Alembic由来templateを個別noticeで管理し、Discord UI画像4枚の限定掲載を承認済み | 追加assetごとに出典、ライセンス、改変可否をmanifestまたは第三者noticeで管理 |
+| 個人情報・著作権 | 合成データ、画像、Git履歴を人手監査済み | 追加素材・追加撮影ごとに同じ基準で再確認 |
 | repository name／visibility | `yoyaku-honpo`へ改名済み・Private | public化時期と最終公開可否を利用者が判断 |
-| Git履歴の秘密情報 | 今回は未完了 | 公開前に履歴全体を値非表示の方法で監査し、発見時は公開を止める |
-| `.env`・一時ファイル | `.gitignore`あり、`.env.example`だけ追跡 | 6Cでtracked／untracked／履歴を再監査 |
+| Git履歴の秘密情報 | identity書換え後の到達履歴を監査済み | public化直前の差分と追加履歴を再確認 |
+| `.env`・一時ファイル | `.gitignore`あり、`.env.example`だけ追跡・6C監査済み | public化直前のtracked／untracked差分を再確認 |
 
-法的判断は断定せず、「確認済み」「未確認」「利用者判断が必要」を維持する。ライセンス未確定の間は、利用条件が確定しているかのように表示しない。
+法的判断は断定せず、「確認済み」「未確認」「利用者判断が必要」を維持する。独自部分の利用条件と第三者由来部分のライセンスを混同せず、将来の配布形態に応じて再監査する。
 
 ## 13. 6B作業項目
 
@@ -269,4 +271,4 @@ GitHub Pages、live demo、PR template、完全な日英併記、個人連絡先
 
 利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of ConductとPR templateは追加せず、外部PRは積極募集しない。Issueは受け付け、成功確認済みworkflowのCI badgeを掲載する。
 
-GitHub上のCI成功は2026-08-31に利用者が確認済みである。repositoryはPrivateのまま`yoyaku-honpo`へ改名済みで、現行のbadgeとSecurity Policy導線は新repository URLを使用する。Private vulnerability reportingの有効化、repository visibility、依存license、Discord／OpenAIの商標条件、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。
+GitHub上のCI成功は2026-08-31に利用者が確認済みである。repositoryはPrivateのまま`yoyaku-honpo`へ改名済みで、現行のbadgeとSecurity Policy導線は新repository URLを使用する。2026-09-02にソース閲覧用portfolioの依存license、第三者素材、商標・画面掲載条件に関する利用者判断を記録済みであり、Private vulnerability reportingの有効化、repository visibility、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。

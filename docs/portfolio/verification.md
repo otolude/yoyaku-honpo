@@ -40,7 +40,7 @@ OpenAI Adapterのcontract testは実SDKとMock transportを使用し、実OpenAI
 | --- | --- | --- |
 | Phase 1 | 63／63 | [Phase 1受入](../manual-acceptance-phase1.md) |
 | Phase 2 | 47／47 | [Phase 2受入](../manual-acceptance-phase2.md) |
-| Phase 3 | Git履歴・画像・秘密情報最終監査、Alembic第三者notice対応後123／127 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
+| Phase 3 | 6Cのdependency・第三者素材・商標／画面条件に関する利用者判断後124／127 | [Phase 3受入](../manual-acceptance-phase3.md)を最新集計の正本とする |
 
 Phase 1・2には自動テストと実Discord／隔離環境の人手受入が含まれる。Phase 3では自動隔離受入、実ViewStore、専用PostgreSQL、実Discordの証跡を項目ごとに記録している。件数だけで未列挙の動作を保証しない。
 
@@ -50,12 +50,15 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 - ARM64 Linux実機での依存解決、import、Mock transport、shutdown
 - 24時間常時稼働、一般公開、実利用者利用、本番監視
 - Plan、Entitlement、顧客Quota、契約、決済、Webhook
-- dependency全体のlicense、Alembic以外の第三者素材、商標・画面掲載条件、repository visibility、最終公開判断
-- 採用予定名「よやく本舗」の商標クリアランス（利用者提供のJ-PlatPat初期検索記録だけでは未完了）
+- wheel、sdist、container、実行ファイルへ実際に含めるdependencyと第三者素材の配布前監査
+- repository visibility、Private vulnerability reporting、最終public化判断
+- 採用予定名「よやく本舗」のclosed test／商用利用前の商標確認（portfolio掲載承認は商標クリアランス完了を意味しない）
 
-`alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。この限定対応は6C全体、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしない。
+`alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。このnotice対応単独では6C全体、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしなかった。
 
-2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンク、Issue FormのSecurity Policyリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。repositoryはPrivateかつpublic化前で、Discord UI画像、「よやく本舗」の商標、実Provider、ARM64、最終公開判断、6C全体は未完了である。
+2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンク、Issue FormのSecurity Policyリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。repositoryはPrivateかつpublic化前で、実Provider、ARM64、最終公開判断、6C全体は未完了である。
+
+同日、利用者はDiscord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。これは法的助言ではなく、ソース閲覧用portfolioへの限定掲載判断である。Alembic noticeとrepository改名により監査で指摘された2つの公開前blockerは解消したが、配布前監査、実Provider、ARM64、visibility、Private vulnerability reporting、最終public化判断は未完了である。
 
 ## 6. 更新手順
 
@@ -69,6 +72,8 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 旧著作権方針版を参照したActions run #1は利用者がGitHub画面から削除し、Actions一覧にはrun #2だけを残した。repositoryはPrivateでpublic化前、Private vulnerability reportingは未有効である。CI成功は依存license、第三者素材・商標、visibility、公開可否、実Provider、ARM64の確認を代替しない。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
 
 2026-09-01には利用者がGitHub画面で、identity書換え前の対応commitのworkflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることを確認した。run番号や所要時間は提供されていないため記録しない。これは過去の利用者画面確認であり、次節以降のローカル隔離検証や新履歴の証跡とは別の区分である。
+
+2026-09-02には利用者がGitHub画面で、repository改名後のcommit `cdfa4de00fb5c6796c2250a890fcc1d4d8e54abe`についてdevelopのstatus Success、test job成功、Artifactsなし、警告なし、README badgeの正常表示、badgeから新しい`yoyaku-honpo` workflow画面への遷移、遷移先URLに旧repository名がないことを確認した。この画面確認はCIと改名後URLの証跡であり、実Provider、ARM64、visibility、法的適合、最終public化を確認するものではない。
 
 2026-09-02には利用者がidentity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、Status Success、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeから新workflowへ移動可能であることと、commitがGitHub accountへ関連付いていることを画面確認した。run番号と所要時間は提供されていないため推測しない。localではauthor／committer nameがOto、emailがGitHub noreply形式であることを値を掲載せず確認した。
 

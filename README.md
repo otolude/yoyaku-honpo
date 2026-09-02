@@ -53,7 +53,7 @@ Discordで後から投稿したい内容を予約し、一覧、詳細、編集�
 
 専用開発guildの合成データだけで撮影し、完全な予約UUIDを不透明な黒矩形で焼き込み匿名化した画面です。一覧には撮影用予約全3件と操作欄を掲載しています。
 
-2026-08-31に採用予定名を反映して再撮影し、編集Modalと投稿結果には開発用表示名 `よやく本舗 Dev` とAI生成アイコンが写っています。「よやく本舗」の商標確認と6Cの法的条件・最終公開判断は未完了です。
+2026-08-31に採用予定名を反映して再撮影し、編集Modalと投稿結果には開発用表示名 `よやく本舗 Dev` とAI生成アイコンが写っています。2026-09-02に利用者は、現在の匿名化・最小crop・非提携表示を維持して4枚をソース閲覧用portfolioへ掲載し、「よやく本舗」は採用予定名・商標確認未完了と明記して掲載する方針を承認しました。これはDiscordによる公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性を表明または保証するものではありません。
 
 ![単発・毎日・毎週の合成予約を表示した予約一覧](docs/portfolio/assets/schedule-list.png)
 
@@ -142,7 +142,7 @@ flowchart LR
 - identity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。GitHub内部保持や画像編集前データの不存在は保証しない
 - Phase 1: 63／63
 - Phase 2: 47／47
-- Phase 3: Git履歴・画像・秘密情報最終監査とAlembic第三者notice対応後123／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
+- Phase 3: 6Cのdependency license・第三者素材・商標／画面条件に関する利用者判断後124／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする
 - 実OpenAI Provider受入、ARM64 Linux実機確認、法的配布可否、最終公開判断は未確認
 
 環境、対象commit、Ruff、artifact、限界、Migration、証跡区分、更新方法は[検証スナップショット](docs/portfolio/verification.md)を参照してください。検査したwheel／sdistは配布しておらず、wheelの`COPYRIGHT.md`未収録と両artifactのlicense metadata未設定が残るため、法的適合・公開可能性を示す証跡ではありません。
@@ -178,7 +178,7 @@ python -m discord_ai_reminder_bot
 - 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
 - 完了: Phase 3第6項6C-1の運営ファイル・CI構成、ローカル隔離受入、GitHub Actions初回成功確認
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
-- 今後: 6Cのdependency license・第三者素材・商標／画面条件・公開状態／最終判断、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
+- 今後: 6Cのrepository visibility・Private vulnerability reporting・最終public化判断、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
 詳細は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
 

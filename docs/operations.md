@@ -485,6 +485,8 @@ docker compose -p discord-ai-reminder-bot-portfolio ps
 
 CIはdevelopへのpushとPull Requestで実行する。2026-08-31にOtoがidentity書換え前の対応commitのActions run #2について、1分8秒でtest job成功、Artifactsなし、Node.js 20警告なしをGitHub画面で確認した。さらに2026-09-01に利用者が別のidentity書換え前対応commitについて、workflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることをGitHub画面で確認した。後者のrun番号と所要時間は提供されていない。これらは過去の利用者画面確認であり、ローカル隔離検証や新履歴のCIと混同しない。2026-09-02には新develop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、利用者がStatus Success、test job成功、新しい警告なし、Artifactsなし、badgeから新workflowへ移動可能であることと、commitのGitHub accountへの関連付けを画面確認した。その後GitHub repositoryをPrivateのまま`yoyaku-honpo`へ改名し、badge画像とworkflowリンクを新repository URLへ更新した。badgeは同workflowを参照するが、deploy、release、public化は行わない。workflowはBot token、OpenAI key、決済key、repository secretを要求せず、Discord Gatewayやlive Provider acceptanceへ接続しない。
 
+repository改名後のcommit `cdfa4de00fb5c6796c2250a890fcc1d4d8e54abe`についても、2026-09-02に利用者がGitHub画面でdevelopのstatus Success、test job成功、Artifactsなし、警告なし、README badge正常表示、badgeから新しい`yoyaku-honpo` workflow画面への遷移、遷移先URLの旧repository名なしを確認した。この確認はdeploy、release、visibility変更、public化、実ProviderまたはARM64受入を意味しない。
+
 公式ActionはNode.js 24対応の`actions/checkout@v7`と`actions/setup-python@v7`を使用する。正確なfull commit SHAを独立検証できない状態では推測でpinせず、version更新時にworkflow構文と実行結果を再確認する。
 
 一時PostgreSQL serviceには`discord_bot_test`だけを作り、CI内の固定非秘密credentialを使用する。正式なDB手順は次の順で、Alembic CLIを直接使わない。
