@@ -12,7 +12,7 @@
 
 ポートフォリオの目的は、GitHubで公開し、就職活動での企業提示とクラウドワークス等の案件応募において、第三者が実装範囲、設計判断、安全境界、検証状況を短時間で確認できるようにすることである。対象読者は採用担当者、技術担当者、発注者とする。将来の正式リリースを目指す製品開発であることを示しつつ、ローカル開発、隔離テスト、実Discord確認、公開前確認、本番運用を混同しない。
 
-GitHub repositoryは公開前に`yoyaku-honpo`へ改名済みだが、現在もPrivateで公開前準備中である。public化時期は6C監査合格後を候補とし、改名や6B文書整備だけで公開可否を確定しない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
+GitHub repositoryは`yoyaku-honpo`へ改名後にPublic化され、Private vulnerability reportingも有効化済みである。6Cの最終公開受入は匿名状態でのIssue作成画面確認が終わるまで未完了とし、Publicになった事実だけで完了扱いにしない。GitHubプロフィールREADME、pin留め、連絡導線、クラウドワークス掲載文は後続作業とし、個人情報、mail、SNS、案件媒体URLを本repositoryへ追加しない。
 
 対象読者と最初に提示する情報は次のとおりとする。
 
@@ -169,7 +169,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | --- | --- | --- |
 | LICENSE／COPYING | オープンソースライセンスは付与せず、`COPYRIGHT.md`で独自部分をAll rights reservedとしている | 第三者由来部分は`THIRD_PARTY_NOTICES.md`で分離し、wheel等の配布前監査は別途実施 |
 | CONTRIBUTING | 追加済み・外部PRを積極募集しない方針 | 公開後の受付方針を変更する場合に再確認 |
-| SECURITY.md | 追加済み・Private vulnerability reportingは現在未有効 | public化直後の最優先操作として有効化し、通知設定と`Report a vulnerability`導線を確認 |
+| SECURITY.md | 追加済み・Private vulnerability reportingはEnabled | GitHub標準の`Report a vulnerability`導線へ一本化し、公開Issueへの投稿を禁止 |
 | Code of Conduct | ファイルなし | community運用方針に応じて要否を決定 |
 | Issue／PR template | bug／improvement Issue Form追加済み・PR templateなし | 公開後の受付範囲を変更する場合に再確認 |
 | GitHub Actions／CI | 6C-1でworkflow追加・初回成功確認済み | 対象commitと確認日をverificationへ記録し、badgeは実workflowだけを参照 |
@@ -178,7 +178,7 @@ READMEにはPhase 1 63／63、Phase 2 47／47、Phase 3の最新集計と未確�
 | 採用予定名「よやく本舗」 | portfolio掲載承認済み・商標確認未完了 | closed test前は可能なら専門家相談、有償test・広告・契約・一般提供前は確認必須 |
 | 第三者素材 | Alembic由来templateを個別noticeで管理し、Discord UI画像4枚の限定掲載を承認済み | 追加assetごとに出典、ライセンス、改変可否をmanifestまたは第三者noticeで管理 |
 | 個人情報・著作権 | 合成データ、画像、Git履歴を人手監査済み | 追加素材・追加撮影ごとに同じ基準で再確認 |
-| repository name／visibility | `yoyaku-honpo`へ改名済み・Private | public化時期と最終公開可否を利用者が判断 |
+| repository name／visibility | `yoyaku-honpo`・Public | 匿名Issue作成画面を確認して最終公開受入を判断 |
 | Git履歴の秘密情報 | identity書換え後の到達履歴を監査済み | public化直前の差分と追加履歴を再確認 |
 | `.env`・一時ファイル | `.gitignore`あり、`.env.example`だけ追跡・6C監査済み | public化直前のtracked／untracked差分を再確認 |
 
@@ -246,7 +246,7 @@ Aの12件は本書と関連文書の整合、ローカルリンク、Markdown、
 未確定事項は次のとおりである。
 
 - 採用するLICENSEと著作権表示。
-- repositoryをpublicにする時期と現在のvisibility。
+- Public化の実施事実とPhase 3の最終公開受入。
 - CONTRIBUTING、SECURITY、Code of Conduct、Issue／PR template、CIの要否と運用主体。
 - Discord／OpenAIの名称、画面、ロゴに関する最新条件。
 - 6Bで撮影する具体的な画面、架空名、撮影担当者、確認担当者。
@@ -271,4 +271,4 @@ GitHub Pages、live demo、PR template、完全な日英併記、個人連絡先
 
 利用者判断により、オープンソースライセンスを付与しないCopyright Noticeと`Copyright (c) 2026 Oto. All rights reserved.`、Security Policy、Contribution方針、bug／improvement Issue Form、blank Issue無効化、GitHub Actions CIを採用する。公開目的は就職活動・案件応募・ポートフォリオ評価とし、GitHub利用規約上の閲覧・forkを除く独自コード・文書の利用は明示的な書面許可を必要とする。Code of ConductとPR templateは追加せず、外部PRは積極募集しない。Issueは受け付け、成功確認済みworkflowのCI badgeを掲載する。
 
-GitHub上のCI成功は2026-08-31に利用者が確認済みである。repositoryはPrivateのまま`yoyaku-honpo`へ改名済みで、現行のbadgeとSecurity Policy導線は新repository URLを使用する。2026-09-02にソース閲覧用portfolioの依存license、第三者素材、商標・画面掲載条件に関する利用者判断を記録済みであり、Private vulnerability reportingの有効化、repository visibility、最終public化は6Cへ残す。公開は6C合格後の利用者承認による手動操作とし、GitHub profile等の導線整備も別作業とする。
+GitHub上のCI成功は2026-08-31に利用者が確認済みである。repositoryは`yoyaku-honpo`へ改名後にPublic化され、現行のbadgeとSecurity Policy導線は新repository URLを使用する。2026-09-02にソース閲覧用portfolioの依存license、第三者素材、商標・画面掲載条件に関する利用者判断を記録済みで、Private vulnerability reportingもEnabledである。匿名Issue作成画面の確認と最終公開受入は6Cへ残し、GitHub profile等の導線整備も別作業とする。

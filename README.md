@@ -180,7 +180,7 @@ python -m discord_ai_reminder_bot
 - 完了: Phase 3第6項6B。本文・図の6B-1と画像の6B-2を分離して受入済み
 - 完了: Phase 3第6項6C-1の運営ファイル・CI構成、ローカル隔離受入、GitHub Actions初回成功確認
 - 延期中: 実OpenAI Provider受入、ARM64 Linux実機確認
-- 今後: 6Cのrepository visibility・Private vulnerability reporting・最終public化判断、公開前限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
+- 今後: 6Cの匿名Issue作成画面確認と最終公開受入、公開後の限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
 詳細は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
 
@@ -202,4 +202,4 @@ python -m discord_ai_reminder_bot
 
 本リポジトリにはオープンソースライセンスを付与していません。独自のソースコードと文書は`Copyright (c) 2026 Oto. All rights reserved.`として扱い、明示的な書面許可がない複製、改変、再配布、転載、二次利用、商用利用を許可しません。GitHub利用規約上の閲覧・fork、第三者コンポーネントと商標、無保証等の詳細は[Copyright Notice](COPYRIGHT.md)を、リポジトリへ含まれる第三者由来ファイルの個別表示は[Third-Party Notices](THIRD_PARTY_NOTICES.md)を参照してください。現在wheel、sdist、container、実行ファイルを配布しておらず、将来の配布物に実際に含まれる依存物のnotice整備は配布前事項です。
 
-[GitHubリポジトリ](https://github.com/otolude/yoyaku-honpo)は`yoyaku-honpo`へ改名済みですが、現在もPrivateで公開前準備中です。就職活動での企業提示とクラウドワークス等の案件応募への使用を予定しており、public化は6C監査合格と利用者の最終承認後に手動で行います。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は[Security Policy](SECURITY.md)を参照してください。Private vulnerability reportingは現在未有効で、public化直後の最優先操作として有効化し、通知設定と`Report a vulnerability`導線を確認する予定です。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認したworkflowを、新repository URLから参照します。Code of Conduct、PR template、個人連絡先は追加していません。
+[GitHubリポジトリ](https://github.com/otolude/yoyaku-honpo)はPublicです。就職活動での企業提示とクラウドワークス等の案件応募への使用を予定していますが、Phase 3の最終公開受入は匿名状態でのIssue作成画面確認が終わるまで未完了です。バグ報告・改善提案は[Contributing](CONTRIBUTING.md)、脆弱性報告は有効化済みのPrivate vulnerability reportingを使用し、[Security Policy](SECURITY.md)を参照してください。Issue作成画面はGitHub標準の`Report a vulnerability`導線へ一本化し、脆弱性を公開Issueへ投稿しません。CI badgeは2026-09-02に利用者がidentity書換え後のdevelopで成功を確認したworkflowを、新repository URLから参照します。Code of Conduct、PR template、個人連絡先は追加していません。

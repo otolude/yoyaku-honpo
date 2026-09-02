@@ -51,14 +51,14 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 - 24時間常時稼働、一般公開、実利用者利用、本番監視
 - Plan、Entitlement、顧客Quota、契約、決済、Webhook
 - wheel、sdist、container、実行ファイルへ実際に含めるdependencyと第三者素材の配布前監査
-- repository visibility、Private vulnerability reporting、最終public化判断
+- 匿名Issue作成画面の確認と最終公開受入
 - 採用予定名「よやく本舗」のclosed test／商用利用前の商標確認（portfolio掲載承認は商標クリアランス完了を意味しない）
 
 `alembic/script.py.mako`はAlembic 1.19.1公式配布物のgeneric templateを基礎とすることを実物比較で確認し、公式LICENSEと配布物同梱LICENSEで一致した著作権表示とMIT License全文をリポジトリ直下の[Third-Party Notices](../../THIRD_PARTY_NOTICES.md)へ収録した。プロジェクト独自部分へオープンソースライセンスを付与する変更ではない。現在wheel、sdist、container、実行ファイルを配布しておらず、将来配布物の全dependency noticeは配布前監査へ残す。このnotice対応単独では6C全体、Discord UI画像、「よやく本舗」、visibility、public化を完了扱いにしなかった。
 
-2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンク、Issue FormのSecurity Policyリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。repositoryはPrivateかつpublic化前で、実Provider、ARM64、最終公開判断、6C全体は未完了である。
+2026-09-02に利用者がGitHub repositoryをPrivateのまま`discord-ai-reminder-bot`から`yoyaku-honpo`へ改名した。現行URLは<https://github.com/otolude/yoyaku-honpo>で、originのfetch／push URL、READMEのCI badge画像とworkflowリンクを新名称へ整合した。GitHubによる旧URL redirectは現行導線として使用しない。ローカルdirectory、Python distribution／module、Compose project／container／Volume、DB、環境変数、過去検証環境名はrepository URLではないため維持する。その後repositoryはPublic化され、Private vulnerability reportingもEnabledになったが、実Provider、ARM64、匿名Issue作成画面の確認、最終公開受入、6C全体は未完了である。
 
-同日、利用者はDiscord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。これは法的助言ではなく、ソース閲覧用portfolioへの限定掲載判断である。Alembic noticeとrepository改名により監査で指摘された2つの公開前blockerは解消したが、配布前監査、実Provider、ARM64、visibility、Private vulnerability reporting、最終public化判断は未完了である。
+同日、利用者はDiscord UI画像4枚を現在の匿名化・最小crop・非提携表示でソース閲覧用portfolioへ掲載し、「よやく本舗」を採用予定名・商標確認未完了と明記して掲載する方針を承認した。少人数の無償closed test前は可能であれば商標専門家へ相談し、有償test、広告、契約、一般提供前は商標確認を必須の判断事項とする。Discordその他第三者による公式・公認・提携、画面掲載の無条件な適合、商標上の安全性・非侵害・登録可能性は表明または保証しない。これは法的助言ではなく、ソース閲覧用portfolioへの限定掲載判断である。Alembic noticeとrepository改名により監査で指摘された2つの公開前blockerは解消した。repositoryはPublic、Private vulnerability reportingはEnabledだが、配布前監査、実Provider、ARM64、匿名Issue作成画面の確認、最終公開受入は未完了である。
 
 ## 6. 更新手順
 
@@ -69,7 +69,7 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 
 6C-1ではCopyright Notice、Security、Contribution、Issue Form、CI workflowをローカルで静的・自動検証した。2026-08-31にOtoがGitHub画面で、identity書換え前の対応commitのActions run #2、実行時間1分8秒、test job成功、Artifactsなし、Node.js 20 deprecated警告なしを確認した。workflowは`actions/checkout@v7`と`actions/setup-python@v7`を使用する。
 
-旧著作権方針版を参照したActions run #1は利用者がGitHub画面から削除し、Actions一覧にはrun #2だけを残した。repositoryはPrivateでpublic化前、Private vulnerability reportingは未有効である。CI成功は依存license、第三者素材・商標、visibility、公開可否、実Provider、ARM64の確認を代替しない。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
+旧著作権方針版を参照したActions run #1は利用者がGitHub画面から削除し、その時点のActions一覧にはrun #2だけを残した。当時repositoryはPrivateでpublic化前、Private vulnerability reportingは未有効だった。CI成功は依存license、第三者素材・商標、公開受入、実Provider、ARM64の確認を代替しない。著作権方針はオープンソースライセンスを付与しないCopyright Noticeを正本とする。
 
 2026-09-01には利用者がGitHub画面で、identity書換え前の対応commitのworkflow実行とtest jobの成功、新しい警告なし、Artifactsなし、READMEのCI badgeからworkflow画面へ移動可能であることを確認した。run番号や所要時間は提供されていないため記録しない。これは過去の利用者画面確認であり、次節以降のローカル隔離検証や新履歴の証跡とは別の区分である。
 
@@ -126,4 +126,4 @@ mainとdevelopから到達可能だった83 commitのauthor／committerを、同
 
 main／developはbranchごとの完全一致leaseを指定した単一atomic pushで更新し、通常のforce、逐次push、merge、rebase、resetは使用していない。新tipは`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で、local／originの4 refは一致し、ahead／behindは0／0、作業ツリーはcleanだった。通常公開ref上の旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件である。非公開mappingは以前の83件、今回の88件、合成83件について両側一意と検証したが、その内容、identity値、旧username、bundle、保存pathは公開しない。
 
-identity書換え前に実行したtest、build、DB検証、過去Actionsを新SHAで再実行したとは扱わない。非公開mappingによるcommit対応と対象外内容の一致を境界として既存証跡を参照する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。Public化、Private vulnerability reporting、6C最終項目は未完了で、実ProviderとARM64も未確認のままである。
+identity書換え前に実行したtest、build、DB検証、過去Actionsを新SHAで再実行したとは扱わない。非公開mappingによるcommit対応と対象外内容の一致を境界として既存証跡を参照する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。repositoryはPublic、Private vulnerability reportingはEnabledだが、匿名Issue作成画面の確認と6C最終公開受入は未完了で、実ProviderとARM64も未確認のままである。

@@ -497,7 +497,7 @@ repository改名後のcommit `cdfa4de00fb5c6796c2250a890fcc1d4d8e54abe`につい
 
 通常pytest stepでは`TEST_DATABASE_URL`を空にし、開発DBや`.env`へfallbackさせない。CI serviceは永続Volumeを使わず、production、開発用postgres、実Discord、外部AI、決済へ接続しない。workflow変更時はYAML、permissions、trigger、concurrency、action参照、秘密情報、Migration commandをローカルで再監査する。
 
-Security Policy、Contribution方針、Issue Formの運用開始はrepository公開後である。Private vulnerability reportingは現在未有効であり、public化直後の最優先操作としてGitHub上で手動有効化し、通知設定と`Report a vulnerability`導線を確認する。有効化前に利用可能と案内せず、脆弱性を公開Issueへ移さず、秘密情報をIssueやlogへ貼らない。
+Security Policy、Contribution方針、Issue FormはPublic repositoryで運用中である。Private vulnerability reportingは有効化済みで、GitHub標準の`Report a vulnerability`導線へ一本化する。重複するcustom security contact linkは置かず、脆弱性を公開Issueへ移さず、秘密情報をIssueやlogへ貼らない。
 
 ## 24. DB非依存の隔離build・test証跡
 

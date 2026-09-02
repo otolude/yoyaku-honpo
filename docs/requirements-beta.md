@@ -615,6 +615,6 @@ Phase 3第6項は6A要件定義、6B成果物作成、6C最終監査に分割す
 
 - オープンソースライセンスは付与せず、独自コード・文書を`Copyright (c) 2026 Oto. All rights reserved.`として公開準備する。GitHub利用規約上の閲覧・forkを除き、複製、改変、再配布、転載、二次利用、商用利用には著作権者の明示的な書面許可を必要とする。依存物・第三者素材・商標には各権利者の条件を適用する。
 - 公開Issueはbugとimprovementの定型Formだけを入口とし、blank Issueを無効にする。外部PRは積極募集せず、事前Issue相談を求める。
-- 脆弱性は公開Issueで受け付けない。現在未有効のPrivate vulnerability reportingをpublic化直後の最優先操作として手動で有効化し、通知設定と`Report a vulnerability`導線を確認する。個人メール等の未確定窓口を記載しない。
+- 脆弱性は公開Issueで受け付けない。有効化済みのPrivate vulnerability reportingとGitHub標準の`Report a vulnerability`導線へ一本化し、個人メール等の未確定窓口を記載しない。
 - CIはdevelopへのpushとPull Requestで、Python 3.14、依存整合、Ruff、通常pytest、専用PostgreSQL統合pytest、Migration安全照合を行う。資格情報、実`.env`、外部Provider、開発・production DBを必要としない。
 - CI構成、ローカル検証、GitHub上の実行成功を対象commitと日付で区別して記録し、成功確認済みの実workflowだけをbadgeから参照する。CI成功をpublic化や6C全体の完了証跡にしない。
