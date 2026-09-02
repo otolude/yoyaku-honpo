@@ -522,3 +522,11 @@ internal networkはDocker Desktop daemon、WSL2 kernel、管理者侵害への�
 2026-09-02にmain／developの83 commitを同一mappingで書き換え、完全一致leaseを指定したatomic pushで両branchを同時更新した。旧新83組のtree、message byte hash、author／committer日時、parent mappingは全件一致し、blob集合は旧新とも708件で完全一致した。root 1件、merge 0件、signed commit 0件で、Git管理ファイルの内容は変えていない。新履歴のauthor／committerはOto＋GitHub noreplyの1種類、旧identity一致は0件である。完全なidentity値、mapping、旧履歴bundle、保存pathは公開せずGit管理外で保持する。
 
 書換え後の83 commit／708 blobを再監査し、高確度secret候補は0件だった。現行・旧版のPNG 8 blobも従来SHAと一致した。画像のsignature、CRC、IEND、trailing data、metadata chunk、alphaと黒矩形、目視上の写り込み、匿名化前画像・編集layer・生成前画像の非到達を確認した。専用secret scannerは未導入で、GitHub内部object、cache、旧Actions run、既存cloneや画像編集前データの不存在は保証しない。旧main／develop／MIT commitはbranch・tagから到達不能だが、非公開復旧証跡と元cloneのreflogは保持する。
+
+## 27. GitHub username変更時の個人情報除去
+
+2026-09-02に、上記83件の書換えとは別に、main／developの88 commitを同一mappingで再構築した。author／committer nameはOto、message、parent構造、author／committer日時・timezoneは88／88で維持し、emailの新しいGitHub noreplyへの統一、usernameの置換、mapping済みcommit SHA参照の置換だけを行った。tree／blob全面不変とは扱わない。旧新reachable blobは各745件で、source、test、Migration、PNG履歴8 blob、画像内容、`COPYRIGHT.md`、`THIRD_PARTY_NOTICES.md`等の対象外byteは不変だった。
+
+main／developはbranchごとの完全一致leaseを指定した単一のatomic pushで更新し、通常のforce、逐次push、merge、rebase、resetは使用していない。新tipは`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で、local／originのmain／developは一致し、ahead／behindは0／0だった。通常公開ref上の旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件である。対応表、bundle、identity値、旧username、非公開保存先はGit管理外で保持し、公開文書へ記載しない。
+
+この再構築は過去のtest、build、DB検証を新SHAで再実行したものではない。非公開対応表によるcommit対応と対象外内容の一致を境界として既存証跡を参照する。新tipのdevelop Actionsは利用者がSuccess、test job成功、警告なし、Artifactsなし、badge遷移と作者profile遷移を画面確認したが、username変更前を含む旧Actions runの削除は未実施である。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。

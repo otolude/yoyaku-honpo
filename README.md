@@ -138,8 +138,10 @@ flowchart LR
 - identity書換え前の対応commitで行ったDocker internal network隔離検証: 通常pytest 1,019 passed／349 skipped、PostgreSQL integration 349 passed／0 skipped／0 errors、算術合計1,368 passed
 - 同検証はrunnerとtmpfs専用PostgreSQLのnetwork namespaceを共有し、`127.0.0.1:5432`だけをDB接続先として、公開IPv4／IPv6への直接接続遮断、正式Migration、single head、主要8表0件、secret非露出、両containerの正常停止を確認
 - identity書換え前の同対応commitについて利用者がGitHub画面でworkflowとtest jobの成功、新しい警告なし、Artifactsなし、CI badgeからworkflow画面へ移動可能であることを確認。ローカル隔離検証とは別の過去の利用者画面確認として扱う
-- identity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、利用者がGitHub画面でStatus Success、test job成功、新しい警告なし、Artifactsなし、CI badgeから新workflowへ移動可能であることと、commitのGitHub accountへの関連付けを確認
-- identity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。GitHub内部保持や画像編集前データの不存在は保証しない
+- 以前のidentity書換え後の83 commit／708 blobを再監査し、author／committerをOto＋GitHub noreplyの1種類、旧identity一致と高確度secret候補を0件、現行・旧版PNG 8 blobを従来SHAと一致として確認。この以前の操作ではtree／blob内容を変更していない
+- GitHub username変更後はmain／developの88 commitを同一mappingで再構築し、author／committer email、usernameを含む履歴上の記述、対応するcommit SHA参照だけを更新した。新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で旧identity metadata、旧username、旧SHA参照、高確度secret候補は0件、745 reachable blobとPNG履歴8 blobの対象外内容は不変と確認
+- 新tipのdevelopについて、利用者がGitHub画面でStatus Success、test job成功、警告なし、Artifactsなし、CI badgeから`otolude/yoyaku-honpo`のworkflowへ移動でき、作者OtoからGitHub profileへ遷移することを確認。過去のtest・build・DB検証を新tipで再実行した証跡ではない
+- GitHub内部object、cache、過去のActions run、既存cloneから旧履歴を完全回収できたとは保証しない。username変更前を含む旧Actions runの削除は未実施で、利用者作業待ち
 - Phase 1: 63／63
 - Phase 2: 47／47
 - Phase 3: 6Cのdependency license・第三者素材・商標／画面条件に関する利用者判断後124／127。最新集計は[Phase 3受入表](docs/manual-acceptance-phase3.md)を正本とする

@@ -77,6 +77,8 @@ Phase 1・2には自動テストと実Discord／隔離環境の人手受入が�
 
 2026-09-02には利用者がidentity書換え後のdevelop `0d3b0a5956b61a7a1cdd30126f5ad3d3caf163b1`について、Status Success、test job成功、新しい警告なし、Artifactsなし、READMEのCI badgeから新workflowへ移動可能であることと、commitがGitHub accountへ関連付いていることを画面確認した。run番号と所要時間は提供されていないため推測しない。localではauthor／committer nameがOto、emailがGitHub noreply形式であることを値を掲載せず確認した。
 
+GitHub username変更後の新tip `6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`について、利用者はdevelopのStatus Success、test job成功、警告なし、Artifactsなし、README badgeの正常表示と`otolude/yoyaku-honpo` workflowへの遷移、作者OtoからGitHub profileへの遷移、main／developのtip一致、repositoryがPrivateのままであることを画面確認した。これは今回の新tipに対するCI・導線確認であり、過去のtest・build・DB検証を新SHAで再実行した証跡ではない。username変更前を含む旧Actions runの削除は未実施で、利用者作業待ちである。
+
 ## 8. 2026-08-31 DB非依存隔離検証
 
 この節はidentity書換え前の対応commitだけを対象とする保存証跡の事後監査記録であり、現在の作業ツリーや書換え後commitの検証結果ではない。書換え時に対応するtree OIDが一致したことは確認したが、新commitで再実行したとは扱わない。証跡は2026-08-31にLinux x86_64（WSL2）、CPython 3.14.4、pip 25.1.1、build 1.6.0で取得された。新規venvを作り、`env -i`で環境を制限し、公開PyPIから依存を解決したうえで、テスト時はOS sandboxが外向きsocket作成を`EPERM`で拒否した。filesystem namespace自体は分離していない。
@@ -117,3 +119,11 @@ mainとdevelopから到達可能だった83 commitのauthor／committerを、同
 現行4枚と差替え前4枚の計8 PNG blobはidentity書換え前に監査したSHA-256と全件一致した。各blobでPNG signature、全chunk CRC、IEND、trailing dataなし、metadata chunkなしを確認し、全画素のalphaは255、黒矩形は完全不透明だった。目視上、利用者名、実サーバー名、sidebar、DM、通知一覧、実IDはなく、到達履歴にも匿名化前画像、編集layer、生成前画像はなかった。ただし完成PNGだけから編集前データの不存在を絶対保証せず、GitHub内部object、cache、旧Actions run、既存cloneからの旧履歴完全回収も保証しない。
 
 新main／developはlocalとoriginで一致し、mainはdevelopの祖先、tagはない。旧main、旧develop、旧MIT commitはbranch・tagから到達不能である。元cloneのreflog、非公開bundle、一時bare repository、GitHub内部保持には旧objectが残り得るため、通常の公開refからの非到達と完全消去を区別する。
+
+## 11. 2026-09-02 GitHub username変更時の履歴再構築
+
+本節は第10節の83 commit identity書換えとは別の後続操作である。main／developの88 commitを同一mappingで再構築し、author／committer name、message、parent構造、日時・timezoneを88／88で維持した。変更はauthor／committer emailの新しいGitHub noreplyへの統一、usernameの置換、mapping済みcommit SHA参照の置換に限定されるため、tree／blob全面不変とは記録しない。旧新reachable blobは各745件で、source、test、Migration、PNG履歴8 blob、画像内容、`COPYRIGHT.md`、`THIRD_PARTY_NOTICES.md`等の対象外byteは不変だった。
+
+main／developはbranchごとの完全一致leaseを指定した単一atomic pushで更新し、通常のforce、逐次push、merge、rebase、resetは使用していない。新tipは`6a1f7c075f0b2dc238341879af59a2fda7d7ee7e`で、local／originの4 refは一致し、ahead／behindは0／0、作業ツリーはcleanだった。通常公開ref上の旧identity metadata、旧username、旧完全・短縮SHA参照、高確度secret候補は0件である。非公開mappingは以前の83件、今回の88件、合成83件について両側一意と検証したが、その内容、identity値、旧username、bundle、保存pathは公開しない。
+
+identity書換え前に実行したtest、build、DB検証、過去Actionsを新SHAで再実行したとは扱わない。非公開mappingによるcommit対応と対象外内容の一致を境界として既存証跡を参照する。GitHub内部object、cache、過去run、既存cloneからの完全回収は保証しない。Public化、Private vulnerability reporting、6C最終項目は未完了で、実ProviderとARM64も未確認のままである。
