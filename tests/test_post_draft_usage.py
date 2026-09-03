@@ -1,8 +1,9 @@
 from dataclasses import fields
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
+
 from discord_ai_reminder_bot.domain.post_draft_usage import (
     MAX_POSTGRES_BIGINT,
     PostDraftGuildId,
@@ -142,7 +143,7 @@ def test_user_fixed_window_handles_before_boundary_boundary_and_after() -> None:
 
 
 def test_user_fixed_window_normalizes_offset_to_utc() -> None:
-    jst = UTC + timedelta(hours=9)
+    jst = timezone(timedelta(hours=9))
     assert user_fixed_window_start(datetime(2026, 9, 3, 9, 19, tzinfo=jst)) == datetime(
         2026, 9, 3, 0, 10, tzinfo=UTC
     )
@@ -167,7 +168,7 @@ def test_jst_monthly_start_handles_month_boundary() -> None:
 
 
 def test_retention_cutoff_normalizes_to_utc_without_reading_a_clock() -> None:
-    jst = UTC + timedelta(hours=9)
+    jst = timezone(timedelta(hours=9))
     assert retention_cutoff(datetime(2026, 9, 3, 9, 0, tzinfo=jst), retention_days=7) == datetime(
         2026, 8, 27, 0, 0, tzinfo=UTC
     )
