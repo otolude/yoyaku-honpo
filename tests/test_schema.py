@@ -48,7 +48,7 @@ class Engine:
 
 
 def test_reads_single_expected_head_from_alembic_configuration() -> None:
-    assert get_expected_revision() == "a41f8c7d2e90"
+    assert get_expected_revision() == "c72e91f4b6a3"
 
 
 def test_rejects_multiple_script_heads(monkeypatch: pytest.MonkeyPatch) -> None:

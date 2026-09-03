@@ -31,6 +31,9 @@ EXPECTED_TABLES = {
     "notification_attempts",
     "name_generation_jobs",
     "name_generation_budget_buckets",
+    "post_draft_operator_budget_buckets",
+    "post_draft_rate_limit_buckets",
+    "post_draft_usage_reservation_receipts",
 }
 
 
@@ -53,8 +56,19 @@ def test_metadata_contains_exactly_phase_one_tables() -> None:
 
 def test_internal_primary_keys_are_bigint_identity() -> None:
     for table in Base.metadata.sorted_tables:
-        if table.name == "name_generation_budget_buckets":
-            assert tuple(table.primary_key.columns.keys()) == ("period_type", "period_start")
+        composite_primary_keys = {
+            "name_generation_budget_buckets": ("period_type", "period_start"),
+            "post_draft_operator_budget_buckets": ("period_type", "period_start"),
+            "post_draft_rate_limit_buckets": (
+                "scope_type",
+                "scope_id",
+                "window_type",
+                "window_start",
+            ),
+            "post_draft_usage_reservation_receipts": ("operation_key",),
+        }
+        if table.name in composite_primary_keys:
+            assert tuple(table.primary_key.columns.keys()) == composite_primary_keys[table.name]
             continue
         primary_key = table.c.id
         assert isinstance(primary_key.type, BigInteger)
@@ -126,6 +140,9 @@ def test_timestamps_use_timezone_aware_columns() -> None:
             "created_at",
             "updated_at",
         ),
+        "post_draft_operator_budget_buckets": ("created_at", "updated_at"),
+        "post_draft_rate_limit_buckets": ("window_start", "created_at", "updated_at"),
+        "post_draft_usage_reservation_receipts": ("reserved_at", "expires_at"),
     }
 
     for table_name, columns in timestamp_columns.items():

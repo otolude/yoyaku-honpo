@@ -23,19 +23,24 @@ def test_alembic_uses_application_metadata_without_hardcoded_url() -> None:
         "notification_attempts",
         "name_generation_jobs",
         "name_generation_budget_buckets",
+        "post_draft_operator_budget_buckets",
+        "post_draft_rate_limit_buckets",
+        "post_draft_usage_reservation_receipts",
     }
     revisions = list(scripts.walk_revisions())
-    assert len(revisions) == 5
-    assert revisions[0].revision == "a41f8c7d2e90"
-    assert revisions[0].down_revision == "6c9d4e7f2a10"
-    assert revisions[1].revision == "6c9d4e7f2a10"
-    assert revisions[1].down_revision == "8e5b2f1c4a90"
-    assert revisions[2].revision == "8e5b2f1c4a90"
-    assert revisions[2].down_revision == "bf82b90bcd5e"
-    assert revisions[3].revision == "bf82b90bcd5e"
-    assert revisions[3].down_revision == "ffc99a7e1d4f"
-    assert revisions[4].revision == "ffc99a7e1d4f"
-    assert revisions[4].down_revision is None
+    assert len(revisions) == 6
+    assert revisions[0].revision == "c72e91f4b6a3"
+    assert revisions[0].down_revision == "a41f8c7d2e90"
+    assert revisions[1].revision == "a41f8c7d2e90"
+    assert revisions[1].down_revision == "6c9d4e7f2a10"
+    assert revisions[2].revision == "6c9d4e7f2a10"
+    assert revisions[2].down_revision == "8e5b2f1c4a90"
+    assert revisions[3].revision == "8e5b2f1c4a90"
+    assert revisions[3].down_revision == "bf82b90bcd5e"
+    assert revisions[4].revision == "bf82b90bcd5e"
+    assert revisions[4].down_revision == "ffc99a7e1d4f"
+    assert revisions[5].revision == "ffc99a7e1d4f"
+    assert revisions[5].down_revision is None
 
 
 def test_alembic_environment_has_connected_database_guard_and_rejects_offline() -> None:
