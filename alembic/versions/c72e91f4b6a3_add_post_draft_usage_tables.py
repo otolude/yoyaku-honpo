@@ -53,7 +53,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
-            name=op.f("ck_post_draft_operator_budget_buckets_monthly_period_starts_first"),
+            name=op.f("ck_post_draft_operator_budget_buckets_monthly_start_first"),
         ),
         sa.CheckConstraint(
             "reserved_request_count >= 0",

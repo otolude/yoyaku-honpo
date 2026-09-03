@@ -90,7 +90,7 @@ def test_operator_budget_bucket_schema() -> None:
     assert server_default(table.name, "updated_at") == "CURRENT_TIMESTAMP"
     assert constraint_names(table.name) == {
         "ck_post_draft_operator_budget_buckets_period_type_valid",
-        "ck_post_draft_operator_budget_buckets_monthly_period_starts_first",
+        "ck_post_draft_operator_budget_buckets_monthly_start_first",
         "ck_post_draft_operator_budget_buckets_request_count_nonnegative",
         "ck_post_draft_operator_budget_buckets_reserved_cost_nonnegative",
         "ck_post_draft_operator_budget_buckets_version_positive",
@@ -256,6 +256,72 @@ def test_upgrade_marks_all_final_constraint_and_index_names(monkeypatch) -> None
     assert all(str(item.name).startswith("final::") for item in constraints)
     assert create_index.call_args.args[0] == "final::ix_post_draft_rate_limit_buckets_window_start"
     assert finalized.count("ix_post_draft_rate_limit_buckets_window_start") == 1
+
+
+def test_post_draft_monthly_constraint_name_is_final_and_matches_metadata(monkeypatch) -> None:
+    expected = "ck_post_draft_operator_budget_buckets_monthly_start_first"
+    revision = load_revision()
+    finalized: list[str] = []
+    monkeypatch.setattr(
+        revision.op,
+        "f",
+        lambda name: finalized.append(name) or name,
+    )
+    monkeypatch.setattr(revision.op, "create_table", MagicMock())
+    monkeypatch.setattr(revision.op, "create_index", MagicMock())
+    revision.upgrade()
+    assert expected in finalized
+    assert expected in constraint_names("post_draft_operator_budget_buckets")
+    assert len(expected.encode("utf-8")) <= 63
+
+
+def test_all_metadata_database_identifiers_fit_postgresql_limit() -> None:
+    identifiers: list[str] = []
+    for table in Base.metadata.tables.values():
+        identifiers.append(table.name)
+        identifiers.extend(column.name for column in table.columns)
+        identifiers.extend(
+            str(constraint.name) for constraint in table.constraints if constraint.name is not None
+        )
+        identifiers.extend(str(index.name) for index in table.indexes if index.name is not None)
+    assert identifiers
+    assert all(len(identifier.encode("utf-8")) <= 63 for identifier in identifiers)
+
+
+def test_all_new_migration_database_identifiers_fit_postgresql_limit(monkeypatch) -> None:
+    revision = load_revision()
+    create_table = MagicMock()
+    create_index = MagicMock()
+    finalized: list[str] = []
+    monkeypatch.setattr(
+        revision.op,
+        "f",
+        lambda name: finalized.append(name) or name,
+    )
+    monkeypatch.setattr(revision.op, "create_table", create_table)
+    monkeypatch.setattr(revision.op, "create_index", create_index)
+    revision.upgrade()
+    table_names = [item.args[0] for item in create_table.call_args_list]
+    column_names = [
+        item.name
+        for table_call in create_table.call_args_list
+        for item in table_call.args[1:]
+        if hasattr(item, "name") and not isinstance(item, CheckConstraint | PrimaryKeyConstraint)
+    ]
+    assert all(
+        len(identifier.encode("utf-8")) <= 63
+        for identifier in (*table_names, *column_names, *finalized)
+    )
+
+
+def test_old_oversized_monthly_constraint_name_is_absent() -> None:
+    old_name = "ck_post_draft_operator_budget_buckets_monthly_" + "period_starts_first"
+    sources = (
+        Path("src/discord_ai_reminder_bot/infrastructure/database/models.py"),
+        REVISION_PATH,
+        Path(__file__),
+    )
+    assert all(old_name not in path.read_text(encoding="utf-8") for path in sources)
 
 
 def test_constraint_sql_conditions_are_unchanged(monkeypatch) -> None:

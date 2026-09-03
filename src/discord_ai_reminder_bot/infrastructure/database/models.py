@@ -307,7 +307,7 @@ class PostDraftOperatorBudgetBucket(Base):
         ),
         CheckConstraint(
             "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
-            name="monthly_period_starts_first",
+            name="monthly_start_first",
         ),
         CheckConstraint("reserved_request_count >= 0", name="request_count_nonnegative"),
         CheckConstraint("reserved_cost_microunits >= 0", name="reserved_cost_nonnegative"),
