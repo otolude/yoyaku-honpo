@@ -1,5 +1,33 @@
 # Phase 1 β版 技術設計
 
+## Phase 4A: AI投稿本文下書きMVP設計
+
+本項は設計のみであり未実装である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+
+### Discord状態遷移
+
+入口は新しい`/post compose`とし、既存予約コマンドを維持する。ephemeral画面で手入力またはAI作成を選び、AI作成前にProvider送信情報、秘密情報を入力しない注意、誤りの可能性、利用枠、悲観費用を表示する。Modalで目的1～200文字、要点1～1,000文字、文体「丁寧・親しみやすい・簡潔」、長さ「短め・標準・長め」を取得する。
+
+submitをdeferし、rate limitとBudgetを予約してからProviderをone-shotで呼ぶ。1～2,000文字へ再検証した下書きに編集、条件を変えて再生成、この本文を使用、キャンセルを提供する。その後に投稿先と単発／毎日／毎週の条件を取得し、投稿先・日時・本文・AI利用を確認表示する。同じ利用者の「予約する」buttonだけが既存の予約作成Application Serviceを1 transactionで呼ぶ。
+
+各View／Modalは非識別custom ID、instance registry、`asyncio.Lock`、generating／finished／closed状態、有限timeoutを持つ。操作ごとにguild、利用者、許可role、投稿先権限を再検証する。二重押下、期限切れ、応答失敗、Bot shutdown／restartでは重複生成・予約保存・投稿を行わず、古いViewを復元しない。
+
+### Provider・保持・費用境界
+
+本文生成requestは目的、要点、文体、長さ、固定locale、出力制約だけを持つ。Provider PortへSession、Repository、ORM、Discord object、ID、日時、秘密値を渡さない。Adapterは`store=False`、SDK retry 0、内外timeout、cancel／close、許可モデル、入力byte／token上限、出力再検証を持つ。利用者入力は未信頼データとして固定instructionから分離し、出力をURL取得、tool、command、予約、投稿、DB操作へ接続しない。
+
+URLとMarkdownは文字列として許可する。`@everyone`、`@here`、危険な制御文字・bidi制御文字はProvider呼出前と応答後に拒否する。Moderation API、自動retry、fallback modelはMVPに含めない。
+
+目的、要点、条件、prompt、AI原文、生成履歴、編集途中本文は予約確定までprocess memoryだけに保持し、DBと通常logへ保存しない。確定時も編集・確認済み最終本文だけをScheduleへ保存する。本文生成はSchedule作成前の対話型処理なので`name_generation_jobs`を使用しない。
+
+user／guild rate limitと運営者全体Budgetを本文生成専用責務とする。運営Budgetは日次／月次回数と月次悲観費用をDBで原子的に予約し、再起動・複数process間で共有する。本文専用bucketまたは用途を明示する一般化bucketのMigrationを実装段階で別途設計し、名前生成集計と暗黙に混在させない。明示的な再生成は新しい1 requestとし、timeout、cancel後の結果不明、Provider結果不明でも枠を返却しない。
+
+### feature flagと受入gate
+
+本文生成専用feature flagは予約名生成flagと分離し、既定値をfalseとする。flag false、Provider disabled、価格不明、設定不正、rate limit、Budget超過、Provider障害ではProviderを呼ばず、手入力へ戻す。既存予約コマンド、Schedule Worker、Discord Gatewayは本文生成の可用性に依存させない。
+
+Mock transport、自動隔離、PostgreSQL統合、実Provider、実Discord、ARM64 Linux実機の受入を別々に記録し、実Provider・実Discord・ARM64受入が完了するまでfeature flagを有効化しない。
+
 ## 1. 設計目的と上位要件
 
 本書は、[Phase 1 β版 要件定義](requirements-beta.md)を実装へ落とし込むための技術設計書である。要件定義を上位文書とし、解釈が分かれる箇所では本書の採用案に従う。ただし、本書と要件定義が矛盾した場合は要件定義を優先し、実装前に本書を修正する。

@@ -6,6 +6,14 @@ Phase 1とPhase 2は受入完了済みである。現在はローカル環境で
 
 開発、公開前限定テスト、本番ではDiscord Application、PostgreSQLデータベース、秘密情報を分離する。クラウド固有機能への依存を抑え、Dockerを使って配置先を移行できる構成を維持する。
 
+## 1.1 Phase 4: AI投稿本文下書き
+
+Phase 3の受入結果（確認済み125件／未確認2件、合計127件、および第6項6Cの4件／4件）は変更せず、AI投稿本文下書きは別のPhase 4として管理する。Phase 4Aでは要件、Discord画面遷移、Provider情報境界、保持、費用、安全性、受入条件だけを文書化し、Python実装、Migration、DB操作、Bot操作、実Provider通信、実Discord受入、ARM64 Linux実機受入は行わない。
+
+Phase 4は、4A文書化、4B Provider非依存Domain／Application、4C rate limit／永続Budget、4D Provider Adapter、4E `/post compose` UI、4F自動隔離・PostgreSQL統合、4G実Provider受入、4H実Discord・ARM64受入の順で進める。
+
+本文生成feature flagは初期無効とし、実Provider・実Discord・ARM64 Linux実機受入がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+
 ## 2. Phase 3ロードマップ
 
 Phase 3は次の順序で進める。

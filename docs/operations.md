@@ -1,5 +1,22 @@
 # Phase 1 運用Runbook
 
+## Phase 4A: AI投稿本文下書きの将来運用境界
+
+本項は未実装のPhase 4 MVPに対する運用要件である。現行Botで`/post compose`やAI本文生成が利用可能であることを示さない。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+
+- 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
+- AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
+- `/post compose`で手入力を常に選べるようにし、既存予約コマンドも維持する。
+- Provider送信前に、送信対象、個人情報・秘密情報を入力しない注意、AI出力の誤り、利用者確認、利用枠、悲観費用を表示する。
+- 目的、要点、条件、prompt、AI原文、生成履歴をDB、通常log、追跡ファイルへ保存しない。予約確定時は編集・確認済み最終本文だけを保存する。
+- user／guild rate limitと永続的な運営Budgetを監視し、再生成、timeout、cancel後の結果不明、Provider結果不明も1回分として集計する。
+- Provider payload／response、例外全文、本文、OpenAI API key、Discord token、DB URL、実IDを通常logへ出さない。
+- Provider disabled、rate limit、Budget超過、timeout、障害時は固定案内から手入力へ戻し、既存の予約作成・編集・配信を停止しない。
+- URLとMarkdownは許可するが、確認画面ではescapeし、配信では`AllowedMentions.none()`を維持する。`@everyone`、`@here`、危険な制御文字・bidi文字は入力・出力の両方で拒否する。
+- MVPではModeration API、自動retry、fallback modelを運用しない。
+
+価格表示は設定済み単価、最大token、為替、安全係数による悲観見積りと明記し、最終請求、税、為替、販売価格の保証としない。単価、モデル、保持、SDK、Provider dashboard条件は実Provider受入直前に再監査する。秘密値をcommand引数、文書、画面資料、通常logへ含めず、固定匿名合成ケースだけで受入する。
+
 ## 1. 文書の目的と対象環境
 
 本書は、Phase 1・Phase 2完了時点のDiscord予約投稿Botをローカル環境で開発・運用し、障害時に安全に判断するためのRunbookである。対象は環境変数で指定した1つのDiscord guild、WSL2またはLinux上の通常版CPython 3.14、Docker Compose上のPostgreSQL 18.4である。一般公開用の常時稼働環境は未構築であり、公開準備まで構築を保留する。

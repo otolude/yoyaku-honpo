@@ -1,5 +1,40 @@
 # Phase 1 β版 要件定義
 
+## Phase 4A: AI投稿本文下書きMVP要件
+
+本項は将来実装するPhase 4の要件であり、現在利用可能な機能を示さない。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
+
+### 目的と操作境界
+
+- AIの用途は予約投稿本文の下書き生成だけに限定する。AIは予約、保存、投稿、外部操作を行わない。
+- 新しい`/post compose`を入口とし、既存の`/post create`、`/post create-daily`、`/post create-weekly`と本文手入力方式を維持する。
+- `/post compose`では「本文を手入力」と「AIで投稿文を作成」を選択できる。
+- AI作成では目的、要点、文体、長さを入力し、利用者は生成文を自由に編集し、条件を変えて再生成できる。
+- 文体は「丁寧」「親しみやすい」「簡潔」、長さは「短め」「標準」「長め」の閉じた3択とする。
+- 目的は1～200文字、要点は1～1,000文字、生成本文と予約確定時の最終本文は1～2,000文字とし、空白だけを許可しない。
+- 投稿先、日時、本文、AI利用の有無を最終確認し、同じ利用者が「予約する」を押した場合だけ既存の予約作成境界へ最終本文を渡す。
+- 「予約する」より前はSchedule、Run、OperationLogその他の予約データをDBへ保存せず、Discordへ投稿しない。キャンセル、期限切れ、Bot再起動、生成失敗でも同様とする。
+
+### Provider情報境界と保持
+
+Providerへ送信するのは、利用者が入力した目的と要点、選択した文体と長さ、固定locale、文字数上限、出力形式、安全制約だけとする。Discord guild／利用者／channel／roleのID・名称、予約ID、内部DB ID、投稿日時、契約・権限情報、過去予約・投稿、メッセージ履歴、添付、Discord token、OpenAI API key、DB URL、log、DB実データ、プロフィール、Embedding、学習履歴は送信しない。
+
+Provider送信前に、目的と要点が外部AIへ送られること、個人情報・秘密情報を入力しないこと、AI出力には誤りがあり得ること、編集・確認が必要であること、利用枠と費用境界をephemeral画面へ表示する。
+
+目的、要点、選択条件、Provider用prompt、AI原文、再生成履歴をDB、通常log、追跡ファイルへ保存しない。予約確定前の状態はprocess内の有限期間だけ保持し、timeout、キャンセル、正常停止、再起動で破棄する。予約確定時は利用者が編集・確認した最終本文だけをScheduleへ保存する。秘密値、Provider request／response、本文、例外全文を通常logへ記録しない。
+
+### 入出力・費用・障害境界
+
+- URLとDiscord Markdownは許可する。ただし確認表示では利用者入力としてescapeし、投稿時は既存の`AllowedMentions.none()`境界を維持する。
+- `@everyone`、`@here`、危険なUnicode制御文字、表示順を偽装し得るbidi制御文字を、利用者入力とProvider出力の両方で拒否する。
+- Provider出力は命令、URL取得、tool call、DB query、予約操作として実行せず、未信頼の文字列として再検証する。
+- Moderation API、自動retry、fallback model、複数候補、利用者文体学習はMVP対象外とする。
+- user単位とguild単位のrate limit、および再起動・複数processを越えて維持する運営者全体の永続Budgetを設ける。
+- Provider呼出前に1回分の利用枠と悲観最大費用を予約する。再生成、timeout、cancel後の結果不明、Provider結果不明も安全上1回分として扱い、返却しない。
+- 表示額は設定済み単価、最大token、為替、安全係数に基づく悲観見積りであり、最終請求、税、為替、販売価格を保証しない。
+- 本文生成feature flagは初期無効とする。設定不正、Provider disabled、価格不明、Budget超過、rate limit、Provider障害ではAI生成だけをfail-closedとし、既存の本文手入力予約を維持する。
+- 実Provider、実Discord、ARM64 Linux実機の本文生成受入がすべて完了するまでfeature flagを有効化しない。
+
 ## 1. 目的
 
 Phase 1では、Discordへの投稿を指定した日時に自動で送信できる予約投稿Botを開発する。
