@@ -296,6 +296,92 @@ class NameGenerationBudgetBucket(Base):
     )
 
 
+class PostDraftOperatorBudgetBucket(Base):
+    """Content-free aggregate operator budget reservation for post drafts."""
+
+    __tablename__ = "post_draft_operator_budget_buckets"
+    __table_args__ = (
+        CheckConstraint(
+            "period_type IN ('daily', 'monthly')",
+            name="period_type_valid",
+        ),
+        CheckConstraint(
+            "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
+            name="monthly_period_starts_first",
+        ),
+        CheckConstraint("reserved_request_count >= 0", name="request_count_nonnegative"),
+        CheckConstraint("reserved_cost_microunits >= 0", name="reserved_cost_nonnegative"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("updated_at >= created_at", name="updated_after_created"),
+    )
+
+    period_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    period_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved_request_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    reserved_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class PostDraftRateLimitBucket(Base):
+    """Content-free fixed-window usage count for one user or guild."""
+
+    __tablename__ = "post_draft_rate_limit_buckets"
+    __table_args__ = (
+        CheckConstraint("scope_type IN ('user', 'guild')", name="scope_type_valid"),
+        CheckConstraint("window_type IN ('short', 'daily')", name="window_type_valid"),
+        CheckConstraint(
+            "(scope_type = 'user' AND window_type = 'short') OR "
+            "(scope_type = 'guild' AND window_type = 'daily')",
+            name="scope_window_valid",
+        ),
+        CheckConstraint("scope_id > 0", name="scope_id_positive"),
+        CheckConstraint("request_count >= 0", name="request_count_nonnegative"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("updated_at >= created_at", name="updated_after_created"),
+        Index("ix_post_draft_rate_limit_buckets_window_start", "window_start"),
+    )
+
+    scope_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    window_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    request_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class PostDraftUsageReservationReceipt(Base):
+    """Opaque idempotency receipt without request payload or subject identifiers."""
+
+    __tablename__ = "post_draft_usage_reservation_receipts"
+    __table_args__ = (CheckConstraint("expires_at > reserved_at", name="expires_after_reserved"),)
+
+    operation_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ScheduleRun(Base):
     """The execution result for one scheduled occurrence."""
 
