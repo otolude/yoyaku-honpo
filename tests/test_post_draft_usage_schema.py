@@ -3,7 +3,15 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Integer, String
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from discord_ai_reminder_bot.infrastructure.database.base import Base
@@ -189,6 +197,7 @@ def test_upgrade_creates_only_requested_tables_and_cleanup_index(monkeypatch) ->
     revision = load_revision()
     create_table = MagicMock()
     create_index = MagicMock()
+    monkeypatch.setattr(revision.op, "f", lambda name: name)
     monkeypatch.setattr(revision.op, "create_table", create_table)
     monkeypatch.setattr(revision.op, "create_index", create_index)
     revision.upgrade()
@@ -206,9 +215,90 @@ def test_upgrade_creates_only_requested_tables_and_cleanup_index(monkeypatch) ->
     ]
 
 
+def test_upgrade_marks_all_final_constraint_and_index_names(monkeypatch) -> None:
+    revision = load_revision()
+    create_table = MagicMock()
+    create_index = MagicMock()
+    finalized: list[str] = []
+
+    def final_name(name: str) -> str:
+        finalized.append(name)
+        return f"final::{name}"
+
+    monkeypatch.setattr(revision.op, "f", final_name)
+    monkeypatch.setattr(revision.op, "create_table", create_table)
+    monkeypatch.setattr(revision.op, "create_index", create_index)
+    revision.upgrade()
+
+    constraints = [
+        item
+        for table_call in create_table.call_args_list
+        for item in table_call.args[1:]
+        if isinstance(item, CheckConstraint | PrimaryKeyConstraint)
+    ]
+    check_names = {
+        str(item.name).removeprefix("final::")
+        for item in constraints
+        if isinstance(item, CheckConstraint)
+    }
+    primary_key_names = {
+        str(item.name).removeprefix("final::")
+        for item in constraints
+        if isinstance(item, PrimaryKeyConstraint)
+    }
+    assert len(check_names) == 14
+    assert check_names == {name for name in finalized if name.startswith("ck_")}
+    assert primary_key_names == {
+        "pk_post_draft_operator_budget_buckets",
+        "pk_post_draft_rate_limit_buckets",
+        "pk_post_draft_usage_reservation_receipts",
+    }
+    assert all(str(item.name).startswith("final::") for item in constraints)
+    assert create_index.call_args.args[0] == "final::ix_post_draft_rate_limit_buckets_window_start"
+    assert finalized.count("ix_post_draft_rate_limit_buckets_window_start") == 1
+
+
+def test_constraint_sql_conditions_are_unchanged(monkeypatch) -> None:
+    revision = load_revision()
+    create_table = MagicMock()
+    monkeypatch.setattr(revision.op, "f", lambda name: name)
+    monkeypatch.setattr(revision.op, "create_table", create_table)
+    monkeypatch.setattr(revision.op, "create_index", MagicMock())
+    revision.upgrade()
+    conditions = {
+        str(item.sqltext)
+        for table_call in create_table.call_args_list
+        for item in table_call.args[1:]
+        if isinstance(item, CheckConstraint)
+    }
+    assert conditions == {
+        "period_type IN ('daily', 'monthly')",
+        "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
+        "reserved_request_count >= 0",
+        "reserved_cost_microunits >= 0",
+        "version >= 1",
+        "updated_at >= created_at",
+        "scope_type IN ('user', 'guild')",
+        "window_type IN ('short', 'daily')",
+        (
+            "(scope_type = 'user' AND window_type = 'short') OR "
+            "(scope_type = 'guild' AND window_type = 'daily')"
+        ),
+        "scope_id > 0",
+        "request_count >= 0",
+        "expires_at > reserved_at",
+    }
+
+
 def test_downgrade_guards_all_tables_then_drops_in_reverse_order(monkeypatch) -> None:
     revision = load_revision()
     operations: list[tuple[str, str]] = []
+    finalized: list[str] = []
+    monkeypatch.setattr(
+        revision.op,
+        "f",
+        lambda name: finalized.append(name) or name,
+    )
     monkeypatch.setattr(revision.op, "execute", lambda sql: operations.append(("guard", str(sql))))
     monkeypatch.setattr(
         revision.op,
@@ -226,6 +316,7 @@ def test_downgrade_guards_all_tables_then_drops_in_reverse_order(monkeypatch) ->
         "post_draft_rate_limit_buckets",
         "post_draft_operator_budget_buckets",
     ]
+    assert finalized == ["ix_post_draft_rate_limit_buckets_window_start"]
 
 
 def test_migration_source_has_no_payload_credentials_or_real_identifiers() -> None:

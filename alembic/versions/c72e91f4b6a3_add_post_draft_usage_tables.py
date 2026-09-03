@@ -49,32 +49,32 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "period_type IN ('daily', 'monthly')",
-            name="ck_post_draft_operator_budget_buckets_period_type_valid",
+            name=op.f("ck_post_draft_operator_budget_buckets_period_type_valid"),
         ),
         sa.CheckConstraint(
             "period_type <> 'monthly' OR period_start = date_trunc('month', period_start)::date",
-            name="ck_post_draft_operator_budget_buckets_monthly_period_starts_first",
+            name=op.f("ck_post_draft_operator_budget_buckets_monthly_period_starts_first"),
         ),
         sa.CheckConstraint(
             "reserved_request_count >= 0",
-            name="ck_post_draft_operator_budget_buckets_request_count_nonnegative",
+            name=op.f("ck_post_draft_operator_budget_buckets_request_count_nonnegative"),
         ),
         sa.CheckConstraint(
             "reserved_cost_microunits >= 0",
-            name="ck_post_draft_operator_budget_buckets_reserved_cost_nonnegative",
+            name=op.f("ck_post_draft_operator_budget_buckets_reserved_cost_nonnegative"),
         ),
         sa.CheckConstraint(
             "version >= 1",
-            name="ck_post_draft_operator_budget_buckets_version_positive",
+            name=op.f("ck_post_draft_operator_budget_buckets_version_positive"),
         ),
         sa.CheckConstraint(
             "updated_at >= created_at",
-            name="ck_post_draft_operator_budget_buckets_updated_after_created",
+            name=op.f("ck_post_draft_operator_budget_buckets_updated_after_created"),
         ),
         sa.PrimaryKeyConstraint(
             "period_type",
             "period_start",
-            name="pk_post_draft_operator_budget_buckets",
+            name=op.f("pk_post_draft_operator_budget_buckets"),
         ),
     )
     op.create_table(
@@ -99,43 +99,43 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "scope_type IN ('user', 'guild')",
-            name="ck_post_draft_rate_limit_buckets_scope_type_valid",
+            name=op.f("ck_post_draft_rate_limit_buckets_scope_type_valid"),
         ),
         sa.CheckConstraint(
             "window_type IN ('short', 'daily')",
-            name="ck_post_draft_rate_limit_buckets_window_type_valid",
+            name=op.f("ck_post_draft_rate_limit_buckets_window_type_valid"),
         ),
         sa.CheckConstraint(
             "(scope_type = 'user' AND window_type = 'short') OR "
             "(scope_type = 'guild' AND window_type = 'daily')",
-            name="ck_post_draft_rate_limit_buckets_scope_window_valid",
+            name=op.f("ck_post_draft_rate_limit_buckets_scope_window_valid"),
         ),
         sa.CheckConstraint(
             "scope_id > 0",
-            name="ck_post_draft_rate_limit_buckets_scope_id_positive",
+            name=op.f("ck_post_draft_rate_limit_buckets_scope_id_positive"),
         ),
         sa.CheckConstraint(
             "request_count >= 0",
-            name="ck_post_draft_rate_limit_buckets_request_count_nonnegative",
+            name=op.f("ck_post_draft_rate_limit_buckets_request_count_nonnegative"),
         ),
         sa.CheckConstraint(
             "version >= 1",
-            name="ck_post_draft_rate_limit_buckets_version_positive",
+            name=op.f("ck_post_draft_rate_limit_buckets_version_positive"),
         ),
         sa.CheckConstraint(
             "updated_at >= created_at",
-            name="ck_post_draft_rate_limit_buckets_updated_after_created",
+            name=op.f("ck_post_draft_rate_limit_buckets_updated_after_created"),
         ),
         sa.PrimaryKeyConstraint(
             "scope_type",
             "scope_id",
             "window_type",
             "window_start",
-            name="pk_post_draft_rate_limit_buckets",
+            name=op.f("pk_post_draft_rate_limit_buckets"),
         ),
     )
     op.create_index(
-        "ix_post_draft_rate_limit_buckets_window_start",
+        op.f("ix_post_draft_rate_limit_buckets_window_start"),
         "post_draft_rate_limit_buckets",
         ["window_start"],
     )
@@ -146,11 +146,11 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
             "expires_at > reserved_at",
-            name="ck_post_draft_usage_reservation_receipts_expires_after_reserved",
+            name=op.f("ck_post_draft_usage_reservation_receipts_expires_after_reserved"),
         ),
         sa.PrimaryKeyConstraint(
             "operation_key",
-            name="pk_post_draft_usage_reservation_receipts",
+            name=op.f("pk_post_draft_usage_reservation_receipts"),
         ),
     )
 
@@ -171,7 +171,7 @@ def downgrade() -> None:
     )
     op.drop_table("post_draft_usage_reservation_receipts")
     op.drop_index(
-        "ix_post_draft_rate_limit_buckets_window_start",
+        op.f("ix_post_draft_rate_limit_buckets_window_start"),
         table_name="post_draft_rate_limit_buckets",
     )
     op.drop_table("post_draft_rate_limit_buckets")
