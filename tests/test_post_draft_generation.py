@@ -34,9 +34,7 @@ def test_request_accepts_normal_japanese_input_and_fixed_defaults() -> None:
     assert value.tone is PostTone.POLITE
     assert value.length is PostLength.STANDARD
     assert value.locale == "ja-JP"
-    assert value.output_limit == PostDraftOutputLimit(
-        max_characters=1_000, max_output_tokens=1_024
-    )
+    assert value.output_limit == PostDraftOutputLimit(max_characters=1_000, max_output_tokens=1_024)
 
 
 @pytest.mark.parametrize(
@@ -76,9 +74,7 @@ def test_request_accepts_emoji_newlines_markdown_and_url() -> None:
     ["@everyoneへ案内", "@EVERYONEへ案内", "@hereへ案内", "@HeReへ案内"],
 )
 @pytest.mark.parametrize("field", ["purpose", "key_points"])
-def test_request_rejects_broadcast_mentions_case_insensitively(
-    field: str, value: str
-) -> None:
+def test_request_rejects_broadcast_mentions_case_insensitively(field: str, value: str) -> None:
     with pytest.raises(ValueError):
         request(**{field: value})
 
@@ -95,9 +91,7 @@ def test_request_rejects_broadcast_mentions_case_insensitively(
     ],
 )
 @pytest.mark.parametrize("field", ["purpose", "key_points"])
-def test_request_rejects_control_format_and_bidi_characters(
-    field: str, unsafe: str
-) -> None:
+def test_request_rejects_control_format_and_bidi_characters(field: str, unsafe: str) -> None:
     with pytest.raises(ValueError):
         request(**{field: unsafe})
 
