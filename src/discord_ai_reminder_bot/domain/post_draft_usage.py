@@ -70,12 +70,12 @@ class PostDraftRateLimitPolicy:
 
     def __post_init__(self) -> None:
         _positive_bigint(self.user_request_limit)
-        _positive_bigint(self.user_window_minutes)
+        window_minutes = _positive_bigint(self.user_window_minutes)
         guild_daily = _positive_bigint(self.guild_daily_request_limit)
         global_daily = _positive_bigint(self.global_daily_request_limit)
         _positive_bigint(self.user_retention_days)
         _positive_bigint(self.guild_retention_days)
-        if guild_daily > global_daily:
+        if window_minutes != 10 or guild_daily > global_daily:
             raise ValueError(_INVALID_POLICY)
 
 
@@ -99,9 +99,13 @@ class PostDraftUsagePolicy:
             raise ValueError(_INVALID_POLICY)  # noqa: TRY004
         if not isinstance(self.rate_limit, PostDraftRateLimitPolicy):
             raise ValueError(_INVALID_POLICY)  # noqa: TRY004
-        _positive_bigint(self.maximum_concurrency)
+        maximum_concurrency = _positive_bigint(self.maximum_concurrency)
         _positive_bigint(self.receipt_retention_days)
-        if self.operator_budget.daily_request_limit != self.rate_limit.global_daily_request_limit:
+        if (
+            maximum_concurrency != 1
+            or self.operator_budget.daily_request_limit
+            != self.rate_limit.global_daily_request_limit
+        ):
             raise ValueError(_INVALID_POLICY)
 
 

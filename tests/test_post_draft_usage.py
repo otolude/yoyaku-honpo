@@ -52,6 +52,50 @@ def test_usage_policy_has_mvp_defaults() -> None:
     assert policy.receipt_retention_days == 7
 
 
+def test_mvp_fixed_limits_accept_only_supported_values() -> None:
+    assert PostDraftRateLimitPolicy(user_window_minutes=10).user_window_minutes == 10
+    assert PostDraftUsagePolicy(maximum_concurrency=1).maximum_concurrency == 1
+
+
+@pytest.mark.parametrize("invalid", [0, -1, 1, 9, 11, 60, True, 10.0, "10", MAX_POSTGRES_BIGINT])
+def test_user_window_rejects_values_other_than_fixed_ten_minutes(invalid: object) -> None:
+    with pytest.raises(ValueError, match="^invalid post draft usage policy$"):
+        PostDraftRateLimitPolicy(user_window_minutes=invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.0, "1", 2, 3, 60, MAX_POSTGRES_BIGINT])
+def test_maximum_concurrency_rejects_values_other_than_one(invalid: object) -> None:
+    with pytest.raises(ValueError, match="^invalid post draft usage policy$"):
+        PostDraftUsagePolicy(maximum_concurrency=invalid)  # type: ignore[arg-type]
+
+
+def test_fixed_limit_errors_and_repr_do_not_expose_input_canaries() -> None:
+    window_canary = 60_123
+    concurrency_canary = 70_123
+    with pytest.raises(ValueError) as window_error:
+        PostDraftRateLimitPolicy(user_window_minutes=window_canary)
+    with pytest.raises(ValueError) as concurrency_error:
+        PostDraftUsagePolicy(maximum_concurrency=concurrency_canary)
+
+    observed = " ".join(
+        (
+            repr(PostDraftRateLimitPolicy()),
+            repr(PostDraftUsagePolicy()),
+            str(window_error.value),
+            str(concurrency_error.value),
+        )
+    )
+    assert str(window_canary) not in observed
+    assert str(concurrency_canary) not in observed
+
+
+def test_fixed_ten_minute_calculation_matches_rate_limit_policy() -> None:
+    policy = PostDraftRateLimitPolicy()
+    start = user_fixed_window_start(datetime(2026, 9, 3, 0, 9, 59, tzinfo=UTC))
+    next_start = user_fixed_window_start(datetime(2026, 9, 3, 0, 10, tzinfo=UTC))
+    assert next_start - start == timedelta(minutes=policy.user_window_minutes)
+
+
 @pytest.mark.parametrize(
     ("policy_type", "field_name"),
     [
@@ -60,11 +104,9 @@ def test_usage_policy_has_mvp_defaults() -> None:
         (PostDraftOperatorBudgetPolicy, "monthly_cost_limit_microunits"),
         (PostDraftOperatorBudgetPolicy, "retention_days"),
         (PostDraftRateLimitPolicy, "user_request_limit"),
-        (PostDraftRateLimitPolicy, "user_window_minutes"),
         (PostDraftRateLimitPolicy, "guild_daily_request_limit"),
         (PostDraftRateLimitPolicy, "user_retention_days"),
         (PostDraftRateLimitPolicy, "guild_retention_days"),
-        (PostDraftUsagePolicy, "maximum_concurrency"),
         (PostDraftUsagePolicy, "receipt_retention_days"),
     ],
 )
@@ -84,11 +126,9 @@ def test_policy_integer_fields_reject_invalid_values(
         (PostDraftOperatorBudgetPolicy, "monthly_cost_limit_microunits"),
         (PostDraftOperatorBudgetPolicy, "retention_days"),
         (PostDraftRateLimitPolicy, "user_request_limit"),
-        (PostDraftRateLimitPolicy, "user_window_minutes"),
         (PostDraftRateLimitPolicy, "guild_daily_request_limit"),
         (PostDraftRateLimitPolicy, "user_retention_days"),
         (PostDraftRateLimitPolicy, "guild_retention_days"),
-        (PostDraftUsagePolicy, "maximum_concurrency"),
         (PostDraftUsagePolicy, "receipt_retention_days"),
     ],
 )
