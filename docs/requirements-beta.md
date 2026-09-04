@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きMVP要件
 
-本項は将来実装するPhase 4の要件であり、現在利用可能な機能を示さない。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
+本項は段階実装中のPhase 4の要件であり、現在利用可能なBot機能を示さない。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装である。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
 
 ### 目的と操作境界
 
@@ -34,6 +34,12 @@ Provider送信前に、目的と要点が外部AIへ送られること、個人�
 - 表示額は設定済み単価、最大token、為替、安全係数に基づく悲観見積りであり、最終請求、税、為替、販売価格を保証しない。
 - 本文生成feature flagは初期無効とする。設定不正、Provider disabled、価格不明、Budget超過、rate limit、Provider障害ではAI生成だけをfail-closedとし、既存の本文手入力予約を維持する。
 - 実Provider、実Discord、ARM64 Linux実機の本文生成受入がすべて完了するまでfeature flagを有効化しない。
+
+### 利用枠の暫定値と商品仕様の境界
+
+本文下書き用のuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、およびuser bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装・安全検証用の暫定値とする。正式な商品仕様、サブスクリプション仕様、一般提供時の確定上限または販売上の約束としない。実Provider価格、テスト運用、収益性、プラン設計後に再決定し、feature有効化前に必ず再監査する。
+
+プラン別利用枠と運営上の安全rate limitは別の責務として管理する。上位プランであっても運営全体の安全上限を回避できない。プラン別利用回数、Plan／Entitlement、およびそれらを参照する設定・DB境界は未実装である。将来はPlan／Entitlementからプランごとの回数を変更可能にするが、Free、Standard、Pro等の名称と具体的回数は現時点で決定しない。
 
 ## 1. 目的
 

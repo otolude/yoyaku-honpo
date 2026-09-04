@@ -2,7 +2,17 @@
 
 ## Phase 4A: AI投稿本文下書きMVP設計
 
-本項は設計のみであり未実装である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+### Phase 4D schema実DB検証と未決定Quota境界
+
+本文専用Budget／rate limit schemaのrevision `c72e91f4b6a3`は、専用tmpfs PostgreSQL 18.4でcurrent、single heads、checkまで確認した。新3 tableの全14 CHECK制約はORM metadataと一致し、hash付き短縮名、naming conventionの二重prefix、63-byte超過はない。空DB downgradeとheadへの再upgradeに成功し、新3 tableへ匿名合成行を1件ずつ置いた試験ではdowngradeを拒否してrevision、schema、対象データを保持した。最終11業務tableは各0件で、既存DB・Volumeへの影響はなく、専用containerは`Exited (0)`となった。OpenAI通信は行っていない。
+
+検証手順では、最終確認中のmodule指定誤りによりBot入口を一度起動してDiscord client初期化ログが出た。直後にBot process不在を確認したが、Discord接続・投稿の成功は確認していない。ORM比較スクリプトの初回失敗では検証専用の合成DB URLが例外へ一度表示されたが、実credential、既存`.env`、実データは表示されていない。したがって「Bot未実行」「値非表示」とは主張せず、この検証を実Provider・実Discord受入の完了根拠にしない。schema検証結果は別途取得した直接証拠に基づく。
+
+Domainで用いるuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、user bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装・安全検証用の暫定値である。正式な商品仕様、サブスクリプション仕様、一般提供時の確定値ではない。実Provider価格、テスト運用、収益性、プラン設計後に再決定し、feature有効化前に再監査する。
+
+運営全体の安全Budget／rate limitと顧客プランQuotaは別Policyとして扱う。上位プランにも運営全体の安全上限を適用する。Plan／Entitlementとプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称や回数は未決定であり、暫定値を販売上の約束へ転用しない。
+
+本項はPhase 4全体の設計を示す。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
 
 ### Discord状態遷移
 
@@ -20,7 +30,7 @@ URLとMarkdownは文字列として許可する。`@everyone`、`@here`、危険
 
 目的、要点、条件、prompt、AI原文、生成履歴、編集途中本文は予約確定までprocess memoryだけに保持し、DBと通常logへ保存しない。確定時も編集・確認済み最終本文だけをScheduleへ保存する。本文生成はSchedule作成前の対話型処理なので`name_generation_jobs`を使用しない。
 
-user／guild rate limitと運営者全体Budgetを本文生成専用責務とする。運営Budgetは日次／月次回数と月次悲観費用をDBで原子的に予約し、再起動・複数process間で共有する。本文専用bucketまたは用途を明示する一般化bucketのMigrationを実装段階で別途設計し、名前生成集計と暗黙に混在させない。明示的な再生成は新しい1 requestとし、timeout、cancel後の結果不明、Provider結果不明でも枠を返却しない。
+user／guild rate limitと運営者全体Budgetを本文生成専用責務とする。実装済みの本文専用3 tableを用いるPostgreSQL Usage RepositoryとUsage reservation orchestrationでは、運営Budgetの日次／月次回数と月次悲観費用をDBで原子的に予約し、再起動・複数process間で共有する。これらは未実装であり、名前生成集計と暗黙に混在させない。明示的な再生成は新しい1 requestとし、timeout、cancel後の結果不明、Provider結果不明でも枠を返却しない。
 
 ### feature flagと受入gate
 

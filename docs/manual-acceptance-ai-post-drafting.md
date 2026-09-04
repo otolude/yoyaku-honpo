@@ -5,16 +5,34 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 ## 現在の判定
 
 - Phase 4A 文書化: 完了
-- Python実装: 未実装
-- Migration／DB実装: 未実装
-- 自動隔離テスト: 未実施
-- PostgreSQL統合テスト: 未実施
+- Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
+- 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
+- Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠: 未実装
+- 自動隔離テスト: Domain／Application／schemaの実装済み範囲で実施済み
+- PostgreSQL統合テスト: Migration schemaの実装済み範囲で実施済み（下記の逸脱を含む）
 - 実OpenAI Provider受入: 未実施
 - 実Discord受入: 未実施
 - ARM64 Linux実機受入: 未実施
 - 本文生成feature flag: 初期無効を要件化、有効化不可
 
 Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する。AI本文生成が利用可能、Providerが採用済み、費用・品質・保持が確認済み、または本番公開可能であることを意味しない。
+
+## Phase 4D Migration実DB受入
+
+- [x] 専用tmpfs PostgreSQL 18.4でrevision `c72e91f4b6a3`のupgrade、current、single heads、checkを確認した。
+- [x] 新3 tableの14 CHECK制約名がORM metadataと完全一致し、hash付き短縮名、naming conventionの二重prefix、63-byte超過がないことを確認した。
+- [x] 空の新3 tableを持つDBで`a41f8c7d2e90`へのdowngradeとheadへの再upgradeを確認した。
+- [x] 新3 tableへ匿名合成行を1件ずつ独立して置いた場合、downgradeが固定文言で拒否され、revision、schema、対象データが保持されることを確認した。
+- [x] 最終状態で新3 tableと既存8業務tableの計11業務tableが各0件であり、既存DB・Volumeへ影響せず、専用containerが`Exited (0)`となったことを確認した。
+- [x] この検証でOpenAI通信を行っていないことを確認した。
+
+検証手順には逸脱があった。最終確認中にmodule指定を誤ってBot入口を一度起動し、Discord clientの初期化ログが出た。直後にBot processが存在しないことを確認したが、Discord接続または投稿が成功したとは確認していない。また、ORM比較スクリプトの初回失敗時に検証専用の合成DB URLが例外へ一度表示された。実credential、既存`.env`、実データは表示されていない。このため、本受入は「Bot未実行」または「値非表示」の証拠とはせず、実Provider・実Discord受入の完了根拠にも使用しない。これらの逸脱はMigrationのschema、upgrade、downgrade、データ保持に対して別途取得した直接証拠を無効にしない。
+
+## 利用回数・費用上限の未決事項
+
+現在のuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、およびuser bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装と安全検証に用いる暫定値である。正式な商品仕様、サブスクリプション仕様、一般提供時の確定値または販売上の約束ではなく、正式承認を待つ。
+
+実Provider価格、テスト運用、収益性、プラン設計を確認して再決定し、feature有効化前に必ず再監査する。プラン別利用枠と運営上の安全rate limitは別に管理し、上位プランも運営全体の安全上限を回避できないものとする。Plan／Entitlementに基づくプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称と具体的回数は現時点で定めない。
 
 ## 4A 文書受入
 
@@ -46,7 +64,7 @@ Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する
 - [ ] 単発・毎日・毎週の予約と既存手入力コマンドが回帰していないことを確認する。
 - [ ] AI disabled、Provider disabled、Budget超過、rate limit、timeout、障害時も通常予約が利用できることを確認する。
 - [ ] API key、Discord token、DB URL、Provider payload／response、本文、例外全文のlog非露出をcanaryで確認する。
-- [ ] Migrationのupgrade、heads、check、安全なdowngradeと既存schema非破壊を確認する。
+- [x] revision `c72e91f4b6a3`について、専用tmpfs PostgreSQLでupgrade、current、heads、check、空DB downgrade、データ存在時のdowngrade拒否と既存schema非破壊を確認する。
 
 ## 実Provider受入
 

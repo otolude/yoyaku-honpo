@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きの将来運用境界
 
-本項は未実装のPhase 4 MVPに対する運用要件である。現行Botで`/post compose`やAI本文生成が利用可能であることを示さない。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装であり、現行Botで`/post compose`やAI本文生成が利用可能であることを示さない。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 - 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
 - AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
@@ -16,6 +16,14 @@
 - MVPではModeration API、自動retry、fallback modelを運用しない。
 
 価格表示は設定済み単価、最大token、為替、安全係数による悲観見積りと明記し、最終請求、税、為替、販売価格の保証としない。単価、モデル、保持、SDK、Provider dashboard条件は実Provider受入直前に再監査する。秘密値をcommand引数、文書、画面資料、通常logへ含めず、固定匿名合成ケースだけで受入する。
+
+本文下書き用のuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、user bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装・安全検証用の暫定値であり、正式な商品仕様、サブスクリプション仕様、一般提供時の上限または販売上の約束ではない。実Provider価格、テスト運用、収益性、プラン設計後に再決定し、feature有効化前に再監査する。プラン別利用枠と安全rate limitは別に管理し、上位プランも運営全体の安全上限を回避できない。Plan／Entitlementによるプラン別利用回数は未実装であり、Free、Standard、Pro等の名称や具体的回数も未決定である。
+
+### Phase 4D Migration実DB検証記録
+
+revision `c72e91f4b6a3`を専用tmpfs PostgreSQL 18.4で検証した。current、single heads、check、14 CHECK制約とORM metadataの一致、hash付き短縮名・二重prefix・63-byte超過がないこと、空DB downgrade、headへの再upgradeを確認した。新3 tableへ匿名合成行を1件ずつ置く独立試験では、downgrade拒否後もrevision、schema、対象データが保持された。最終11業務tableは各0件で、既存DB・Volumeへの影響はなく、専用containerは`Exited (0)`となった。OpenAI通信は行っていない。
+
+手順上、最終確認でmodule指定を誤ってBot入口を一度起動し、Discord client初期化ログが出た。直後にBot process不在を確認したが、Discord接続・投稿の成功は確認していない。また、ORM比較スクリプトの初回失敗時に検証専用の合成DB URLが例外へ一度表示された。実credential、既存`.env`、実データは表示されていない。したがって、この記録を「Bot未実行」「値非表示」、実Provider受入または実Discord受入の完了根拠として扱わない。Migration schemaの照合結果は、これらと分離した直接証拠に基づく。
 
 ## 1. 文書の目的と対象環境
 
