@@ -713,3 +713,138 @@ def test_ui_manager_does_not_retain_interaction_message_or_public_token() -> Non
     observed = repr(adapter)
     assert str(OWNER) not in observed
     assert str(GUILD) not in observed
+
+
+@pytest.mark.asyncio
+async def test_stale_ai_settings_cancel_cannot_cancel_preview() -> None:
+    adapter, service = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_ai").callback(selected)
+    settings = selected.response.edit_message.await_args.kwargs["view"]
+    opened = interaction()
+    await item(settings, "post_draft_open_ai_input").callback(opened)
+    modal = opened.response.send_modal.await_args.args[0]
+    set_text(modal.purpose, "目的")
+    set_text(modal.key_points, "要点")
+    await modal.on_submit(interaction())
+    tone, length = adapter.tone, adapter.length
+
+    stale = interaction()
+    await item(settings, "post_draft_cancel").callback(stale)
+    assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
+    assert (adapter.tone, adapter.length) == (tone, length)
+    assert service.calls == 1
+    assert STALE_MESSAGE in str(stale.response.send_message.await_args)
+
+
+@pytest.mark.parametrize("mode_custom_id", ["post_draft_mode_manual", "post_draft_mode_ai"])
+@pytest.mark.asyncio
+async def test_mode_transport_failure_aborts_without_retry(mode_custom_id: str) -> None:
+    adapter, service = ui()
+    view = create_post_draft_mode_view(ui=adapter)
+    attempted = interaction()
+    method = "send_modal" if mode_custom_id.endswith("manual") else "edit_message"
+    getattr(attempted.response, method).side_effect = RuntimeError(CANARY)
+
+    await item(view, mode_custom_id).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter._active_component is None
+    assert view.is_finished() and all(child.disabled for child in view.children)
+    assert getattr(attempted.response, method).await_count == 1
+    assert attempted.response.send_message.await_count == 0
+    assert service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ai_settings_send_modal_failure_aborts_without_second_response() -> None:
+    adapter, service = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_ai").callback(selected)
+    settings = selected.response.edit_message.await_args.kwargs["view"]
+    attempted = interaction()
+    attempted.response.send_modal.side_effect = RuntimeError(CANARY)
+
+    await item(settings, "post_draft_open_ai_input").callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter._active_component is None
+    assert settings.is_finished() and all(child.disabled for child in settings.children)
+    assert attempted.response.send_modal.await_count == 1
+    assert attempted.response.send_message.await_count == 0
+    assert service.calls == 0
+
+
+@pytest.mark.parametrize("after_response", [False, True])
+@pytest.mark.asyncio
+async def test_modal_defer_failure_aborts_without_generation_or_retry(
+    after_response: bool,
+) -> None:
+    adapter, service = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_ai").callback(selected)
+    settings = selected.response.edit_message.await_args.kwargs["view"]
+    opened = interaction()
+    await item(settings, "post_draft_open_ai_input").callback(opened)
+    modal = opened.response.send_modal.await_args.args[0]
+    set_text(modal.purpose, "目的")
+    set_text(modal.key_points, "要点")
+    submitted = interaction()
+
+    async def fail_defer(**_kwargs: object) -> None:
+        submitted.response._done = after_response
+        raise RuntimeError(CANARY)
+
+    submitted.response.defer.side_effect = fail_defer
+    await modal.on_submit(submitted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter._active_component is None
+    assert modal.is_finished()
+    assert submitted.response.defer.await_count == 1
+    assert submitted.response.send_message.await_count == 0
+    assert submitted.edit_original_response.await_count == 0
+    assert service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_generating_display_failure_aborts_before_generation() -> None:
+    adapter, service = ui()
+    await adapter.controller.choose_ai(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    attempted = interaction()
+    attempted.edit_original_response.side_effect = RuntimeError(CANARY)
+
+    await adapter.generate(attempted, purpose="目的", key_points="要点")
+
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter._active_component is None
+    assert attempted.response.defer.await_count == 1
+    assert attempted.edit_original_response.await_count == 1
+    assert service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_preview_transport_failure_cancels_and_does_not_retry() -> None:
+    adapter, service = ui()
+    await adapter.controller.choose_ai(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    attempted = interaction()
+    attempted.edit_original_response.side_effect = [None, RuntimeError(CANARY)]
+
+    await adapter.generate(attempted, purpose="目的", key_points="要点")
+
+    assert service.calls == 1
+    assert attempted.edit_original_response.await_count == 2
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter.controller.session.current_draft() is None
+    assert adapter._active_component is None
+
+
+def test_transport_failure_canary_is_not_retained_by_ui() -> None:
+    adapter, _ = ui()
+    observed = repr(adapter)
+    assert CANARY not in observed
+    assert not hasattr(adapter, "interaction")
+    assert not hasattr(adapter, "message")
