@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from discord_ai_reminder_bot.application.post_draft_generation import (
     PostDraftInvalidResponseError,
     PostDraftUnavailableError,
+    PostDraftUnknownError,
 )
 from discord_ai_reminder_bot.domain.post_draft_generation import (
     GeneratedPostDraft,
@@ -75,6 +76,8 @@ class OpenAIPostDraftGenerator:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        failure: str | None = None
+        response: object = None
         try:
             response = await self._client.responses.create(
                 model=self._model,
@@ -86,11 +89,17 @@ class OpenAIPostDraftGenerator:
         except asyncio.CancelledError:
             raise
         except self._errors.timeout:
-            raise TimeoutError from None
+            failure = "timeout"
         except self._errors.unavailable:
-            raise PostDraftUnavailableError from None
+            failure = "unavailable"
         except Exception:  # noqa: BLE001 - SDK details must not cross this boundary
-            raise PostDraftUnavailableError from None
+            failure = "unknown"
+        if failure == "timeout":
+            raise TimeoutError
+        if failure == "unavailable":
+            raise PostDraftUnavailableError
+        if failure == "unknown":
+            raise PostDraftUnknownError
         return self._parse_response(response)
 
     @staticmethod
@@ -116,10 +125,14 @@ class OpenAIPostDraftGenerator:
             or getattr(texts[0], "text", None) != output_text
         ):
             raise PostDraftInvalidResponseError
+        generated: GeneratedPostDraft | None = None
         try:
-            return GeneratedPostDraft(output_text)
+            generated = GeneratedPostDraft(output_text)
         except TypeError, ValueError:
-            raise PostDraftInvalidResponseError from None
+            pass
+        if generated is None:
+            raise PostDraftInvalidResponseError
+        return generated
 
 
 def create_openai_post_draft_generator(

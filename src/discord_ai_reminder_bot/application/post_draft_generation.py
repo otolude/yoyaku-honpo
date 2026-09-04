@@ -102,28 +102,47 @@ class GeneratePostDraftService:
 
     async def generate(self, request: PostDraftGenerationRequest) -> GeneratedPostDraft:
         """Generate once and expose only a validated value or fixed typed failure."""
+        failure: PostDraftErrorCode | None = None
+        generated: object = None
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 generated = await self._generator.generate(request)
         except asyncio.CancelledError:
             raise
         except PostDraftDisabledError:
-            raise PostDraftDisabledError from None
+            failure = PostDraftErrorCode.DISABLED
         except PostDraftUnavailableError:
-            raise PostDraftUnavailableError from None
+            failure = PostDraftErrorCode.UNAVAILABLE
         except PostDraftInvalidResponseError:
-            raise PostDraftInvalidResponseError from None
+            failure = PostDraftErrorCode.INVALID_RESPONSE
         except TimeoutError:
-            raise PostDraftTimeoutError from None
+            failure = PostDraftErrorCode.TIMEOUT
         except PostDraftGenerationError:
-            raise PostDraftUnknownError from None
+            failure = PostDraftErrorCode.UNKNOWN
         except Exception:  # noqa: BLE001 - generator details must not cross this boundary
-            raise PostDraftUnknownError from None
+            failure = PostDraftErrorCode.UNKNOWN
+
+        match failure:
+            case PostDraftErrorCode.DISABLED:
+                raise PostDraftDisabledError
+            case PostDraftErrorCode.UNAVAILABLE:
+                raise PostDraftUnavailableError
+            case PostDraftErrorCode.INVALID_RESPONSE:
+                raise PostDraftInvalidResponseError
+            case PostDraftErrorCode.TIMEOUT:
+                raise PostDraftTimeoutError
+            case PostDraftErrorCode.UNKNOWN:
+                raise PostDraftUnknownError
+            case None:
+                pass
 
         if not isinstance(generated, GeneratedPostDraft):
             raise PostDraftInvalidResponseError
+        validated: GeneratedPostDraft | None = None
         try:
-            GeneratedPostDraft(generated.value)
+            validated = GeneratedPostDraft(generated.value)
         except TypeError, ValueError:
-            raise PostDraftInvalidResponseError from None
+            pass
+        if validated is None:
+            raise PostDraftInvalidResponseError
         return generated
