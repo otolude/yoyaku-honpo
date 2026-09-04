@@ -52,6 +52,7 @@ class PostDraftUIErrorCode(StrEnum):
     USAGE_UNAVAILABLE = "usage_unavailable"
     INVALID_TRANSITION = "invalid_transition"
     NOT_OWNER = "not_owner"
+    CANCELLED = "cancelled"
     EXPIRED = "expired"
 
 
@@ -100,6 +101,8 @@ class PostDraftUISession:
     request: PostDraftGenerationRequest | None = field(default=None, repr=False)
     _draft: GeneratedPostDraft | None = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _generation_token: int = field(default=0, repr=False)
+    _active_generation_token: int | None = field(default=None, repr=False)
 
     @classmethod
     def create(
@@ -162,6 +165,9 @@ class PostDraftUISessionController:
         self.session.request = None
         self.session._draft = None
 
+    def _invalidate_generation(self) -> None:
+        self.session._active_generation_token = None
+
     def _authorize(self, *, owner_user_id: object, guild_id: object, now: object) -> None:
         owner = _discord_id(owner_user_id)
         guild = _discord_id(guild_id)
@@ -170,6 +176,7 @@ class PostDraftUISessionController:
             raise PostDraftUISessionError(PostDraftUIErrorCode.NOT_OWNER)
         if instant >= self.session.expires_at:
             if self.session.state not in _TERMINAL_STATES:
+                self._invalidate_generation()
                 self._clear_payload()
                 self.session.state = PostDraftUISessionState.EXPIRED
             raise PostDraftUISessionError(PostDraftUIErrorCode.EXPIRED)
@@ -217,47 +224,73 @@ class PostDraftUISessionController:
         guild_id: object,
         now: object,
     ) -> GeneratedPostDraft:
-        if self.session.state is PostDraftUISessionState.GENERATING:
-            raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_TRANSITION)
         async with self.session._lock:
             self._authorize(owner_user_id=owner_user_id, guild_id=guild_id, now=now)
             self._require(PostDraftUISessionState.AI_INPUT, PostDraftUISessionState.PREVIEW)
             if not isinstance(request, PostDraftGenerationRequest):
                 raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_RESPONSE)
+            self.session._generation_token += 1
+            token = self.session._generation_token
+            self.session._active_generation_token = token
             self.session.request = request
             self.session._draft = None
             self.session.state = PostDraftUISessionState.GENERATING
-            failure: PostDraftUIErrorCode | None = None
-            generated: GeneratedPostDraft | None = None
-            try:
-                generated = await self._generation_service.generate(request, reservation)
-            except asyncio.CancelledError:
+
+        failure: PostDraftUIErrorCode | None = None
+        generated: GeneratedPostDraft | None = None
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            generated = await self._generation_service.generate(request, reservation)
+        except asyncio.CancelledError as error:
+            cancellation = error
+        except PostDraftDisabledError:
+            failure = PostDraftUIErrorCode.DISABLED
+        except PostDraftUnavailableError:
+            failure = PostDraftUIErrorCode.UNAVAILABLE
+        except PostDraftTimeoutError:
+            failure = PostDraftUIErrorCode.TIMEOUT
+        except PostDraftInvalidResponseError:
+            failure = PostDraftUIErrorCode.INVALID_RESPONSE
+        except PostDraftUsageError as error:
+            failure = _usage_error_code(error.usage_code)
+        except Exception:  # noqa: BLE001 - details must not cross this boundary
+            failure = PostDraftUIErrorCode.UNKNOWN
+
+        stale: PostDraftUIErrorCode | None = None
+        async with self.session._lock:
+            if (
+                self.session._active_generation_token != token
+                or self.session.state is not PostDraftUISessionState.GENERATING
+            ):
+                stale = _stale_generation_code(self.session.state)
+            elif cancellation is not None:
+                self._invalidate_generation()
                 self.session.request = None
+                self.session._draft = None
                 self.session.state = PostDraftUISessionState.AI_INPUT
-                raise
-            except PostDraftDisabledError:
-                failure = PostDraftUIErrorCode.DISABLED
-            except PostDraftUnavailableError:
-                failure = PostDraftUIErrorCode.UNAVAILABLE
-            except PostDraftTimeoutError:
-                failure = PostDraftUIErrorCode.TIMEOUT
-            except PostDraftInvalidResponseError:
+            elif failure is not None:
+                self._invalidate_generation()
+                self._clear_payload()
+                self.session.state = PostDraftUISessionState.AI_INPUT
+            elif not isinstance(generated, GeneratedPostDraft):
+                self._invalidate_generation()
+                self._clear_payload()
+                self.session.state = PostDraftUISessionState.AI_INPUT
                 failure = PostDraftUIErrorCode.INVALID_RESPONSE
-            except PostDraftUsageError as error:
-                failure = _usage_error_code(error.usage_code)
-            except Exception:  # noqa: BLE001 - details must not cross this boundary
-                failure = PostDraftUIErrorCode.UNKNOWN
-            if failure is not None:
-                self.session.request = None
-                self.session.state = PostDraftUISessionState.AI_INPUT
-                raise PostDraftUISessionError(failure)
-            if not isinstance(generated, GeneratedPostDraft):
-                self.session.request = None
-                self.session.state = PostDraftUISessionState.AI_INPUT
-                raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_RESPONSE)
-            self.session._draft = generated
-            self.session.state = PostDraftUISessionState.PREVIEW
-            return generated
+            else:
+                self._invalidate_generation()
+                self.session._draft = generated
+                self.session.state = PostDraftUISessionState.PREVIEW
+
+        if cancellation is not None:
+            raise cancellation
+        if stale is not None:
+            raise PostDraftUISessionError(stale)
+        if failure is not None:
+            raise PostDraftUISessionError(failure)
+        if generated is None:
+            raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_RESPONSE)
+        return generated
 
     async def begin_edit(self, *, owner_user_id: object, guild_id: object, now: object) -> None:
         async with self.session._lock:
@@ -305,8 +338,24 @@ class PostDraftUISessionController:
     async def cancel(self, *, owner_user_id: object, guild_id: object, now: object) -> None:
         async with self.session._lock:
             self._authorize(owner_user_id=owner_user_id, guild_id=guild_id, now=now)
+            self._invalidate_generation()
             self._clear_payload()
             self.session.state = PostDraftUISessionState.CANCELLED
+
+    async def expire(self, *, owner_user_id: object, guild_id: object, now: object) -> None:
+        async with self.session._lock:
+            owner = _discord_id(owner_user_id)
+            guild = _discord_id(guild_id)
+            instant = _aware_utc(now)
+            if owner != self.session.owner_user_id or guild != self.session.guild_id:
+                raise PostDraftUISessionError(PostDraftUIErrorCode.NOT_OWNER)
+            if self.session.state in _TERMINAL_STATES:
+                raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_TRANSITION)
+            if instant < self.session.expires_at:
+                raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_TRANSITION)
+            self._invalidate_generation()
+            self._clear_payload()
+            self.session.state = PostDraftUISessionState.EXPIRED
 
     @staticmethod
     def _validated_draft(text: object) -> GeneratedPostDraft:
@@ -339,3 +388,11 @@ def _usage_error_code(code: PostDraftUsageReservationCode) -> PostDraftUIErrorCo
         PostDraftUsageReservationCode.INVALID_POLICY: PostDraftUIErrorCode.USAGE_UNAVAILABLE,
     }
     return mapping.get(code, PostDraftUIErrorCode.USAGE_UNAVAILABLE)
+
+
+def _stale_generation_code(state: PostDraftUISessionState) -> PostDraftUIErrorCode:
+    if state is PostDraftUISessionState.CANCELLED:
+        return PostDraftUIErrorCode.CANCELLED
+    if state is PostDraftUISessionState.EXPIRED:
+        return PostDraftUIErrorCode.EXPIRED
+    return PostDraftUIErrorCode.INVALID_TRANSITION
