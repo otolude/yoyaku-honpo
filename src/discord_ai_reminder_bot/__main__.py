@@ -14,6 +14,7 @@ from discord_ai_reminder_bot.infrastructure.database.session import (
     create_session_factory,
 )
 from discord_ai_reminder_bot.log_config import configure_logging
+from discord_ai_reminder_bot.post_draft_config import load_post_draft_usage_settings
 
 
 def main() -> int:
@@ -29,6 +30,7 @@ def main() -> int:
         worker_id=uuid.uuid7(),
         logger=logger,
         name_generator=build_name_generator(settings),
+        post_draft_usage_settings=load_post_draft_usage_settings(),
     )
     try:
         bot.run(

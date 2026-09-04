@@ -28,6 +28,7 @@ from discord_ai_reminder_bot.bot.client import (
     ReminderBot,
     StartupRecoveryIncompleteError,
 )
+from discord_ai_reminder_bot.bot.post_draft_runtime import PostDraftRuntime
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import FixedClock
 from discord_ai_reminder_bot.log_config import UtcEventFormatter
@@ -65,6 +66,7 @@ def make_bot() -> ReminderBot:
         clock=FixedClock(NOW),
         worker_id=uuid.uuid7(),
         logger=logging.getLogger("test.bot"),
+        post_draft_runtime=MagicMock(spec=PostDraftRuntime),
     )
     bot.recover_expired_notifications = AsyncMock(  # type: ignore[method-assign]
         return_value=NotificationRecoverySummary()
@@ -262,6 +264,37 @@ def test_post_group_is_registered_only_for_configured_guild() -> None:
     guild = discord.Object(id=bot.settings.discord_guild_id)
     assert bot.tree.get_command("post", guild=guild) is bot.post_commands
     assert bot.tree.get_command("post") is None
+
+
+def test_post_compose_is_registered_once_and_uses_runtime_instance() -> None:
+    bot = make_bot()
+    guild = discord.Object(id=bot.settings.discord_guild_id)
+    post = bot.tree.get_command("post", guild=guild)
+    assert post is bot.post_commands
+    compose = post.get_command("compose")
+    assert compose is not None
+    assert compose.description == "投稿する文章を作成します"
+    assert sum(command.name == "compose" for command in post.commands) == 1
+    assert bot.post_commands._post_draft_runtime is bot.post_draft_runtime
+
+
+def test_bot_constructs_post_draft_runtime_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = MagicMock(spec=PostDraftRuntime)
+    create_runtime = MagicMock(return_value=runtime)
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.create_post_draft_runtime", create_runtime
+    )
+    engine = MagicMock()
+    ReminderBot(
+        settings=settings(),
+        engine=engine,
+        session_factory=MagicMock(),
+        clock=FixedClock(NOW),
+        worker_id=uuid.uuid7(),
+        logger=logging.getLogger("test.bot.post-draft"),
+    )
+    create_runtime.assert_called_once()
+    engine.assert_not_called()
 
 
 @pytest.mark.asyncio

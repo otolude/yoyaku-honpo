@@ -41,6 +41,10 @@ from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryServi
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleQueryService
 from discord_ai_reminder_bot.application.worker import PollingWorker
 from discord_ai_reminder_bot.bot.interactions import Phase1CommandTree
+from discord_ai_reminder_bot.bot.post_draft_runtime import (
+    PostDraftRuntime,
+    create_post_draft_runtime,
+)
 from discord_ai_reminder_bot.bot.posts import PostCommands
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import Clock
@@ -49,6 +53,10 @@ from discord_ai_reminder_bot.infrastructure.database.schema import verify_schema
 from discord_ai_reminder_bot.infrastructure.discord.gateway import DiscordMessageGateway
 from discord_ai_reminder_bot.infrastructure.discord.notification_gateway import (
     DiscordNotificationGateway,
+)
+from discord_ai_reminder_bot.post_draft_config import (
+    PostDraftUsageSettingsResult,
+    load_post_draft_usage_settings,
 )
 
 MAX_RATELIMIT_TIMEOUT_SECONDS = 30.0
@@ -85,6 +93,8 @@ class ReminderBot(commands.Bot):
         worker_id: uuid.UUID,
         logger: logging.Logger,
         name_generator: NameGenerator | None = None,
+        post_draft_usage_settings: PostDraftUsageSettingsResult | None = None,
+        post_draft_runtime: PostDraftRuntime | None = None,
     ) -> None:
         super().__init__(
             command_prefix=SLASH_ONLY_PREFIX,
@@ -101,6 +111,11 @@ class ReminderBot(commands.Bot):
         self.worker_id = worker_id
         self.logger = logger
         self.name_generator = name_generator or DisabledNameGenerator()
+        self.post_draft_runtime = post_draft_runtime or create_post_draft_runtime(
+            settings=post_draft_usage_settings or load_post_draft_usage_settings(env_file=None),
+            session_factory=session_factory,
+            clock=clock,
+        )
         self.gateway: MessageGateway = DiscordMessageGateway(
             client=self,
             configured_guild_id=settings.discord_guild_id,
@@ -178,6 +193,7 @@ class ReminderBot(commands.Bot):
                 enabled=settings.ai_name_generation_enabled,
                 generator_available=self.name_generator.available,
             ),
+            post_draft_runtime=self.post_draft_runtime,
         )
         self.add_guild_command(self.post_commands)
         self.polling_loop.change_interval(seconds=settings.scheduler_poll_interval_seconds)

@@ -40,6 +40,7 @@ AI_NOTICE = (
     "AIの文章は下書きです。内容を必ず確認してください。"
     "この本文を使用しても予約・投稿はされません。予約は後続画面で明示的に確定します。"
 )
+AI_DISABLED_NOTICE = "AI文章作成は現在準備中です。手入力をご利用ください。"
 GENERATING_MESSAGE = "文章を作成しています…"
 STALE_UI_MESSAGE = "この画面は古くなっています。現在の画面から操作してください。"
 ACCEPTED_MESSAGE = (
@@ -978,6 +979,31 @@ def create_post_draft_mode_view(*, ui: PostDraftDiscordUI) -> PostDraftModeView:
     view = PostDraftModeView(ui=ui, timeout=ui.timeout_seconds)
     ui.activate_initial(view)
     return view
+
+
+def create_disabled_post_draft_mode_view(*, ui: PostDraftDiscordUI) -> PostDraftModeView:
+    """Create the production entry view while the provider gate remains closed."""
+    view = create_post_draft_mode_view(ui=ui)
+    ai = item_by_id(view, MODE_AI_CUSTOM_ID)
+    if isinstance(ai, discord.ui.Button):
+        ai.label = "AIで作成（準備中）"
+        ai.disabled = True
+    return view
+
+
+async def send_disabled_post_draft_mode(
+    interaction: discord.Interaction, *, ui: PostDraftDiscordUI
+) -> None:
+    view = create_disabled_post_draft_mode_view(ui=ui)
+    failed = False
+    try:
+        await _send_initial(interaction, content=AI_DISABLED_NOTICE, view=view)
+    except Exception:  # noqa: BLE001
+        failed = True
+    if failed:
+        lease = await ui.begin_transition(view)
+        if lease is not None:
+            await ui.abort_transport(lease)
 
 
 async def send_post_draft_mode(interaction: discord.Interaction, *, ui: PostDraftDiscordUI) -> None:

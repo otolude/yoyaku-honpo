@@ -62,6 +62,7 @@ from discord_ai_reminder_bot.bot.interactions import (
     is_authorized_interaction,
     respond_ephemeral,
 )
+from discord_ai_reminder_bot.bot.post_draft_runtime import PostDraftRuntime
 from discord_ai_reminder_bot.bot.post_presenter import (
     STATUS_LABELS,
     WEEKDAY_LABELS,
@@ -869,6 +870,7 @@ class PostCommands(app_commands.Group):
         allowed_role_ids: tuple[int, ...],
         logger: logging.Logger,
         name_generation_policy: NameGenerationRegistrationPolicy | None = None,
+        post_draft_runtime: PostDraftRuntime | None = None,
     ) -> None:
         super().__init__(name="post", description="予約投稿を確認します")
         self._queries = queries
@@ -878,6 +880,7 @@ class PostCommands(app_commands.Group):
         self._allowed_role_ids = allowed_role_ids
         self._logger = logger
         self._name_generation_policy = name_generation_policy or NameGenerationRegistrationPolicy()
+        self._post_draft_runtime = post_draft_runtime
         self._delete_views: set[ScheduleDeletionConfirmView] = set()
         self._create_views: set[OnceScheduleConfirmView] = set()
         self._resume_views: set[ResumeChoiceView] = set()
@@ -916,6 +919,14 @@ class PostCommands(app_commands.Group):
             name_generation_policy=self._name_generation_policy,
             logger=self._logger,
         )
+
+    @app_commands.command(name="compose", description="投稿する文章を作成します")
+    async def compose_command(self, interaction: discord.Interaction) -> None:
+        runtime = self._post_draft_runtime
+        if runtime is None:
+            await respond_ephemeral(interaction, INTERNAL_ERROR_MESSAGE)
+            return
+        await runtime.start(interaction)
 
     @app_commands.command(name="create", description="単発の予約投稿を作成します")
     @app_commands.describe(
