@@ -3,18 +3,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
-from discord_ai_reminder_bot.application.post_draft_ui_session import (
-    PostDraftUIErrorCode,
-    PostDraftUISession,
-    PostDraftUISessionController,
-    PostDraftUISessionError,
-    PostDraftUISessionState,
-)
 
 from discord_ai_reminder_bot.application.post_draft_generation import (
     PostDraftDisabledError,
@@ -22,6 +16,13 @@ from discord_ai_reminder_bot.application.post_draft_generation import (
     PostDraftTimeoutError,
     PostDraftUnavailableError,
     PostDraftUnknownError,
+)
+from discord_ai_reminder_bot.application.post_draft_ui_session import (
+    PostDraftUIErrorCode,
+    PostDraftUISession,
+    PostDraftUISessionController,
+    PostDraftUISessionError,
+    PostDraftUISessionState,
 )
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
 from discord_ai_reminder_bot.application.post_draft_usage_generation import PostDraftUsageError
@@ -194,6 +195,7 @@ async def test_generation_failures_are_fixed_and_restore_ai_input(
             repr(caught.value),
             repr(caught.value.args),
             repr(vars(caught.value)),
+            "".join(traceback.format_exception(caught.value)),
             caplog.text,
         )
     )
@@ -302,6 +304,14 @@ async def test_expiry_boundary_and_payload_release() -> None:
     assert value.session.current_draft() is None
     assert value.session.request is None
     assert fake.calls == 0
+    elapsed, _ = controller()
+    with pytest.raises(PostDraftUISessionError) as elapsed_error:
+        await elapsed.choose_ai(
+            owner_user_id=OWNER,
+            guild_id=GUILD,
+            now=NOW + timedelta(minutes=15, seconds=1),
+        )
+    assert elapsed_error.value.code is PostDraftUIErrorCode.EXPIRED
 
 
 def test_naive_session_and_operation_times_are_rejected() -> None:
@@ -311,6 +321,17 @@ def test_naive_session_and_operation_times_are_rejected() -> None:
             guild_id=GUILD,
             created_at=NOW.replace(tzinfo=None),
             expires_at=NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_naive_operation_time_is_rejected() -> None:
+    value, _ = controller()
+    with pytest.raises(ValueError):
+        await value.choose_ai(
+            owner_user_id=OWNER,
+            guild_id=GUILD,
+            now=NOW.replace(tzinfo=None),
         )
 
 
