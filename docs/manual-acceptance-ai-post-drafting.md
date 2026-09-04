@@ -7,9 +7,13 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 - Phase 4A 文書化: 完了
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
-- Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠: 未実装
-- 自動隔離テスト: Domain／Application／schemaの実装済み範囲で実施済み
-- PostgreSQL統合テスト: Migration schemaの実装済み範囲で実施済み（下記の逸脱を含む）
+- PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み
+- `/post compose`: 既存guild限定`/post` Groupへコード上で登録済み。実Discordへのcommand syncと画面受入は未実施
+- production Composition: Provider gateはfalseで`DisabledPostDraftGenerator`を使用し、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
+- Manualフロー: Preview／Edit／Acceptまで自動隔離確認済み。ただしUsage予約、DB保存、予約確定、channel投稿へは未接続で、採用後も「まだ予約・投稿されていない」と表示する
+- Usage cleanupのruntime wiring／定期実行、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠: 未実装
+- 正式model、価格・費用承認、正式UI timeout: 未決定
+- 自動隔離テストとPostgreSQL統合テスト: commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`で下記の隔離runtime受入を完了
 - 実OpenAI Provider受入: 未実施
 - 実Discord受入: 未実施
 - ARM64 Linux実機受入: 未実施
@@ -27,6 +31,20 @@ Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する
 - [x] この検証でOpenAI通信を行っていないことを確認した。
 
 検証手順には逸脱があった。最終確認中にmodule指定を誤ってBot入口を一度起動し、Discord clientの初期化ログが出た。直後にBot processが存在しないことを確認したが、Discord接続または投稿が成功したとは確認していない。また、ORM比較スクリプトの初回失敗時に検証専用の合成DB URLが例外へ一度表示された。実credential、既存`.env`、実データは表示されていない。このため、本受入は「Bot未実行」または「値非表示」の証拠とはせず、実Provider・実Discord受入の完了根拠にも使用しない。これらの逸脱はMigrationのschema、upgrade、downgrade、データ保持に対して別途取得した直接証拠を無効にしない。
+
+## Phase 4H前半 無効runtime隔離受入
+
+commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`を専用tmpfs PostgreSQL 18.4で検証した。Migration current／single headは`c72e91f4b6a3`、Alembic checkは`No new upgrade operations detected.`で、11業務tableは欠落・余分なく、Migration直後、各DB test段階後、終了時のすべてで各0件だった。
+
+- Stage 1 Runtime／Bot runtime／Post command／Discord UI／UI session／Composition: 397 passed
+- Stage 2 残りのPostDraft DB非依存test: 455 passed
+- Stage 3 Usage Repository＋cleanup integration: 26 passed
+- Stage 4 PostgreSQL integration全体: 375 passed
+- Stage 5 DB URLなし通常pytest: 1,633 passed、375 skipped
+- failed、warning、想定外skip: 0
+- container: `Exited (0)`。`/var/lib/postgresql`はtmpfsで、mount／named Volumeなし。既存DB／Volume／実データへの影響および秘密値の表示・証跡残存なし
+
+r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推定であり、loopback TCP接続を明示的に許可したr3では同じ空DB probeが成功した。PostgreSQL設定またはMigration不具合の証拠ではない。本受入ではBot、Gateway、Discord HTTP、OpenAI、command syncを実行しておらず、実Discord画面、実Provider、AI有効状態、DB保存・予約確定・投稿、cleanup定期実行、ARM64 Linux実機は未確認である。
 
 ## 利用回数・費用上限の未決事項
 
@@ -53,17 +71,17 @@ Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する
 
 ## 実装・自動隔離受入
 
-- [ ] Provider非依存のrequest、result、文体、長さ、本文validationを実装する。
-- [ ] disabled境界、one-shot生成、timeout、cancel、typed error、retryなしを実装する。
-- [ ] user／guild rate limitと永続的な運営Budgetを実装する。
-- [ ] 目的、要点、条件、prompt、AI原文、履歴がDBと通常logへ保存されないことを確認する。
+- [x] Provider非依存のrequest、result、文体、長さ、本文validationを実装する。
+- [x] disabled境界、one-shot生成、timeout、cancel、typed error、retryなしを実装する。
+- [x] user／guild rate limitと永続的な運営Budgetを実装する。
+- [x] 目的、要点、条件、prompt、AI原文、履歴がDBと通常logへ保存されないことを確認する。
 - [ ] `/post compose`の注意、入力、生成、編集、再生成、本文採用、最終確認を実装する。
 - [ ] 二重押下、期限切れ、権限喪失、Bot shutdown／restartで重複生成・保存・投稿しないことを確認する。
-- [ ] 「予約する」前のSchedule、Run、OperationLog増加が0件であることを確認する。
+- [x] 「予約する」前のSchedule、Run、OperationLog増加が0件であることを確認する。
 - [ ] 利用者が編集・確認した最終本文だけが既存予約作成Serviceへ渡ることを確認する。
-- [ ] 単発・毎日・毎週の予約と既存手入力コマンドが回帰していないことを確認する。
-- [ ] AI disabled、Provider disabled、Budget超過、rate limit、timeout、障害時も通常予約が利用できることを確認する。
-- [ ] API key、Discord token、DB URL、Provider payload／response、本文、例外全文のlog非露出をcanaryで確認する。
+- [x] 単発・毎日・毎週の予約と既存手入力コマンドが回帰していないことを確認する。
+- [x] AI disabled、Provider disabled、Budget超過、rate limit、timeout、障害時も通常予約が利用できることを確認する。
+- [x] API key、Discord token、DB URL、Provider payload／response、本文、例外全文のlog非露出をcanaryで確認する。
 - [x] revision `c72e91f4b6a3`について、専用tmpfs PostgreSQLでupgrade、current、heads、check、空DB downgrade、データ存在時のdowngrade拒否と既存schema非破壊を確認する。
 
 ## 実Provider受入

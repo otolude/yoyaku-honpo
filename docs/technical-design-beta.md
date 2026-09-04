@@ -12,7 +12,7 @@ Domainで用いるuser 3回／固定10分、guild 30回／JST日、global 50回�
 
 運営全体の安全Budget／rate limitと顧客プランQuotaは別Policyとして扱う。上位プランにも運営全体の安全上限を適用する。Plan／Entitlementとプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称や回数は未決定であり、暫定値を販売上の約束へ転用しない。
 
-本項はPhase 4全体の設計を示す。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへコード上で登録済みだが、command syncと実Discord画面受入は未実施である。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはPreview／Edit／Acceptまでで、Usage予約、DB保存、予約確定、channel投稿へは未接続である。Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
 
 ### Discord状態遷移
 
@@ -30,7 +30,13 @@ URLとMarkdownは文字列として許可する。`@everyone`、`@here`、危険
 
 目的、要点、条件、prompt、AI原文、生成履歴、編集途中本文は予約確定までprocess memoryだけに保持し、DBと通常logへ保存しない。確定時も編集・確認済み最終本文だけをScheduleへ保存する。本文生成はSchedule作成前の対話型処理なので`name_generation_jobs`を使用しない。
 
-user／guild rate limitと運営者全体Budgetを本文生成専用責務とする。実装済みの本文専用3 tableを用いるPostgreSQL Usage RepositoryとUsage reservation orchestrationでは、運営Budgetの日次／月次回数と月次悲観費用をDBで原子的に予約し、再起動・複数process間で共有する。これらは未実装であり、名前生成集計と暗黙に混在させない。明示的な再生成は新しい1 requestとし、timeout、cancel後の結果不明、Provider結果不明でも枠を返却しない。
+user／guild rate limitと運営者全体Budgetを本文生成専用責務とする。実装済みの本文専用3 tableを用いるPostgreSQL Usage RepositoryとUsage reservation orchestrationでは、運営Budgetの日次／月次回数と月次悲観費用をDBで原子的に予約し、再起動・複数process間で共有する。名前生成集計とは混在させない。明示的な再生成は新しい1 requestとし、timeout、cancel後の結果不明、Provider結果不明でも枠を返却しない。
+
+### Phase 4H前半 無効runtime隔離結果
+
+commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`では、Bot runtimeごとに`PostDraftRuntime`と無効Compositionを1回構築し、同じ生成Service／Semaphoreを保持する。commandごとに新しいUI Session／Controller／UIを生成し、runtimeは`composition`と`clock`だけを保持してsession registry、Interaction、Message、tokenを保持しない。既存guild限定`/post` Groupの`/post compose`からはAI無効Mode Viewを生成し、ManualだけをPreview／Edit／Acceptまで進める。
+
+専用tmpfs PostgreSQL 18.4でMigration current／single head `c72e91f4b6a3`、Alembic差分なし、11業務table各0件を確認した。Runtime関連397件、残りのPostDraft DB非依存455件、Usage Repository＋cleanup integration 26件、PostgreSQL integration全体375件、DB URLなし通常pytest 1,633 passed／375 skippedで、failed、warning、想定外skipは0だった。Bot、Gateway、Discord HTTP、OpenAI、command syncは実行していないため、実Discord、実Provider、AI有効end-to-end、保存・予約確定・投稿、cleanup定期実行、ARM64 Linux実機の受入には使用しない。
 
 ### feature flagと受入gate
 

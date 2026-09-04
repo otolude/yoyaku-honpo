@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きの将来運用境界
 
-本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装であり、現行Botで`/post compose`やAI本文生成が利用可能であることを示さない。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`も既存guild限定`/post` Groupへコード上で登録済みだが、実Discordへのcommand syncと画面受入は未実施である。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。ManualはPreview／Edit／Acceptまでで、Usage予約、DB保存、予約確定、channel投稿を行わない。Usage cleanupのruntime wiring／定期実行、Plan／Entitlement、正式model／価格／UI timeoutは未実装・未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 - 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
 - AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
@@ -24,6 +24,10 @@
 revision `c72e91f4b6a3`を専用tmpfs PostgreSQL 18.4で検証した。current、single heads、check、14 CHECK制約とORM metadataの一致、hash付き短縮名・二重prefix・63-byte超過がないこと、空DB downgrade、headへの再upgradeを確認した。新3 tableへ匿名合成行を1件ずつ置く独立試験では、downgrade拒否後もrevision、schema、対象データが保持された。最終11業務tableは各0件で、既存DB・Volumeへの影響はなく、専用containerは`Exited (0)`となった。OpenAI通信は行っていない。
 
 手順上、最終確認でmodule指定を誤ってBot入口を一度起動し、Discord client初期化ログが出た。直後にBot process不在を確認したが、Discord接続・投稿の成功は確認していない。また、ORM比較スクリプトの初回失敗時に検証専用の合成DB URLが例外へ一度表示された。実credential、既存`.env`、実データは表示されていない。したがって、この記録を「Bot未実行」「値非表示」、実Provider受入または実Discord受入の完了根拠として扱わない。Migration schemaの照合結果は、これらと分離した直接証拠に基づく。
+
+### Phase 4H前半 無効runtime隔離検証記録
+
+commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`を専用tmpfs PostgreSQL 18.4で検証した。Migration current／single headは`c72e91f4b6a3`、checkは`No new upgrade operations detected.`であり、11業務tableは欠落・余分なく各段階後と終了時に各0件だった。Runtime関連397件、残りのPostDraft DB非依存455件、Usage Repository＋cleanup integration 26件、PostgreSQL integration全体375件が成功し、DB URLなし通常pytestは1,633 passed／375 skippedだった。failed、warning、想定外skipは0で、秘密値の表示・証跡残存、既存DB／Volume／実データへの影響はなく、専用containerは`Exited (0)`となった。Bot、Gateway、Discord HTTP、OpenAI、command syncは実行していない。
 
 ## 1. 文書の目的と対象環境
 

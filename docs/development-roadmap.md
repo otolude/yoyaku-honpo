@@ -12,6 +12,8 @@ Phase 3の受入結果（確認済み125件／未確認2件、合計127件、お
 
 Phase 4は、4A文書化、4B Provider非依存Domain／Application、4C rate limit／永続Budget、4D Provider Adapter、4E `/post compose` UI、4F自動隔離・PostgreSQL統合、4G実Provider受入、4H実Discord・ARM64受入の順で進める。
 
+現在はProvider非依存境界、本文専用Usage schema／Repository／cleanup／Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／ControllerとDiscord UI部品、`PostDraftRuntime`を実装し、既存guild限定`/post` Groupへ`/post compose`をコード上で登録した。commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`の隔離runtime受入は完了しているが、Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態である。実Discord command sync／画面受入、実Provider、AI有効end-to-end、予約保存・投稿、Usage cleanupのruntime定期実行、ARM64 Linux実機は未実施で、正式model、価格・費用承認、正式UI timeoutも未決定である。
+
 本文生成feature flagは初期無効とし、実Provider・実Discord・ARM64 Linux実機受入がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 ## 2. Phase 3ロードマップ

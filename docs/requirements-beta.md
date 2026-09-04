@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きMVP要件
 
-本項は段階実装中のPhase 4の要件であり、現在利用可能なBot機能を示さない。Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain、および本文専用の`post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`からなる3 tableのORM schemaとrevision `c72e91f4b6a3`は実装済みで、PostgreSQL 18.4によるMigration実DB検証も完了している。一方、Phase 4本文下書き用PostgreSQL Usage Repository、Usage reservation orchestration、cleanup、実行時設定、OpenAI本文Adapter、Discord UI、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠は未実装である。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
+本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへコード上で登録済みだが、実Discordへのcommand syncと画面受入は未実施である。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態とし、ManualのPreview／Edit／AcceptはUsage予約、DB保存、予約確定、channel投稿へ接続しない。Usage cleanupのruntime wiring／定期実行、実Provider、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
 
 ### 目的と操作境界
 
