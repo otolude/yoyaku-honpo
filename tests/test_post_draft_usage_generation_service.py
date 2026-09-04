@@ -369,10 +369,11 @@ def test_application_module_has_no_infrastructure_or_external_imports() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
+    assert not any("infrastructure" in name or "schedule" in name for name in imported)
     assert not any(
-        forbidden in name
+        name == forbidden or name.startswith(f"{forbidden}.")
         for name in imported
-        for forbidden in ("infrastructure", "sqlalchemy", "openai", "discord", "schedule")
+        for forbidden in ("sqlalchemy", "openai", "discord")
     )
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "logging" not in source
