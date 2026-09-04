@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import (
 
 from discord_ai_reminder_bot.infrastructure.database.testing import validate_test_database_url
 
-EXPECTED_REVISION = "a41f8c7d2e90"
+EXPECTED_REVISION = "c72e91f4b6a3"
 
 
 @pytest.fixture(scope="session")
