@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
@@ -75,13 +76,14 @@ def reservation(
     guild_id: int = GUILD_ID,
     maximum_cost: int = 1_000,
     usage_policy: PostDraftUsagePolicy | None = None,
+    now: datetime = NOW,
 ) -> PostDraftUsageReservation:
     return PostDraftUsageReservation.create(
         operation_key=PostDraftOperationKey(operation_key or uuid4()),
         user_id=PostDraftUserId(user_id),
         guild_id=PostDraftGuildId(guild_id),
         maximum_cost_microunits=maximum_cost,
-        now=NOW,
+        now=now,
         policy=usage_policy or policy(),
     )
 
@@ -187,18 +189,35 @@ async def test_exact_request_limit_succeeds_and_limit_plus_one_rolls_back_everyt
 ) -> None:
     values = {"user": 100, "guild": 100, "daily": 100, "monthly": 100}
     values[limit_name] = limit
+    if limit_name == "monthly":
+        values["daily"] = limit
     values["guild"] = min(values["guild"], values["daily"])
     usage_policy = policy(**values)
     repository = repository_type()(factory(test_engine))
-    for _ in range(limit):
-        result = await repository.reserve(reservation(usage_policy=usage_policy))
+    for offset in range(limit):
+        kwargs: dict[str, object] = {"usage_policy": usage_policy}
+        if limit_name in {"guild", "daily", "monthly"}:
+            kwargs["user_id"] = USER_ID + offset
+        if limit_name in {"daily", "monthly"}:
+            kwargs["guild_id"] = GUILD_ID + offset
+        if limit_name == "monthly":
+            kwargs["now"] = NOW + timedelta(days=offset)
+        result = await repository.reserve(reservation(**kwargs))  # type: ignore[arg-type]
         assert result.code is PostDraftUsageReservationCode.RESERVED
     before_counts = await counts(test_engine)
     before_buckets = await bucket_values(test_engine)
     rejected_key = uuid4()
-    result = await repository.reserve(
-        reservation(operation_key=rejected_key, usage_policy=usage_policy)
-    )
+    rejected_kwargs: dict[str, object] = {
+        "operation_key": rejected_key,
+        "usage_policy": usage_policy,
+    }
+    if limit_name in {"guild", "daily", "monthly"}:
+        rejected_kwargs["user_id"] = USER_ID + limit
+    if limit_name in {"daily", "monthly"}:
+        rejected_kwargs["guild_id"] = GUILD_ID + limit
+    if limit_name == "monthly":
+        rejected_kwargs["now"] = NOW + timedelta(days=limit)
+    result = await repository.reserve(reservation(**rejected_kwargs))  # type: ignore[arg-type]
     assert result.code is expected
     assert await counts(test_engine) == before_counts
     assert await bucket_values(test_engine) == before_buckets
@@ -326,3 +345,28 @@ async def test_tables_store_no_payload_columns(test_engine: AsyncEngine) -> None
         )
     forbidden = {"content", "body", "prompt", "interaction_id", "schedule_id", "provider_id"}
     assert forbidden.isdisjoint(columns)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [SQLAlchemyError("fixed database failure"), asyncio.CancelledError()],
+    ids=["database_error", "cancellation"],
+)
+async def test_exception_during_transaction_propagates_and_rolls_back(
+    test_engine: AsyncEngine,
+    error: BaseException,
+) -> None:
+    repository_class = repository_type()
+
+    class FailingRepository(repository_class):
+        async def _reserve_transaction(
+            self, session: AsyncSession, value: PostDraftUsageReservation
+        ) -> None:
+            await super()._reserve_transaction(session, value)
+            raise error
+
+    repository = FailingRepository(factory(test_engine))
+    with pytest.raises(type(error), match="fixed database failure" if str(error) else None):
+        await repository.reserve(reservation())
+    assert await counts(test_engine) == (0, 0, 0)

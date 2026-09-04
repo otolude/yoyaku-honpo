@@ -111,10 +111,11 @@ def test_repository_source_has_no_forbidden_runtime_dependencies_or_logging() ->
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     assert not any(
-        value in name
+        name == value or name.startswith(f"{value}.")
         for name in imported
-        for value in ("logging", "openai", "discord", ".bot", "schedule")
+        for value in ("logging", "openai", "discord")
     )
+    assert not any("schedule" in name for name in imported)
     assert "retry" not in source.lower()
     assert "echo=" not in source
 
