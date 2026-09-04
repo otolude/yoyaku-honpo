@@ -4,6 +4,7 @@ import ast
 import asyncio
 import importlib
 import logging
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,8 +12,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from discord_ai_reminder_bot.application.post_draft_generation import (
+    GeneratePostDraftService,
+    PostDraftErrorCode,
     PostDraftInvalidResponseError,
+    PostDraftTimeoutError,
     PostDraftUnavailableError,
+    PostDraftUnknownError,
 )
 from discord_ai_reminder_bot.domain.post_draft_generation import (
     PostDraftGenerationRequest,
@@ -24,6 +29,7 @@ CONFIG_MODULE = "discord_ai_reminder_bot.post_draft_provider_config"
 ADAPTER_MODULE = "discord_ai_reminder_bot.infrastructure.ai.openai_post_draft_generator"
 API_KEY_CANARY = "sk-synthetic-post-draft-secret-canary"
 MODEL_CANARY = "synthetic-model-canary"
+EXCEPTION_CHAIN_CANARY = "provider-exception-chain-private-canary"
 ENV_KEYS = (
     "AI_POST_DRAFT_OPENAI_API_KEY",
     "AI_POST_DRAFT_OPENAI_MODEL",
@@ -95,6 +101,40 @@ class ConnectionCanary(Exception):
 
 class StatusCanary(Exception):
     pass
+
+
+def provider_exception(error_type: type[Exception]) -> Exception:
+    error = error_type(EXCEPTION_CHAIN_CANARY)
+    error.request = {"credential": EXCEPTION_CHAIN_CANARY}  # type: ignore[attr-defined]
+    error.response = {"body": EXCEPTION_CHAIN_CANARY}  # type: ignore[attr-defined]
+    return error
+
+
+def assert_detached_exception(error: BaseException, caplog: str) -> None:
+    pending: list[BaseException] = [error]
+    observed: list[str] = [caplog]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        observed.extend(
+            (
+                str(current),
+                repr(current),
+                repr(current.args),
+                repr(vars(current)),
+                "".join(traceback.format_exception(current)),
+            )
+        )
+        assert current.__cause__ is None
+        assert current.__context__ is None
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    assert EXCEPTION_CHAIN_CANARY not in " ".join(observed)
 
 
 def test_all_provider_settings_unset_is_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,6 +315,85 @@ async def test_cancellation_is_rethrown_without_retry() -> None:
     generator, create = adapter(asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
         await generator.generate(request())
+    assert create.await_count == 1
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected"),
+    [
+        (provider_exception(TimeoutCanary), TimeoutError),
+        (provider_exception(ConnectionCanary), PostDraftUnavailableError),
+        (provider_exception(StatusCanary), PostDraftUnavailableError),
+        (provider_exception(RuntimeError), PostDraftUnknownError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_adapter_detaches_provider_exception_chain(
+    provider_error: BaseException,
+    expected: type[BaseException],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    generator, create = adapter(provider_error)
+    with caplog.at_level(logging.DEBUG), pytest.raises(expected) as caught:
+        await generator.generate(request())
+    assert create.await_count == 1
+    assert_detached_exception(caught.value, caplog.text)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected", "code"),
+    [
+        (provider_exception(TimeoutCanary), PostDraftTimeoutError, PostDraftErrorCode.TIMEOUT),
+        (
+            provider_exception(ConnectionCanary),
+            PostDraftUnavailableError,
+            PostDraftErrorCode.UNAVAILABLE,
+        ),
+        (
+            provider_exception(StatusCanary),
+            PostDraftUnavailableError,
+            PostDraftErrorCode.UNAVAILABLE,
+        ),
+        (provider_exception(RuntimeError), PostDraftUnknownError, PostDraftErrorCode.UNKNOWN),
+    ],
+)
+@pytest.mark.asyncio
+async def test_application_detaches_provider_exception_chain_and_preserves_code(
+    provider_error: BaseException,
+    expected: type[BaseException],
+    code: PostDraftErrorCode,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    generator, create = adapter(provider_error)
+    service = GeneratePostDraftService(generator=generator, timeout_seconds=1)
+    with caplog.at_level(logging.DEBUG), pytest.raises(expected) as caught:
+        await service.generate(request())
+    assert caught.value.code is code
+    assert create.await_count == 1
+    assert_detached_exception(caught.value, caplog.text)
+
+
+@pytest.mark.asyncio
+async def test_invalid_response_context_is_detached_through_application(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    generator, create = adapter(response(f"{EXCEPTION_CHAIN_CANARY}@everyone"))
+    service = GeneratePostDraftService(generator=generator, timeout_seconds=1)
+    with caplog.at_level(logging.DEBUG), pytest.raises(PostDraftInvalidResponseError) as caught:
+        await service.generate(request())
+    assert caught.value.code is PostDraftErrorCode.INVALID_RESPONSE
+    assert create.await_count == 1
+    assert_detached_exception(caught.value, caplog.text)
+
+
+@pytest.mark.asyncio
+async def test_application_rethrows_same_cancellation_object() -> None:
+    cancellation = asyncio.CancelledError()
+    generator, create = adapter(cancellation)
+    service = GeneratePostDraftService(generator=generator, timeout_seconds=1)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await service.generate(request())
+    assert caught.value is cancellation
     assert create.await_count == 1
 
 
