@@ -32,6 +32,9 @@ POST_DRAFT_ENV_KEYS = (
     "AI_POST_DRAFT_RECEIPT_RETENTION_DAYS",
 )
 INTEGER_ENV_KEYS = POST_DRAFT_ENV_KEYS[1:7] + POST_DRAFT_ENV_KEYS[8:]
+POSITIVE_INTEGER_FIELDS = tuple(
+    key.removeprefix("AI_POST_DRAFT_").lower() for key in INTEGER_ENV_KEYS
+)
 
 
 def config_module():
@@ -128,6 +131,24 @@ def test_settings_model_rejects_non_integer_values(value: object) -> None:
     settings_type = config_module().PostDraftUsageSettings
     with pytest.raises(ValueError):
         settings_type(_env_file=None, AI_POST_DRAFT_USER_REQUEST_LIMIT=value)
+
+
+@pytest.mark.parametrize("field_name", POSITIVE_INTEGER_FIELDS)
+@pytest.mark.parametrize("value", [0, -1])
+def test_settings_model_rejects_nonpositive_python_integers(field_name: str, value: int) -> None:
+    settings_type = config_module().PostDraftUsageSettings
+    alias = settings_type.model_fields[field_name].validation_alias
+    assert isinstance(alias, str)
+    with pytest.raises(ValueError, match="^invalid post draft usage settings$"):
+        settings_type(_env_file=None, **{alias: value})
+
+
+def test_settings_validation_error_does_not_expose_input_canary() -> None:
+    settings_type = config_module().PostDraftUsageSettings
+    with pytest.raises(ValueError) as error:
+        settings_type(_env_file=None, AI_POST_DRAFT_USER_REQUEST_LIMIT=CANARY)
+    observed = " ".join((str(error.value), repr(error.value)))
+    assert CANARY not in observed
 
 
 @pytest.mark.parametrize(

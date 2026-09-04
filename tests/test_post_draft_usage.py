@@ -156,6 +156,23 @@ def test_rate_policy_rejects_guild_daily_limit_above_global_daily() -> None:
         PostDraftRateLimitPolicy(guild_daily_request_limit=51, global_daily_request_limit=50)
 
 
+def test_usage_policy_directly_rejects_mismatched_global_daily_limits() -> None:
+    matching = PostDraftUsagePolicy(
+        operator_budget=PostDraftOperatorBudgetPolicy(daily_request_limit=60),
+        rate_limit=PostDraftRateLimitPolicy(global_daily_request_limit=60),
+    )
+    assert matching.operator_budget.daily_request_limit == 60
+    assert matching.rate_limit.global_daily_request_limit == 60
+
+    with pytest.raises(ValueError, match="^invalid post draft usage policy$") as error:
+        PostDraftUsagePolicy(
+            operator_budget=PostDraftOperatorBudgetPolicy(daily_request_limit=61),
+            rate_limit=PostDraftRateLimitPolicy(global_daily_request_limit=60),
+        )
+    assert "61" not in str(error.value)
+    assert "60" not in str(error.value)
+
+
 @pytest.mark.parametrize("currency", ["USD", "jpy", "", 1, None])
 def test_operator_policy_rejects_currency_other_than_jpy(currency: object) -> None:
     with pytest.raises(ValueError, match="^invalid post draft usage policy$"):
