@@ -37,13 +37,13 @@ def _strict_bool(value: object) -> bool:
 def _strict_positive_bigint(value: object) -> int:
     if isinstance(value, bool):
         raise ValueError(_INVALID_SETTINGS)  # noqa: TRY004
-    if isinstance(value, int):
+    if type(value) is int:
         parsed = value
     elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
         parsed = int(value)
     else:
         raise ValueError(_INVALID_SETTINGS)
-    if parsed > MAX_POSTGRES_BIGINT:
+    if not 1 <= parsed <= MAX_POSTGRES_BIGINT:
         raise ValueError(_INVALID_SETTINGS)
     return parsed
 
@@ -52,6 +52,12 @@ class PostDraftUsageSettings(BaseSettings):
     """Strict environment representation, independent from core bot settings."""
 
     model_config = _SETTINGS_CONFIG
+
+    def __init__(self, **values: object) -> None:
+        try:
+            super().__init__(**values)
+        except ValidationError:
+            raise ValueError(_INVALID_SETTINGS) from None
 
     enabled: bool = Field(default=False, validation_alias="AI_POST_DRAFT_ENABLED", repr=False)
     user_request_limit: int = Field(
