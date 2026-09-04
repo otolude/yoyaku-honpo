@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -74,6 +75,19 @@ async def test_command_creates_distinct_sessions_and_disabled_ephemeral_views() 
     first, second = interaction(), interaction()
     await runtime.start(first)
     await runtime.start(second)
+    assert {field.name for field in fields(runtime)} == {"composition", "clock"}
+    assert not hasattr(runtime, "sessions")
+    for retained_name in (
+        "session_registry",
+        "interactions",
+        "messages",
+        "interaction_tokens",
+        "provider_client",
+        "openai_client",
+        "db_session",
+        "background_tasks",
+    ):
+        assert not hasattr(runtime, retained_name)
     first_call = first.response.send_message.await_args
     second_call = second.response.send_message.await_args
     first_view = first_call.kwargs["view"]
