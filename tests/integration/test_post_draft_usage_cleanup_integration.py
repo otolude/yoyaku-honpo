@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -21,6 +21,7 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
 )
 
 NOW = datetime(2026, 9, 4, 16, 0, tzinfo=UTC)
+NAME_BUDGET_SENTINEL_KEY = ("daily", date(2037, 12, 31))
 TARGET_TABLES = (
     "post_draft_usage_reservation_receipts",
     "post_draft_rate_limit_buckets",
@@ -49,6 +50,42 @@ async def clean_usage_tables(test_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
     async with test_engine.begin() as connection:
         await connection.execute(text("TRUNCATE " + ", ".join(TARGET_TABLES)))
+
+
+def name_budget_sentinel_filter(key: tuple[str, date]):
+    period_type, period_start = key
+    return (NameGenerationBudgetBucket.period_type == period_type) & (
+        NameGenerationBudgetBucket.period_start == period_start
+    )
+
+
+@pytest_asyncio.fixture
+async def name_budget_sentinel(test_engine: AsyncEngine) -> AsyncIterator[tuple[str, date]]:
+    key = NAME_BUDGET_SENTINEL_KEY
+    async with factory(test_engine).begin() as session:
+        existing = await session.scalar(
+            select(func.count())
+            .select_from(NameGenerationBudgetBucket)
+            .where(name_budget_sentinel_filter(key))
+        )
+        assert existing == 0
+        session.add(
+            NameGenerationBudgetBucket(
+                period_type=key[0],
+                period_start=key[1],
+                reserved_request_count=1,
+                reserved_cost_microunits=1,
+                version=1,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    yield key
+    async with factory(test_engine).begin() as session:
+        deleted = await session.execute(
+            delete(NameGenerationBudgetBucket).where(name_budget_sentinel_filter(key))
+        )
+        assert deleted.rowcount == 1
 
 
 async def counts(engine: AsyncEngine) -> tuple[int, int, int]:
@@ -166,6 +203,7 @@ async def test_operator_cleanup_uses_strict_jst_daily_and_monthly_date_boundarie
 @pytest.mark.asyncio
 async def test_all_classifications_commit_once_with_exact_counts_and_other_tables_unchanged(
     test_engine: AsyncEngine,
+    name_budget_sentinel: tuple[str, date],
 ) -> None:
     async with factory(test_engine).begin() as session:
         session.add_all(
@@ -174,15 +212,6 @@ async def test_all_classifications_commit_once_with_exact_counts_and_other_table
                 rate(scope="user", window="short", start=NOW - timedelta(days=7), scope_id=10),
                 rate(scope="guild", window="daily", start=NOW - timedelta(days=30), scope_id=11),
                 operator(period="daily", start=date(2026, 6, 6)),
-                NameGenerationBudgetBucket(
-                    period_type="daily",
-                    period_start=date(2026, 1, 1),
-                    reserved_request_count=1,
-                    reserved_cost_microunits=1,
-                    version=1,
-                    created_at=NOW,
-                    updated_at=NOW,
-                ),
             ]
         )
     async with factory(test_engine)() as session:
@@ -191,6 +220,13 @@ async def test_all_classifications_commit_once_with_exact_counts_and_other_table
             await session.scalar(select(func.count()).select_from(OperationLog)),
             await session.scalar(select(func.count()).select_from(NameGenerationBudgetBucket)),
         )
+        sentinel_before = await session.scalar(
+            select(func.count())
+            .select_from(NameGenerationBudgetBucket)
+            .where(name_budget_sentinel_filter(name_budget_sentinel))
+        )
+    assert before == (0, 0, 1)
+    assert sentinel_before == 1
     result = await run_cleanup(test_engine)
     assert (
         result.deleted_receipt_count,
@@ -204,7 +240,13 @@ async def test_all_classifications_commit_once_with_exact_counts_and_other_table
             await session.scalar(select(func.count()).select_from(OperationLog)),
             await session.scalar(select(func.count()).select_from(NameGenerationBudgetBucket)),
         )
-    assert after == before
+        sentinel_after = await session.scalar(
+            select(func.count())
+            .select_from(NameGenerationBudgetBucket)
+            .where(name_budget_sentinel_filter(name_budget_sentinel))
+        )
+    assert after == (0, 0, 1)
+    assert sentinel_after == 1
 
 
 @pytest.mark.asyncio
