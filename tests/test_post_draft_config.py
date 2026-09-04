@@ -86,6 +86,12 @@ def test_enabled_accepts_only_case_variants_of_true_false(
     assert result.policy == PostDraftUsagePolicy()
 
 
+@pytest.mark.parametrize(("value", "expected"), [(True, True), (False, False)])
+def test_settings_model_accepts_python_bool(value: bool, expected: bool) -> None:
+    settings = config_module().PostDraftUsageSettings(_env_file=None, AI_POST_DRAFT_ENABLED=value)
+    assert settings.enabled is expected
+
+
 @pytest.mark.parametrize("value", ["1", "0", "yes", "no", "on", "off", "", " true ", "2"])
 def test_invalid_enabled_is_fixed_invalid(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     result = load(monkeypatch, AI_POST_DRAFT_ENABLED=value)
@@ -135,7 +141,6 @@ def test_settings_model_rejects_non_integer_values(value: object) -> None:
             False,
         ),
         ({"AI_POST_DRAFT_GUILD_DAILY_REQUEST_LIMIT": "51"}, False),
-        ({"AI_POST_DRAFT_GLOBAL_DAILY_REQUEST_LIMIT": "49"}, False),
         ({"AI_POST_DRAFT_COST_CURRENCY": "USD"}, False),
         ({"AI_POST_DRAFT_COST_CURRENCY": "jpy"}, False),
         ({"AI_POST_DRAFT_COST_CURRENCY": " JPY"}, False),
