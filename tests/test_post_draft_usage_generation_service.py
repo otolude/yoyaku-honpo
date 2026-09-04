@@ -33,6 +33,16 @@ from discord_ai_reminder_bot.domain.post_draft_usage import (
 
 MODULE_NAME = "discord_ai_reminder_bot.application.post_draft_usage_generation"
 MODULE_PATH = Path("src/discord_ai_reminder_bot/application/post_draft_usage_generation.py")
+ALLOWED_APPLICATION_IMPORT_MODULES = frozenset(
+    {
+        "__future__",
+        "asyncio",
+        "discord_ai_reminder_bot.application.post_draft_generation",
+        "discord_ai_reminder_bot.application.post_draft_usage",
+        "discord_ai_reminder_bot.domain.post_draft_generation",
+        "discord_ai_reminder_bot.domain.post_draft_usage",
+    }
+)
 PURPOSE_CANARY = "orchestration-purpose-private-canary"
 POINTS_CANARY = "orchestration-points-private-canary"
 DRAFT_CANARY = "orchestration-draft-private-canary"
@@ -57,6 +67,22 @@ def usage_error_type():
     module = orchestration_module()
     assert hasattr(module, "PostDraftUsageError")
     return module.PostDraftUsageError
+
+
+def imported_modules(source: str) -> tuple[str, ...]:
+    modules: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            modules.append(f"{'.' * node.level}{module}")
+    return tuple(modules)
+
+
+def assert_application_imports_are_allowed(source: str) -> None:
+    unexpected = set(imported_modules(source)) - ALLOWED_APPLICATION_IMPORT_MODULES
+    assert not unexpected, f"unexpected application imports: {sorted(unexpected)!r}"
 
 
 def request() -> PostDraftGenerationRequest:
@@ -363,22 +389,50 @@ def test_constructor_and_public_method_are_application_only_boundaries() -> None
 
 
 def test_application_module_has_no_infrastructure_or_external_imports() -> None:
-    tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
-    imported = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    }
-    assert not any("infrastructure" in name or "schedule" in name for name in imported)
-    assert not any(
-        name == forbidden or name.startswith(f"{forbidden}.")
-        for name in imported
-        for forbidden in ("sqlalchemy", "openai", "discord")
-    )
     source = MODULE_PATH.read_text(encoding="utf-8")
+    assert_application_imports_are_allowed(source)
     assert "logging" not in source
     assert "retry" not in source.lower()
     assert "refund" not in source.lower()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import sqlalchemy",
+        "from sqlalchemy import select",
+        "import discord",
+        "from discord import Interaction",
+        "from discord_ai_reminder_bot.infrastructure.database import models",
+        "from discord_ai_reminder_bot.domain.models import Schedule",
+        "from arbitrary.audit import OperationLog",
+        "from ..infrastructure import database",
+        "import sqlalchemy as sa",
+        "from discord import Interaction as DiscordInteraction",
+    ),
+)
+def test_application_import_guard_rejects_non_allowlisted_imports(source: str) -> None:
+    with pytest.raises(AssertionError, match="^unexpected application imports:"):
+        assert_application_imports_are_allowed(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        MODULE_PATH.read_text(encoding="utf-8"),
+        "import asyncio",
+        (
+            "from discord_ai_reminder_bot.application.post_draft_generation import "
+            "GeneratePostDraftService"
+        ),
+        "# import sqlalchemy",
+        "'''from discord import Interaction'''",
+        "value = 'import openai'",
+        "from discord_ai_reminder_bot.domain.post_draft_usage import PostDraftUsageReservationCode",
+    ),
+)
+def test_application_import_guard_allows_only_allowlisted_imports(source: str) -> None:
+    assert_application_imports_are_allowed(source)
 
 
 def test_enabled_requires_an_actual_bool() -> None:
