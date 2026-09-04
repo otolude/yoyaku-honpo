@@ -758,6 +758,33 @@ async def test_mode_transport_failure_aborts_without_retry(mode_custom_id: str) 
 
 
 @pytest.mark.asyncio
+async def test_initial_send_failure_aborts_without_retry() -> None:
+    adapter, service = ui()
+    attempted = interaction()
+    attempted.response.send_message.side_effect = RuntimeError(CANARY)
+    await send_post_draft_mode(attempted, ui=adapter)
+    assert attempted.response.send_message.await_count == 1
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert adapter._active_component is None
+    assert service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_two_simultaneous_mode_transitions_call_discord_once() -> None:
+    adapter, service = ui()
+    view = create_post_draft_mode_view(ui=adapter)
+    first, second = interaction(), interaction()
+    await asyncio.gather(
+        item(view, "post_draft_mode_ai").callback(first),
+        item(view, "post_draft_mode_ai").callback(second),
+    )
+    assert first.response.edit_message.await_count + second.response.edit_message.await_count == 1
+    assert first.response.send_message.await_count + second.response.send_message.await_count == 1
+    assert adapter.controller.session.state is PostDraftUISessionState.AI_INPUT
+    assert service.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_ai_settings_send_modal_failure_aborts_without_second_response() -> None:
     adapter, service = ui()
     mode = create_post_draft_mode_view(ui=adapter)

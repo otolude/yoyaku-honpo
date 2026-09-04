@@ -111,7 +111,11 @@ class PostDraftDiscordUI:
     __slots__ = (
         "_active_component",
         "_now",
+        "_pending_component",
+        "_pending_lease",
+        "_pending_source",
         "_reservation_factory",
+        "_transition_generation",
         "_ui_generation",
         "_ui_lock",
         "controller",
@@ -135,6 +139,10 @@ class PostDraftDiscordUI:
             raise TypeError("invalid post draft Discord UI dependency")
         self.controller = controller
         self._active_component: _PostDraftView | _PostDraftModal | None = None
+        self._pending_component: _PostDraftView | _PostDraftModal | None = None
+        self._pending_source: _PostDraftView | _PostDraftModal | None = None
+        self._pending_lease: int | None = None
+        self._transition_generation = 0
         self._ui_generation = 0
         self._ui_lock = asyncio.Lock()
         self._now = now
@@ -166,18 +174,13 @@ class PostDraftDiscordUI:
         component._consumed = False
         self._active_component = component
 
-    async def activate(self, component: _PostDraftView | _PostDraftModal) -> None:
-        async with self._ui_lock:
-            if self._active_component is not None:
-                self._stop_component(self._active_component)
-            self._ui_generation += 1
-            component._ui_token = self._ui_generation
-            component._consumed = False
-            self._active_component = component
-
     async def claim(self, component: _PostDraftView | _PostDraftModal, *, consume: bool) -> bool:
         async with self._ui_lock:
-            if self._active_component is None and component._ui_token is None:
+            if (
+                self._active_component is None
+                and component._ui_token is None
+                and not component._consumed
+            ):
                 self._ui_generation += 1
                 component._ui_token = self._ui_generation
                 self._active_component = component
@@ -223,6 +226,110 @@ class PostDraftDiscordUI:
             self._active_component = None
             return True
 
+    async def begin_transition(self, source: _PostDraftView | _PostDraftModal | None) -> int | None:
+        async with self._ui_lock:
+            if self._pending_lease is not None:
+                return None
+            if source is not None:
+                if (
+                    self._active_component is None
+                    and source._ui_token is None
+                    and not source._consumed
+                ):
+                    self._ui_generation += 1
+                    source._ui_token = self._ui_generation
+                    self._active_component = source
+                if (
+                    self._active_component is not source
+                    or source._ui_token != self._ui_generation
+                    or source._consumed
+                ):
+                    return None
+                source._consumed = True
+            self._transition_generation += 1
+            lease = self._transition_generation
+            self._pending_lease = lease
+            self._pending_source = source
+            self._pending_component = None
+            return lease
+
+    async def set_pending(self, lease: int, component: _PostDraftView | _PostDraftModal) -> bool:
+        async with self._ui_lock:
+            if self._pending_lease != lease or self._pending_component is not None:
+                self._stop_component(component)
+                component._consumed = True
+                return False
+            component._consumed = True
+            self._pending_component = component
+            return True
+
+    async def commit_transition(self, lease: int) -> bool:
+        async with self._ui_lock:
+            if self._pending_lease != lease:
+                return False
+            source = self._pending_source
+            pending = self._pending_component
+            if source is not None:
+                self._stop_component(source)
+            if pending is None:
+                self._active_component = None
+            else:
+                self._ui_generation += 1
+                pending._ui_token = self._ui_generation
+                pending._consumed = False
+                self._active_component = pending
+            self._pending_lease = None
+            self._pending_source = None
+            self._pending_component = None
+            return True
+
+    async def release_transition(self, lease: int) -> None:
+        async with self._ui_lock:
+            if self._pending_lease != lease:
+                return
+            source = self._pending_source
+            pending = self._pending_component
+            if pending is not None:
+                pending._consumed = True
+                self._stop_component(pending)
+            if source is not None and self._active_component is source:
+                source._consumed = False
+            self._pending_lease = None
+            self._pending_source = None
+            self._pending_component = None
+
+    async def abort_transition(self, lease: int) -> bool:
+        async with self._ui_lock:
+            if self._pending_lease != lease:
+                return False
+            source = self._pending_source
+            pending = self._pending_component
+            if source is not None:
+                source._consumed = True
+                self._stop_component(source)
+            if pending is not None:
+                pending._consumed = True
+                self._stop_component(pending)
+            if self._active_component is source:
+                self._active_component = None
+            self._pending_lease = None
+            self._pending_source = None
+            self._pending_component = None
+            return True
+
+    async def abort_transport(self, lease: int) -> None:
+        if not await self.abort_transition(lease):
+            return
+        session = self.controller.session
+        try:
+            await self.controller.cancel(
+                owner_user_id=session.owner_user_id,
+                guild_id=session.guild_id,
+                now=self._now(),
+            )
+        except PostDraftUISessionError:
+            pass
+
     async def interaction_allowed(self, interaction: discord.Interaction) -> bool:
         user_id, guild_id = self.ids(interaction)
         session = self.controller.session
@@ -244,7 +351,8 @@ class PostDraftDiscordUI:
     async def choose_manual(
         self, interaction: discord.Interaction, component: _PostDraftView | None = None
     ) -> None:
-        if component is not None and not await self.claim(component, consume=True):
+        lease = await self.begin_transition(component)
+        if lease is None:
             await _respond_stale(interaction)
             return
         user_id, guild_id = self.ids(interaction)
@@ -253,17 +361,27 @@ class PostDraftDiscordUI:
                 owner_user_id=user_id, guild_id=guild_id, now=self._now()
             )
             modal = PostDraftManualInputModal(ui=self, timeout=self.timeout_seconds)
-            await self.activate(modal)
-            await interaction.response.send_modal(modal)
+            if not await self.set_pending(lease, modal):
+                return
         except PostDraftUISessionError as error:
+            await self.release_transition(lease)
             await _respond_error(interaction, error.code)
-        except Exception:  # noqa: BLE001 - Discord and callback details remain private
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            return
+        failed = False
+        try:
+            await interaction.response.send_modal(modal)
+        except Exception:  # noqa: BLE001 - transport details remain private
+            failed = True
+        if failed:
+            await self.abort_transport(lease)
+            return
+        await self.commit_transition(lease)
 
     async def choose_ai(
         self, interaction: discord.Interaction, component: _PostDraftView | None = None
     ) -> None:
-        if component is not None and not await self.claim(component, consume=True):
+        lease = await self.begin_transition(component)
+        if lease is None:
             await _respond_stale(interaction)
             return
         user_id, guild_id = self.ids(interaction)
@@ -272,17 +390,26 @@ class PostDraftDiscordUI:
                 owner_user_id=user_id, guild_id=guild_id, now=self._now()
             )
             view = PostDraftAISettingsView(ui=self, timeout=self.timeout_seconds)
-            await self.activate(view)
+            if not await self.set_pending(lease, view):
+                return
+        except PostDraftUISessionError as error:
+            await self.release_transition(lease)
+            await _respond_error(interaction, error.code)
+            return
+        failed = False
+        try:
             await interaction.response.edit_message(
                 content=AI_NOTICE,
                 embed=None,
                 view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
         except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            failed = True
+        if failed:
+            await self.abort_transport(lease)
+            return
+        await self.commit_transition(lease)
 
     async def cancel(
         self, interaction: discord.Interaction, component: _PostDraftView | None = None
@@ -295,16 +422,18 @@ class PostDraftDiscordUI:
             await self.controller.cancel(owner_user_id=user_id, guild_id=guild_id, now=self._now())
             if component is not None:
                 await self.deactivate(component)
+        except PostDraftUISessionError as error:
+            await _respond_error(interaction, error.code)
+            return
+        try:
             await interaction.response.edit_message(
                 content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
                 embed=None,
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
-        except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+        except Exception:  # noqa: BLE001, S110 - transport failure is intentionally terminal
+            pass
 
     async def expire(self) -> None:
         session = self.controller.session
@@ -325,19 +454,41 @@ class PostDraftDiscordUI:
         key_points: str,
         request: PostDraftGenerationRequest | None = None,
         component_interaction: bool = False,
+        lease: int | None = None,
     ) -> None:
-        if component_interaction:
-            await interaction.response.defer()
-        else:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+        active_lease = lease if lease is not None else await self.begin_transition(None)
+        if active_lease is None:
+            await _respond_stale(interaction)
+            return
+        failed = False
+        try:
+            if component_interaction:
+                await interaction.response.defer()
+            else:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception:  # noqa: BLE001
+            failed = True
+        if failed:
+            await self.abort_transport(active_lease)
+            return
         generating_view = PostDraftGeneratingView(ui=self, timeout=self.timeout_seconds)
-        await self.activate(generating_view)
-        await interaction.edit_original_response(
-            content=GENERATING_MESSAGE,
-            embed=None,
-            view=generating_view,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        if not await self.set_pending(active_lease, generating_view):
+            return
+        failed = False
+        try:
+            await interaction.edit_original_response(
+                content=GENERATING_MESSAGE,
+                embed=None,
+                view=generating_view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:  # noqa: BLE001
+            failed = True
+        if failed:
+            await self.abort_transport(active_lease)
+            return
+        if not await self.commit_transition(active_lease):
+            return
         user_id, guild_id = self.ids(interaction)
         failure = PostDraftUIErrorCode.UNKNOWN
         try:
@@ -357,12 +508,15 @@ class PostDraftDiscordUI:
             )
         except asyncio.CancelledError:
             if await self.deactivate(generating_view):
-                await interaction.edit_original_response(
-                    content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
-                    embed=None,
-                    view=None,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                try:
+                    await interaction.edit_original_response(
+                        content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
+                        embed=None,
+                        view=None,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except Exception:  # noqa: BLE001, S110 - cancellation remains authoritative
+                    pass
             raise
         except PostDraftUISessionError as error:
             failure = error.code
@@ -372,18 +526,36 @@ class PostDraftDiscordUI:
             failure = PostDraftUIErrorCode.UNKNOWN
         else:
             preview = PostDraftPreviewView(ui=self, timeout=self.timeout_seconds)
-            if not await self.claim(generating_view, consume=True):
+            preview_lease = await self.begin_transition(generating_view)
+            if preview_lease is None or not await self.set_pending(preview_lease, preview):
                 return
-            await self.activate(preview)
-            await _edit_deferred_preview(interaction, view=preview, draft=draft)
+            failed = False
+            try:
+                await _edit_deferred_preview(interaction, view=preview, draft=draft)
+            except Exception:  # noqa: BLE001
+                failed = True
+            if failed:
+                await self.abort_transport(preview_lease)
+                return
+            await self.commit_transition(preview_lease)
             return
-        if await self.deactivate(generating_view):
+        error_lease = await self.begin_transition(generating_view)
+        if error_lease is None:
+            return
+        failed = False
+        try:
             await interaction.edit_original_response(
                 content=post_draft_ui_error_message(failure),
                 embed=None,
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+        except Exception:  # noqa: BLE001
+            failed = True
+        if failed:
+            await self.abort_transport(error_lease)
+            return
+        await self.commit_transition(error_lease)
 
     async def timeout_view(self, view: discord.ui.View) -> None:
         if not isinstance(view, _PostDraftView) or not await self.claim(view, consume=True):
@@ -485,7 +657,7 @@ class PostDraftAISettingsView(_PostDraftView):
         cancel = discord.ui.Button(
             label="キャンセル", style=discord.ButtonStyle.danger, custom_id=CANCEL_CUSTOM_ID
         )
-        cancel.callback = ui.cancel
+        cancel.callback = self._cancel
         self.add_item(cancel)
 
     async def _select_tone(self, interaction: discord.Interaction) -> None:
@@ -495,8 +667,12 @@ class PostDraftAISettingsView(_PostDraftView):
                 await _respond_stale(interaction)
                 return
             await interaction.response.defer()
-        except Exception:  # noqa: BLE001
+        except TypeError, ValueError, IndexError:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+        except Exception:  # noqa: BLE001
+            lease = await self.ui.begin_transition(self)
+            if lease is not None:
+                await self.ui.abort_transport(lease)
 
     async def _select_length(self, interaction: discord.Interaction) -> None:
         select = cast(discord.ui.Select[object], item_by_id(self, LENGTH_CUSTOM_ID))
@@ -505,16 +681,33 @@ class PostDraftAISettingsView(_PostDraftView):
                 await _respond_stale(interaction)
                 return
             await interaction.response.defer()
-        except Exception:  # noqa: BLE001
+        except TypeError, ValueError, IndexError:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+        except Exception:  # noqa: BLE001
+            lease = await self.ui.begin_transition(self)
+            if lease is not None:
+                await self.ui.abort_transport(lease)
 
     async def _open_input(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         modal = PostDraftAIInputModal(ui=self.ui, timeout=self.ui.timeout_seconds)
-        await self.ui.activate(modal)
-        await interaction.response.send_modal(modal)
+        if not await self.ui.set_pending(lease, modal):
+            return
+        failed = False
+        try:
+            await interaction.response.send_modal(modal)
+        except Exception:  # noqa: BLE001
+            failed = True
+        if failed:
+            await self.ui.abort_transport(lease)
+            return
+        await self.ui.commit_transition(lease)
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        await self.ui.cancel(interaction, self)
 
 
 class PostDraftPreviewView(_PostDraftView):
@@ -532,7 +725,8 @@ class PostDraftPreviewView(_PostDraftView):
             self.add_item(button)
 
     async def _edit(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         user_id, guild_id = self.ui.ids(interaction)
@@ -546,15 +740,25 @@ class PostDraftPreviewView(_PostDraftView):
             modal = PostDraftEditModal(
                 ui=self.ui, timeout=self.ui.timeout_seconds, current_body=draft.value
             )
-            await self.ui.activate(modal)
-            await interaction.response.send_modal(modal)
+            if not await self.ui.set_pending(lease, modal):
+                return
         except PostDraftUISessionError as error:
+            await self.ui.release_transition(lease)
             await _respond_error(interaction, error.code)
+            return
+        failed = False
+        try:
+            await interaction.response.send_modal(modal)
         except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            failed = True
+        if failed:
+            await self.ui.abort_transport(lease)
+            return
+        await self.ui.commit_transition(lease)
 
     async def _regenerate(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         request = self.ui.controller.session.request
@@ -567,6 +771,7 @@ class PostDraftPreviewView(_PostDraftView):
             key_points=request.key_points,
             request=request,
             component_interaction=True,
+            lease=lease,
         )
 
     async def _accept(self, interaction: discord.Interaction) -> None:
@@ -579,16 +784,18 @@ class PostDraftPreviewView(_PostDraftView):
                 owner_user_id=user_id, guild_id=guild_id, now=self.ui._now()
             )
             await self.ui.deactivate(self)
+        except PostDraftUISessionError as error:
+            await _respond_error(interaction, error.code)
+            return
+        try:
             await interaction.response.edit_message(
                 content=ACCEPTED_MESSAGE,
                 embed=None,
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
-        except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+        except Exception:  # noqa: BLE001, S110 - accepted state remains authoritative
+            pass
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         await self.ui.cancel(interaction, self)
@@ -654,11 +861,15 @@ class PostDraftAIInputModal(_PostDraftModal):
         self.add_item(self.key_points_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         await self.ui.generate(
-            interaction, purpose=self.purpose.value, key_points=self.key_points.value
+            interaction,
+            purpose=self.purpose.value,
+            key_points=self.key_points.value,
+            lease=lease,
         )
 
 
@@ -678,7 +889,8 @@ class PostDraftManualInputModal(_PostDraftModal):
         self.add_item(self.body_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         user_id, guild_id = self.ui.ids(interaction)
@@ -690,16 +902,25 @@ class PostDraftManualInputModal(_PostDraftModal):
                 now=self.ui._now(),
             )
             preview = PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds)
-            await self.ui.activate(preview)
+            if not await self.ui.set_pending(lease, preview):
+                return
+        except PostDraftUISessionError as error:
+            await self.ui.release_transition(lease)
+            await _respond_error(interaction, error.code)
+            return
+        failed = False
+        try:
             await _send_initial(
                 interaction,
                 embed=_preview_embed(draft),
                 view=preview,
             )
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
         except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            failed = True
+        if failed:
+            await self.ui.abort_transport(lease)
+            return
+        await self.ui.commit_transition(lease)
 
 
 class PostDraftEditModal(_PostDraftModal):
@@ -719,7 +940,8 @@ class PostDraftEditModal(_PostDraftModal):
         self.add_item(self.body_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not await self.ui.claim(self, consume=True):
+        lease = await self.ui.begin_transition(self)
+        if lease is None:
             await _respond_stale(interaction)
             return
         user_id, guild_id = self.ui.ids(interaction)
@@ -731,16 +953,25 @@ class PostDraftEditModal(_PostDraftModal):
                 now=self.ui._now(),
             )
             preview = PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds)
-            await self.ui.activate(preview)
+            if not await self.ui.set_pending(lease, preview):
+                return
+        except PostDraftUISessionError as error:
+            await self.ui.release_transition(lease)
+            await _respond_error(interaction, error.code)
+            return
+        failed = False
+        try:
             await _send_initial(
                 interaction,
                 embed=_preview_embed(draft),
                 view=preview,
             )
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
         except Exception:  # noqa: BLE001
-            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            failed = True
+        if failed:
+            await self.ui.abort_transport(lease)
+            return
+        await self.ui.commit_transition(lease)
 
 
 def create_post_draft_mode_view(*, ui: PostDraftDiscordUI) -> PostDraftModeView:
@@ -751,14 +982,23 @@ def create_post_draft_mode_view(*, ui: PostDraftDiscordUI) -> PostDraftModeView:
 
 async def send_post_draft_mode(interaction: discord.Interaction, *, ui: PostDraftDiscordUI) -> None:
     """Send the unregistered entry UI only as an ephemeral response."""
-    await _send_initial(
-        interaction,
-        content=(
-            "作成方法を選んでください。AI文章は確認が必要な下書きです。"
-            "AIが利用できない場合は手入力をご利用ください。"
-        ),
-        view=create_post_draft_mode_view(ui=ui),
-    )
+    view = create_post_draft_mode_view(ui=ui)
+    failed = False
+    try:
+        await _send_initial(
+            interaction,
+            content=(
+                "作成方法を選んでください。AI文章は確認が必要な下書きです。"
+                "AIが利用できない場合は手入力をご利用ください。"
+            ),
+            view=view,
+        )
+    except Exception:  # noqa: BLE001
+        failed = True
+    if failed:
+        lease = await ui.begin_transition(view)
+        if lease is not None:
+            await ui.abort_transport(lease)
 
 
 def item_by_id(view: discord.ui.View, custom_id: str) -> discord.ui.Item[object]:
@@ -798,24 +1038,30 @@ async def _send_initial(
 
 async def _respond_error(interaction: discord.Interaction, code: PostDraftUIErrorCode) -> None:
     content = post_draft_ui_error_message(code)
-    if interaction.response.is_done():
-        await interaction.edit_original_response(
-            content=content,
-            embed=None,
-            view=None,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    else:
-        await _send_initial(interaction, content=content)
+    try:
+        if interaction.response.is_done():
+            await interaction.edit_original_response(
+                content=content,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await _send_initial(interaction, content=content)
+    except Exception:  # noqa: BLE001, S110 - never retry a Discord transport failure
+        pass
 
 
 async def _respond_stale(interaction: discord.Interaction) -> None:
-    if interaction.response.is_done():
-        await interaction.edit_original_response(
-            content=STALE_UI_MESSAGE,
-            embed=None,
-            view=None,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    else:
-        await _send_initial(interaction, content=STALE_UI_MESSAGE)
+    try:
+        if interaction.response.is_done():
+            await interaction.edit_original_response(
+                content=STALE_UI_MESSAGE,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await _send_initial(interaction, content=STALE_UI_MESSAGE)
+    except Exception:  # noqa: BLE001, S110 - stale transport failure is terminal
+        pass
