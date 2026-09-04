@@ -103,14 +103,15 @@ def factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 async def counts(engine: AsyncEngine) -> tuple[int, int, int]:
     async with factory(engine)() as session:
-        return tuple(
-            int(await session.scalar(select(func.count()).select_from(model)) or 0)
-            for model in (
-                PostDraftOperatorBudgetBucket,
-                PostDraftRateLimitBucket,
-                PostDraftUsageReservationReceipt,
-            )
-        )
+        values: list[int] = []
+        for model in (
+            PostDraftOperatorBudgetBucket,
+            PostDraftRateLimitBucket,
+            PostDraftUsageReservationReceipt,
+        ):
+            value = await session.scalar(select(func.count()).select_from(model))
+            values.append(int(value or 0))
+        return values[0], values[1], values[2]
 
 
 async def bucket_values(engine: AsyncEngine) -> tuple[tuple[object, ...], ...]:
