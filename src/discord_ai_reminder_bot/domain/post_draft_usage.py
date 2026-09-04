@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -195,3 +195,37 @@ def retention_cutoff(timestamp: datetime, *, retention_days: int) -> datetime:
     instant = _require_aware(timestamp)
     days = _positive_bigint(retention_days)
     return instant - timedelta(days=days)
+
+
+@dataclass(frozen=True, slots=True)
+class PostDraftUsageCleanupCutoffs:
+    """Deterministic UTC and JST-date boundaries for one cleanup transaction."""
+
+    receipt_expires_at: datetime
+    user_window_start: datetime
+    guild_window_start: datetime
+    operator_daily_before: date
+    operator_monthly_before: date
+
+
+def post_draft_usage_cleanup_cutoffs(
+    timestamp: datetime, *, policy: PostDraftUsagePolicy
+) -> PostDraftUsageCleanupCutoffs:
+    """Derive every inclusive or strict retention boundary from one supplied instant."""
+    if not isinstance(policy, PostDraftUsagePolicy):
+        raise ValueError(_INVALID_POLICY)  # noqa: TRY004
+    instant = _require_aware(timestamp)
+    operator_cutoff_day = instant.astimezone(TOKYO).date() - timedelta(
+        days=policy.operator_budget.retention_days
+    )
+    return PostDraftUsageCleanupCutoffs(
+        receipt_expires_at=instant,
+        user_window_start=retention_cutoff(
+            instant, retention_days=policy.rate_limit.user_retention_days
+        ),
+        guild_window_start=retention_cutoff(
+            instant, retention_days=policy.rate_limit.guild_retention_days
+        ),
+        operator_daily_before=operator_cutoff_day,
+        operator_monthly_before=operator_cutoff_day.replace(day=1),
+    )

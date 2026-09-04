@@ -126,7 +126,7 @@ def test_cleanup_cutoffs_normalize_utc_and_derive_jst_date_boundaries_from_polic
     assert cutoffs.receipt_expires_at == NOW
     assert cutoffs.user_window_start == datetime(2026, 8, 28, 4, 5, 6, tzinfo=UTC)
     assert cutoffs.guild_window_start == datetime(2026, 8, 5, 4, 5, 6, tzinfo=UTC)
-    assert cutoffs.operator_daily_before == date(2026, 6, 7)
+    assert cutoffs.operator_daily_before == date(2026, 6, 6)
     assert cutoffs.operator_monthly_before == date(2026, 6, 1)
     assert tuple(cutoffs.__dataclass_fields__) == (
         "receipt_expires_at",

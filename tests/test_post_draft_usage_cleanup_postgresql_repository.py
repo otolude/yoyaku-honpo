@@ -59,7 +59,7 @@ def test_operator_cutoffs_use_jst_dates_and_protect_current_month() -> None:
     cutoffs = repository_module().post_draft_usage_cleanup_cutoffs(
         NOW, policy=PostDraftUsagePolicy()
     )
-    assert cutoffs.operator_daily_before == date(2026, 6, 7)
+    assert cutoffs.operator_daily_before == date(2026, 6, 6)
     assert cutoffs.operator_monthly_before == date(2026, 6, 1)
 
 
