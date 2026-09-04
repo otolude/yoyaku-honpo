@@ -420,3 +420,191 @@ def test_discord_py_version_and_public_types_are_not_runtime_dependencies() -> N
     assert discord.__version__ == "2.7.1"
     source = MODULE.read_text(encoding="utf-8")
     assert "discord" not in imported_modules(source)
+
+
+async def start_blocked_generation(
+    outcomes: list[object] | None = None,
+) -> tuple[PostDraftUISessionController, FakeGenerationService, asyncio.Task[GeneratedPostDraft]]:
+    value, fake = controller(FakeGenerationService(outcomes))
+    fake.block = True
+    await choose_ai(value)
+    task = asyncio.create_task(generate(value))
+    await fake.entered.wait()
+    assert value.session.state is PostDraftUISessionState.GENERATING
+    return value, fake, task
+
+
+async def observe_before_release(operation: object) -> tuple[bool, object]:
+    task = asyncio.create_task(cast(object, operation))  # type: ignore[arg-type]
+    done, _ = await asyncio.wait({task}, timeout=0.05)
+    return bool(done), task
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GeneratedPostDraft("遅延成功"),
+        PostDraftUnavailableError(),
+        RuntimeError(CANARY),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cancel_completes_during_generation_and_discards_late_outcome(
+    outcome: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    value, fake, generation = await start_blocked_generation([outcome])
+    with caplog.at_level(logging.DEBUG):
+        completed, cancel_task = await observe_before_release(
+            value.cancel(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+        )
+        state_before_release = value.session.state
+        fake.release.set()
+        with pytest.raises(PostDraftUISessionError) as caught:
+            await generation
+        await cast(asyncio.Task[None], cancel_task)
+    assert completed
+    assert state_before_release is PostDraftUISessionState.CANCELLED
+    assert value.session.state is PostDraftUISessionState.CANCELLED
+    assert caught.value.code is PostDraftUIErrorCode.CANCELLED
+    assert value.session.request is None
+    assert value.session.current_draft() is None
+    assert fake.calls == 1
+    observed = " ".join(
+        (
+            str(caught.value),
+            repr(caught.value),
+            repr(caught.value.args),
+            repr(vars(caught.value)),
+            "".join(traceback.format_exception(caught.value)),
+            caplog.text,
+        )
+    )
+    assert CANARY not in observed
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "outcome", [GeneratedPostDraft("遅延成功"), PostDraftUnavailableError(), RuntimeError(CANARY)]
+)
+@pytest.mark.asyncio
+async def test_expire_completes_during_generation_and_discards_late_outcome(
+    outcome: object,
+) -> None:
+    value, fake, generation = await start_blocked_generation([outcome])
+    completed, expire_task = await observe_before_release(
+        value.expire(
+            owner_user_id=OWNER,
+            guild_id=GUILD,
+            now=NOW + timedelta(minutes=15),
+        )
+    )
+    state_before_release = value.session.state
+    fake.release.set()
+    with pytest.raises(PostDraftUISessionError) as caught:
+        await generation
+    await cast(asyncio.Task[None], expire_task)
+    assert completed
+    assert state_before_release is PostDraftUISessionState.EXPIRED
+    assert value.session.state is PostDraftUISessionState.EXPIRED
+    assert caught.value.code is PostDraftUIErrorCode.EXPIRED
+    assert value.session.request is None
+    assert value.session.current_draft() is None
+    assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_second_generate_is_rejected_before_first_is_released() -> None:
+    value, fake, first = await start_blocked_generation()
+    second = asyncio.create_task(generate(value))
+    done, _ = await asyncio.wait({second}, timeout=0.05)
+    fake.release.set()
+    assert (await first).value == "生成本文"
+    with pytest.raises(PostDraftUISessionError) as caught:
+        await second
+    assert done
+    assert caught.value.code is PostDraftUIErrorCode.INVALID_TRANSITION
+    assert fake.calls == 1
+
+
+@pytest.mark.parametrize("operation", ["edit", "accept", "manual", "ai", "manual_mode"])
+@pytest.mark.asyncio
+async def test_other_operations_are_rejected_while_generation_is_blocked(
+    operation: str,
+) -> None:
+    value, fake, generation = await start_blocked_generation()
+    operations = {
+        "edit": value.begin_edit(owner_user_id=OWNER, guild_id=GUILD, now=NOW),
+        "accept": value.accept(owner_user_id=OWNER, guild_id=GUILD, now=NOW),
+        "manual": value.submit_manual(text="本文", owner_user_id=OWNER, guild_id=GUILD, now=NOW),
+        "ai": value.choose_ai(owner_user_id=OWNER, guild_id=GUILD, now=NOW),
+        "manual_mode": value.choose_manual(owner_user_id=OWNER, guild_id=GUILD, now=NOW),
+    }
+    selected = operations.pop(operation)
+    for unused in operations.values():
+        unused.close()  # type: ignore[attr-defined]
+    completed, operation_task = await observe_before_release(selected)
+    state_before_release = value.session.state
+    fake.release.set()
+    await generation
+    with pytest.raises(PostDraftUISessionError) as caught:
+        await cast(asyncio.Task[object], operation_task)
+    assert completed
+    assert state_before_release is PostDraftUISessionState.GENERATING
+    assert caught.value.code is PostDraftUIErrorCode.INVALID_TRANSITION
+    assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_coroutine_cancellation_restores_ai_input_and_rethrows_same_object() -> (
+    None
+):
+    cancellation = asyncio.CancelledError()
+    value, fake, generation = await start_blocked_generation([cancellation])
+    fake.release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await generation
+    assert value.session.state is PostDraftUISessionState.AI_INPUT
+    assert value.session.request is None
+    assert value.session.current_draft() is None
+    assert fake.calls == 1
+    assert caught.value is cancellation
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "expired"])
+@pytest.mark.asyncio
+async def test_terminal_operation_wins_race_with_generation_coroutine_cancellation(
+    terminal: str,
+) -> None:
+    cancellation = asyncio.CancelledError()
+    value, fake, generation = await start_blocked_generation([cancellation])
+    if terminal == "cancelled":
+        terminal_operation = value.cancel(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+        expected = PostDraftUISessionState.CANCELLED
+    else:
+        terminal_operation = value.expire(
+            owner_user_id=OWNER,
+            guild_id=GUILD,
+            now=NOW + timedelta(minutes=15),
+        )
+        expected = PostDraftUISessionState.EXPIRED
+    completed, terminal_task = await observe_before_release(terminal_operation)
+    fake.release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await generation
+    await cast(asyncio.Task[None], terminal_task)
+    assert completed
+    assert value.session.state is expected
+    assert value.session.request is None
+    assert value.session.current_draft() is None
+    assert fake.calls == 1
+    assert caught.value is cancellation
+
+
+def test_cancelled_error_code_is_unique_and_background_apis_remain_absent() -> None:
+    assert PostDraftUIErrorCode.CANCELLED.value == "cancelled"
+    assert len({code.value for code in PostDraftUIErrorCode}) == len(PostDraftUIErrorCode)
+    source = MODULE.read_text(encoding="utf-8")
+    assert "create_task" not in source
+    assert "ensure_future" not in source
+    assert "TaskGroup" not in source
