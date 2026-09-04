@@ -41,6 +41,7 @@ AI_NOTICE = (
     "この本文を使用しても予約・投稿はされません。予約は後続画面で明示的に確定します。"
 )
 GENERATING_MESSAGE = "文章を作成しています…"
+STALE_UI_MESSAGE = "この画面は古くなっています。現在の画面から操作してください。"
 ACCEPTED_MESSAGE = (
     "本文を採用しました。まだ予約・投稿はされていません。後続画面で予約を確定してください。"
 )
@@ -108,8 +109,11 @@ class PostDraftDiscordUI:
     """Discord-only presentation adapter retaining no interaction or persistence resource."""
 
     __slots__ = (
+        "_active_component",
         "_now",
         "_reservation_factory",
+        "_ui_generation",
+        "_ui_lock",
         "controller",
         "length",
         "timeout_seconds",
@@ -130,6 +134,9 @@ class PostDraftDiscordUI:
         if not callable(now) or not callable(reservation_factory):
             raise TypeError("invalid post draft Discord UI dependency")
         self.controller = controller
+        self._active_component: _PostDraftView | _PostDraftModal | None = None
+        self._ui_generation = 0
+        self._ui_lock = asyncio.Lock()
         self._now = now
         self._reservation_factory = reservation_factory
         self.timeout_seconds = timeout
@@ -142,6 +149,79 @@ class PostDraftDiscordUI:
     def ids(self, interaction: discord.Interaction) -> tuple[object, object]:
         user = getattr(interaction, "user", None)
         return getattr(user, "id", None), getattr(interaction, "guild_id", None)
+
+    @staticmethod
+    def _stop_component(component: _PostDraftView | _PostDraftModal) -> None:
+        if isinstance(component, discord.ui.View):
+            for child in component.children:
+                if hasattr(child, "disabled"):
+                    child.disabled = True
+        component.stop()
+
+    def activate_initial(self, component: _PostDraftView) -> None:
+        if self._active_component is not None:
+            self._stop_component(self._active_component)
+        self._ui_generation += 1
+        component._ui_token = self._ui_generation
+        component._consumed = False
+        self._active_component = component
+
+    async def activate(self, component: _PostDraftView | _PostDraftModal) -> None:
+        async with self._ui_lock:
+            if self._active_component is not None:
+                self._stop_component(self._active_component)
+            self._ui_generation += 1
+            component._ui_token = self._ui_generation
+            component._consumed = False
+            self._active_component = component
+
+    async def claim(self, component: _PostDraftView | _PostDraftModal, *, consume: bool) -> bool:
+        async with self._ui_lock:
+            if self._active_component is None and component._ui_token is None:
+                self._ui_generation += 1
+                component._ui_token = self._ui_generation
+                self._active_component = component
+            active = (
+                self._active_component is component
+                and component._ui_token == self._ui_generation
+                and not component._consumed
+            )
+            if active and consume:
+                component._consumed = True
+            return active
+
+    async def update_selection(
+        self,
+        component: _PostDraftView,
+        *,
+        tone: PostTone | None = None,
+        length: PostLength | None = None,
+    ) -> bool:
+        async with self._ui_lock:
+            active = (
+                self._active_component is component
+                and component._ui_token == self._ui_generation
+                and not component._consumed
+            )
+            if not active:
+                return False
+            if tone is not None:
+                self.tone = tone
+            if length is not None:
+                self.length = length
+            return True
+
+    async def deactivate(self, component: _PostDraftView | _PostDraftModal) -> bool:
+        async with self._ui_lock:
+            if (
+                self._active_component is not component
+                or component._ui_token != self._ui_generation
+            ):
+                return False
+            component._consumed = True
+            self._stop_component(component)
+            self._active_component = None
+            return True
 
     async def interaction_allowed(self, interaction: discord.Interaction) -> bool:
         user_id, guild_id = self.ids(interaction)
@@ -161,30 +241,42 @@ class PostDraftDiscordUI:
             return False
         return True
 
-    async def choose_manual(self, interaction: discord.Interaction) -> None:
+    async def choose_manual(
+        self, interaction: discord.Interaction, component: _PostDraftView | None = None
+    ) -> None:
+        if component is not None and not await self.claim(component, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ids(interaction)
         try:
             await self.controller.choose_manual(
                 owner_user_id=user_id, guild_id=guild_id, now=self._now()
             )
-            await interaction.response.send_modal(
-                PostDraftManualInputModal(ui=self, timeout=self.timeout_seconds)
-            )
+            modal = PostDraftManualInputModal(ui=self, timeout=self.timeout_seconds)
+            await self.activate(modal)
+            await interaction.response.send_modal(modal)
         except PostDraftUISessionError as error:
             await _respond_error(interaction, error.code)
         except Exception:  # noqa: BLE001 - Discord and callback details remain private
             await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
 
-    async def choose_ai(self, interaction: discord.Interaction) -> None:
+    async def choose_ai(
+        self, interaction: discord.Interaction, component: _PostDraftView | None = None
+    ) -> None:
+        if component is not None and not await self.claim(component, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ids(interaction)
         try:
             await self.controller.choose_ai(
                 owner_user_id=user_id, guild_id=guild_id, now=self._now()
             )
+            view = PostDraftAISettingsView(ui=self, timeout=self.timeout_seconds)
+            await self.activate(view)
             await interaction.response.edit_message(
                 content=AI_NOTICE,
                 embed=None,
-                view=PostDraftAISettingsView(ui=self, timeout=self.timeout_seconds),
+                view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except PostDraftUISessionError as error:
@@ -192,10 +284,17 @@ class PostDraftDiscordUI:
         except Exception:  # noqa: BLE001
             await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
 
-    async def cancel(self, interaction: discord.Interaction) -> None:
+    async def cancel(
+        self, interaction: discord.Interaction, component: _PostDraftView | None = None
+    ) -> None:
+        if component is not None and not await self.claim(component, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ids(interaction)
         try:
             await self.controller.cancel(owner_user_id=user_id, guild_id=guild_id, now=self._now())
+            if component is not None:
+                await self.deactivate(component)
             await interaction.response.edit_message(
                 content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
                 embed=None,
@@ -225,12 +324,18 @@ class PostDraftDiscordUI:
         purpose: str,
         key_points: str,
         request: PostDraftGenerationRequest | None = None,
+        component_interaction: bool = False,
     ) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if component_interaction:
+            await interaction.response.defer()
+        else:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        generating_view = PostDraftGeneratingView(ui=self, timeout=self.timeout_seconds)
+        await self.activate(generating_view)
         await interaction.edit_original_response(
             content=GENERATING_MESSAGE,
             embed=None,
-            view=None,
+            view=generating_view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
         user_id, guild_id = self.ids(interaction)
@@ -251,12 +356,13 @@ class PostDraftDiscordUI:
                 now=instant,
             )
         except asyncio.CancelledError:
-            await interaction.edit_original_response(
-                content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
-                embed=None,
-                view=None,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            if await self.deactivate(generating_view):
+                await interaction.edit_original_response(
+                    content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             raise
         except PostDraftUISessionError as error:
             failure = error.code
@@ -265,27 +371,39 @@ class PostDraftDiscordUI:
         except Exception:  # noqa: BLE001
             failure = PostDraftUIErrorCode.UNKNOWN
         else:
-            await _edit_deferred_preview(interaction, ui=self, draft=draft)
+            preview = PostDraftPreviewView(ui=self, timeout=self.timeout_seconds)
+            if not await self.claim(generating_view, consume=True):
+                return
+            await self.activate(preview)
+            await _edit_deferred_preview(interaction, view=preview, draft=draft)
             return
-        await interaction.edit_original_response(
-            content=post_draft_ui_error_message(failure),
-            embed=None,
-            view=None,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        if await self.deactivate(generating_view):
+            await interaction.edit_original_response(
+                content=post_draft_ui_error_message(failure),
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def timeout_view(self, view: discord.ui.View) -> None:
+        if not isinstance(view, _PostDraftView) or not await self.claim(view, consume=True):
+            return
+        await self.deactivate(view)
         await self.expire()
-        for child in view.children:
-            if hasattr(child, "disabled"):
-                child.disabled = True
-        view.stop()
+
+    async def timeout_modal(self, modal: _PostDraftModal) -> None:
+        if not await self.claim(modal, consume=True):
+            return
+        await self.deactivate(modal)
+        await self.expire()
 
 
 class _PostDraftView(discord.ui.View):
     def __init__(self, *, ui: PostDraftDiscordUI, timeout: float) -> None:
         super().__init__(timeout=_validated_timeout(timeout))
         self.ui = ui
+        self._ui_token: int | None = None
+        self._consumed = False
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -309,18 +427,27 @@ class PostDraftModeView(_PostDraftView):
         manual = discord.ui.Button(
             label="手入力", style=discord.ButtonStyle.secondary, custom_id=MODE_MANUAL_CUSTOM_ID
         )
-        manual.callback = ui.choose_manual
+        manual.callback = self._choose_manual
         self.add_item(manual)
         ai = discord.ui.Button(
             label="AIで作成", style=discord.ButtonStyle.primary, custom_id=MODE_AI_CUSTOM_ID
         )
-        ai.callback = ui.choose_ai
+        ai.callback = self._choose_ai
         self.add_item(ai)
         cancel = discord.ui.Button(
             label="キャンセル", style=discord.ButtonStyle.danger, custom_id=CANCEL_CUSTOM_ID
         )
-        cancel.callback = ui.cancel
+        cancel.callback = self._cancel
         self.add_item(cancel)
+
+    async def _choose_manual(self, interaction: discord.Interaction) -> None:
+        await self.ui.choose_manual(interaction, self)
+
+    async def _choose_ai(self, interaction: discord.Interaction) -> None:
+        await self.ui.choose_ai(interaction, self)
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        await self.ui.cancel(interaction, self)
 
 
 class PostDraftAISettingsView(_PostDraftView):
@@ -364,7 +491,9 @@ class PostDraftAISettingsView(_PostDraftView):
     async def _select_tone(self, interaction: discord.Interaction) -> None:
         select = cast(discord.ui.Select[object], item_by_id(self, TONE_CUSTOM_ID))
         try:
-            self.ui.tone = PostTone(select.values[0])
+            if not await self.ui.update_selection(self, tone=PostTone(select.values[0])):
+                await _respond_stale(interaction)
+                return
             await interaction.response.defer()
         except Exception:  # noqa: BLE001
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
@@ -372,15 +501,20 @@ class PostDraftAISettingsView(_PostDraftView):
     async def _select_length(self, interaction: discord.Interaction) -> None:
         select = cast(discord.ui.Select[object], item_by_id(self, LENGTH_CUSTOM_ID))
         try:
-            self.ui.length = PostLength(select.values[0])
+            if not await self.ui.update_selection(self, length=PostLength(select.values[0])):
+                await _respond_stale(interaction)
+                return
             await interaction.response.defer()
         except Exception:  # noqa: BLE001
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
 
     async def _open_input(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(
-            PostDraftAIInputModal(ui=self.ui, timeout=self.ui.timeout_seconds)
-        )
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
+        modal = PostDraftAIInputModal(ui=self.ui, timeout=self.ui.timeout_seconds)
+        await self.ui.activate(modal)
+        await interaction.response.send_modal(modal)
 
 
 class PostDraftPreviewView(_PostDraftView):
@@ -390,7 +524,7 @@ class PostDraftPreviewView(_PostDraftView):
             ("編集", discord.ButtonStyle.secondary, EDIT_CUSTOM_ID, self._edit),
             ("もう一度作成", discord.ButtonStyle.primary, REGENERATE_CUSTOM_ID, self._regenerate),
             ("この本文を使用", discord.ButtonStyle.success, ACCEPT_CUSTOM_ID, self._accept),
-            ("キャンセル", discord.ButtonStyle.danger, CANCEL_CUSTOM_ID, ui.cancel),
+            ("キャンセル", discord.ButtonStyle.danger, CANCEL_CUSTOM_ID, self._cancel),
         )
         for label, style, custom_id, callback in actions:
             button = discord.ui.Button(label=label, style=style, custom_id=custom_id)
@@ -398,6 +532,9 @@ class PostDraftPreviewView(_PostDraftView):
             self.add_item(button)
 
     async def _edit(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ui.ids(interaction)
         try:
             await self.ui.controller.begin_edit(
@@ -406,17 +543,20 @@ class PostDraftPreviewView(_PostDraftView):
             draft = self.ui.controller.session.current_draft()
             if draft is None:
                 raise PostDraftUISessionError(PostDraftUIErrorCode.INVALID_RESPONSE)
-            await interaction.response.send_modal(
-                PostDraftEditModal(
-                    ui=self.ui, timeout=self.ui.timeout_seconds, current_body=draft.value
-                )
+            modal = PostDraftEditModal(
+                ui=self.ui, timeout=self.ui.timeout_seconds, current_body=draft.value
             )
+            await self.ui.activate(modal)
+            await interaction.response.send_modal(modal)
         except PostDraftUISessionError as error:
             await _respond_error(interaction, error.code)
         except Exception:  # noqa: BLE001
             await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
 
     async def _regenerate(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         request = self.ui.controller.session.request
         if request is None:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
@@ -426,14 +566,19 @@ class PostDraftPreviewView(_PostDraftView):
             purpose=request.purpose,
             key_points=request.key_points,
             request=request,
+            component_interaction=True,
         )
 
     async def _accept(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ui.ids(interaction)
         try:
             await self.ui.controller.accept(
                 owner_user_id=user_id, guild_id=guild_id, now=self.ui._now()
             )
+            await self.ui.deactivate(self)
             await interaction.response.edit_message(
                 content=ACCEPTED_MESSAGE,
                 embed=None,
@@ -445,6 +590,22 @@ class PostDraftPreviewView(_PostDraftView):
         except Exception:  # noqa: BLE001
             await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
 
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        await self.ui.cancel(interaction, self)
+
+
+class PostDraftGeneratingView(_PostDraftView):
+    def __init__(self, *, ui: PostDraftDiscordUI, timeout: float) -> None:
+        super().__init__(ui=ui, timeout=timeout)
+        cancel = discord.ui.Button(
+            label="キャンセル", style=discord.ButtonStyle.danger, custom_id=CANCEL_CUSTOM_ID
+        )
+        cancel.callback = self._cancel
+        self.add_item(cancel)
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        await self.ui.cancel(interaction, self)
+
 
 class _PostDraftModal(discord.ui.Modal):
     def __init__(
@@ -452,6 +613,8 @@ class _PostDraftModal(discord.ui.Modal):
     ) -> None:
         super().__init__(title=title, custom_id=custom_id, timeout=_validated_timeout(timeout))
         self.ui = ui
+        self._ui_token: int | None = None
+        self._consumed = False
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -460,8 +623,7 @@ class _PostDraftModal(discord.ui.Modal):
         return await self.ui.interaction_allowed(interaction)
 
     async def on_timeout(self) -> None:
-        await self.ui.expire()
-        self.stop()
+        await self.ui.timeout_modal(self)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
         del error
@@ -492,6 +654,9 @@ class PostDraftAIInputModal(_PostDraftModal):
         self.add_item(self.key_points_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         await self.ui.generate(
             interaction, purpose=self.purpose.value, key_points=self.key_points.value
         )
@@ -513,6 +678,9 @@ class PostDraftManualInputModal(_PostDraftModal):
         self.add_item(self.body_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ui.ids(interaction)
         try:
             draft = await self.ui.controller.submit_manual(
@@ -521,10 +689,12 @@ class PostDraftManualInputModal(_PostDraftModal):
                 guild_id=guild_id,
                 now=self.ui._now(),
             )
+            preview = PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds)
+            await self.ui.activate(preview)
             await _send_initial(
                 interaction,
                 embed=_preview_embed(draft),
-                view=PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds),
+                view=preview,
             )
         except PostDraftUISessionError as error:
             await _respond_error(interaction, error.code)
@@ -549,6 +719,9 @@ class PostDraftEditModal(_PostDraftModal):
         self.add_item(self.body_label)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await self.ui.claim(self, consume=True):
+            await _respond_stale(interaction)
+            return
         user_id, guild_id = self.ui.ids(interaction)
         try:
             draft = await self.ui.controller.confirm_edit(
@@ -557,10 +730,12 @@ class PostDraftEditModal(_PostDraftModal):
                 guild_id=guild_id,
                 now=self.ui._now(),
             )
+            preview = PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds)
+            await self.ui.activate(preview)
             await _send_initial(
                 interaction,
                 embed=_preview_embed(draft),
-                view=PostDraftPreviewView(ui=self.ui, timeout=self.ui.timeout_seconds),
+                view=preview,
             )
         except PostDraftUISessionError as error:
             await _respond_error(interaction, error.code)
@@ -569,7 +744,9 @@ class PostDraftEditModal(_PostDraftModal):
 
 
 def create_post_draft_mode_view(*, ui: PostDraftDiscordUI) -> PostDraftModeView:
-    return PostDraftModeView(ui=ui, timeout=ui.timeout_seconds)
+    view = PostDraftModeView(ui=ui, timeout=ui.timeout_seconds)
+    ui.activate_initial(view)
+    return view
 
 
 async def send_post_draft_mode(interaction: discord.Interaction, *, ui: PostDraftDiscordUI) -> None:
@@ -593,12 +770,12 @@ def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
 
 
 async def _edit_deferred_preview(
-    interaction: discord.Interaction, *, ui: PostDraftDiscordUI, draft: GeneratedPostDraft
+    interaction: discord.Interaction, *, view: PostDraftPreviewView, draft: GeneratedPostDraft
 ) -> None:
     await interaction.edit_original_response(
         content=None,
         embed=_preview_embed(draft),
-        view=PostDraftPreviewView(ui=ui, timeout=ui.timeout_seconds),
+        view=view,
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -630,3 +807,15 @@ async def _respond_error(interaction: discord.Interaction, code: PostDraftUIErro
         )
     else:
         await _send_initial(interaction, content=content)
+
+
+async def _respond_stale(interaction: discord.Interaction) -> None:
+    if interaction.response.is_done():
+        await interaction.edit_original_response(
+            content=STALE_UI_MESSAGE,
+            embed=None,
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    else:
+        await _send_initial(interaction, content=STALE_UI_MESSAGE)

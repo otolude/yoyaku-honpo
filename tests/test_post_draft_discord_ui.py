@@ -509,6 +509,21 @@ async def test_stale_mode_timeout_does_not_expire_new_ai_settings_view() -> None
 
 
 @pytest.mark.asyncio
+async def test_stale_mode_buttons_do_not_call_controller() -> None:
+    adapter, generation = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    first = interaction()
+    await item(mode, "post_draft_mode_ai").callback(first)
+
+    for custom_id in ("post_draft_mode_manual", "post_draft_mode_ai", "post_draft_cancel"):
+        attempted = interaction()
+        await item(mode, custom_id).callback(attempted)
+        assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
+    assert adapter.controller.session.state is PostDraftUISessionState.AI_INPUT
+    assert generation.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_submitted_ai_modal_timeout_does_not_expire_preview() -> None:
     adapter, _ = ui()
     mode = create_post_draft_mode_view(ui=adapter)
@@ -571,6 +586,30 @@ async def test_manual_modal_double_submit_calls_controller_once() -> None:
     assert first.response.send_message.await_count == 1
     assert second.response.send_message.await_count == 1
     assert STALE_MESSAGE in str(second.response.send_message.await_args)
+
+
+@pytest.mark.asyncio
+async def test_submitted_manual_and_edit_modal_timeouts_are_noops() -> None:
+    adapter, _ = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_manual").callback(selected)
+    manual = selected.response.send_modal.await_args.args[0]
+    set_text(manual.body, "最初の本文")
+    submitted = interaction()
+    await manual.on_submit(submitted)
+    await manual.on_timeout()
+    assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
+
+    preview = submitted.response.send_message.await_args.kwargs["view"]
+    edit_click = interaction()
+    await item(preview, "post_draft_edit").callback(edit_click)
+    edit = edit_click.response.send_modal.await_args.args[0]
+    set_text(edit.body, "編集後本文")
+    edited = interaction()
+    await edit.on_submit(edited)
+    await edit.on_timeout()
+    assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
 
 
 @pytest.mark.asyncio
@@ -644,6 +683,24 @@ async def test_stale_generating_timeout_and_cancel_are_noops() -> None:
     assert STALE_MESSAGE in str(stale_cancel.response.send_message.await_args)
     service.release.set()
     await task
+
+
+@pytest.mark.asyncio
+async def test_active_generating_timeout_expires_and_discards_late_result() -> None:
+    service = FakeGenerationService()
+    service.block = True
+    adapter, _ = ui(service)
+    await adapter.controller.choose_ai(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    submitted = interaction()
+    task = asyncio.create_task(adapter.generate(submitted, purpose="目的", key_points="要点"))
+    await service.entered.wait()
+    generating = submitted.edit_original_response.await_args_list[0].kwargs["view"]
+    await generating.on_timeout()
+    assert adapter.controller.session.state is PostDraftUISessionState.EXPIRED
+    service.release.set()
+    await task
+    assert service.calls == 1
+    assert submitted.edit_original_response.await_count == 1
 
 
 def test_ui_manager_does_not_retain_interaction_message_or_public_token() -> None:
