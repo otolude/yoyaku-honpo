@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Callable
 from datetime import datetime
@@ -35,6 +36,13 @@ OPEN_AI_INPUT_CUSTOM_ID = "post_draft_open_ai_input"
 EDIT_CUSTOM_ID = "post_draft_edit"
 REGENERATE_CUSTOM_ID = "post_draft_regenerate"
 ACCEPT_CUSTOM_ID = "post_draft_accept"
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _CancelDeferFailed(Exception):
+    """Detail-free dispatch signal: the failed transport must not be retried."""
+
 
 AI_NOTICE = (
     "AIの文章は下書きです。内容を必ず確認してください。"
@@ -415,8 +423,20 @@ class PostDraftDiscordUI:
     async def cancel(
         self, interaction: discord.Interaction, component: _PostDraftView | None = None
     ) -> None:
+        if interaction.response.is_done():
+            return
+        defer_failed = False
+        try:
+            # A component message update acknowledges without creating a new message.
+            await interaction.response.defer(thinking=False)
+        except Exception:  # noqa: BLE001 - retain neither transport details nor traceback
+            _LOGGER.warning("cancel_defer_failed", extra={"stage": "defer"})
+            defer_failed = True
+        if defer_failed:
+            # Raise outside the handler so the original exception is not chained.
+            raise _CancelDeferFailed
         if component is not None and not await self.claim(component, consume=True):
-            await _respond_stale(interaction)
+            await _render_cancel(interaction, content=STALE_UI_MESSAGE, clear_view=False)
             return
         user_id, guild_id = self.ids(interaction)
         try:
@@ -424,17 +444,16 @@ class PostDraftDiscordUI:
             if component is not None:
                 await self.deactivate(component)
         except PostDraftUISessionError as error:
+            _LOGGER.warning("cancel_controller_failed", extra={"stage": "controller"})
             await _respond_error(interaction, error.code)
             return
-        try:
-            await interaction.response.edit_message(
-                content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED),
-                embed=None,
-                view=None,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except Exception:  # noqa: BLE001, S110 - transport failure is intentionally terminal
-            pass
+        except Exception:  # noqa: BLE001 - report only a fixed stage
+            _LOGGER.warning("cancel_controller_failed", extra={"stage": "controller"})
+            await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
+            return
+        await _render_cancel(
+            interaction, content=post_draft_ui_error_message(PostDraftUIErrorCode.CANCELLED)
+        )
 
     async def expire(self) -> None:
         session = self.controller.session
@@ -590,7 +609,11 @@ class _PostDraftView(discord.ui.View):
     async def on_error(
         self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[object], /
     ) -> None:
+        defer_failed = isinstance(error, _CancelDeferFailed)
         del error, item
+        _LOGGER.warning("view_callback_failed", extra={"stage": "callback"})
+        if defer_failed:
+            return
         await _respond_error(interaction, PostDraftUIErrorCode.UNKNOWN)
 
 
@@ -1062,6 +1085,26 @@ async def _send_initial(
     )
 
 
+async def _render_cancel(
+    interaction: discord.Interaction, *, content: str, clear_view: bool = True
+) -> None:
+    try:
+        if clear_view:
+            await interaction.edit_original_response(
+                content=content,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            # A stale click must not remove the current generation's components.
+            await interaction.edit_original_response(
+                content=content, allowed_mentions=discord.AllowedMentions.none()
+            )
+    except Exception:  # noqa: BLE001 - cancellation stays terminal; no transport retry
+        _LOGGER.warning("cancel_render_failed", extra={"stage": "render"})
+
+
 async def _respond_error(interaction: discord.Interaction, code: PostDraftUIErrorCode) -> None:
     content = post_draft_ui_error_message(code)
     try:
@@ -1074,8 +1117,8 @@ async def _respond_error(interaction: discord.Interaction, code: PostDraftUIErro
             )
         else:
             await _send_initial(interaction, content=content)
-    except Exception:  # noqa: BLE001, S110 - never retry a Discord transport failure
-        pass
+    except Exception:  # noqa: BLE001 - never retry a Discord transport failure
+        _LOGGER.warning("view_error_response_failed", extra={"stage": "error_response"})
 
 
 async def _respond_stale(interaction: discord.Interaction) -> None:

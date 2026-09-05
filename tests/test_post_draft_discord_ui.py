@@ -453,6 +453,7 @@ def test_ui_module_imports_are_default_deny_allowlisted() -> None:
         "__future__",
         "asyncio",
         "math",
+        "logging",
         "collections.abc",
         "datetime",
         "typing",
@@ -518,7 +519,13 @@ async def test_stale_mode_buttons_do_not_call_controller() -> None:
     for custom_id in ("post_draft_mode_manual", "post_draft_mode_ai", "post_draft_cancel"):
         attempted = interaction()
         await item(mode, custom_id).callback(attempted)
-        assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
+        if custom_id == "post_draft_cancel":
+            attempted.response.defer.assert_awaited_once_with(thinking=False)
+            attempted.response.send_message.assert_not_awaited()
+            assert STALE_MESSAGE in str(attempted.edit_original_response.await_args)
+            assert "view" not in attempted.edit_original_response.await_args.kwargs
+        else:
+            assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
     assert adapter.controller.session.state is PostDraftUISessionState.AI_INPUT
     assert generation.calls == 0
 
@@ -631,7 +638,13 @@ async def test_stale_preview_callbacks_do_not_mutate_or_generate() -> None:
     for custom_id in ("post_draft_regenerate", "post_draft_accept", "post_draft_cancel"):
         attempted = interaction()
         await item(stale, custom_id).callback(attempted)
-        assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
+        if custom_id == "post_draft_cancel":
+            attempted.response.defer.assert_awaited_once_with(thinking=False)
+            attempted.response.send_message.assert_not_awaited()
+            assert STALE_MESSAGE in str(attempted.edit_original_response.await_args)
+            assert "view" not in attempted.edit_original_response.await_args.kwargs
+        else:
+            assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
     assert service.calls == calls
     assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
 
@@ -680,7 +693,7 @@ async def test_stale_generating_timeout_and_cancel_are_noops() -> None:
     stale_cancel = interaction()
     await item(generating, "post_draft_cancel").callback(stale_cancel)
     assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
-    assert STALE_MESSAGE in str(stale_cancel.response.send_message.await_args)
+    assert STALE_MESSAGE in str(stale_cancel.edit_original_response.await_args)
     service.release.set()
     await task
 
@@ -735,7 +748,7 @@ async def test_stale_ai_settings_cancel_cannot_cancel_preview() -> None:
     assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
     assert (adapter.tone, adapter.length) == (tone, length)
     assert service.calls == 1
-    assert STALE_MESSAGE in str(stale.response.send_message.await_args)
+    assert STALE_MESSAGE in str(stale.edit_original_response.await_args)
 
 
 @pytest.mark.parametrize("mode_custom_id", ["post_draft_mode_manual", "post_draft_mode_ai"])

@@ -29,6 +29,7 @@ from discord_ai_reminder_bot.bot.post_draft_runtime import (
 )
 from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftModeView
 from discord_ai_reminder_bot.domain.clock import FixedClock
+from discord_ai_reminder_bot.log_config import UtcEventFormatter
 from discord_ai_reminder_bot.post_draft_config import (
     PostDraftUsageSettingsResult,
     PostDraftUsageSettingsState,
@@ -259,7 +260,17 @@ async def dispatch_cancel(case, interaction):
 def assert_cancel_log(caplog, *events):
     records = [r for r in caplog.records if r.name.endswith("post_draft_ui")]
     assert [r.getMessage() for r in records] == list(events)
+    stages = {
+        "cancel_defer_failed": "defer",
+        "cancel_controller_failed": "controller",
+        "cancel_render_failed": "render",
+        "view_callback_failed": "callback",
+        "view_error_response_failed": "error_response",
+    }
     for record in records:
+        assert record.stage == stages[record.getMessage()]
+        assert record.levelname == "WARNING"
+        assert UtcEventFormatter("%(message)s").format(record) == record.getMessage()
         assert not record.args
         assert record.exc_info is None
         assert record.exc_text is None
@@ -372,6 +383,7 @@ async def test_initial_cancel_stale_does_not_change_current_session(initial_canc
     assert case.cancels == []
     assert case.ui.controller.session.state is PostDraftUISessionState.MODE_SELECTION
     assert case.ui._active_component is current and not current.is_finished()
+    assert "view" not in clicked.calls[-1][1]
     assert [method for method, _ in clicked.calls] == ["defer", "render"]
 
 
@@ -379,7 +391,22 @@ async def test_initial_cancel_stale_does_not_change_current_session(initial_canc
 async def test_initial_cancel_double_click_claims_once(initial_cancel):
     case = initial_cancel
     clicks = [StrictCancelInteraction(case.events), StrictCancelInteraction(case.events)]
-    await asyncio.gather(*(dispatch_cancel(case, clicked) for clicked in clicks))
+    lock = case.ui._ui_lock
+    await lock.lock.acquire()
+    tasks = [asyncio.create_task(dispatch_cancel(case, clicked)) for clicked in clicks]
+    try:
+        await asyncio.sleep(0)
+        assert all(clicked.done for clicked in clicks)
+        assert case.cancels == []
+    finally:
+        lock.lock.release()
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     assert len(case.cancels) == 1
     assert case.ui.controller.session.state is PostDraftUISessionState.CANCELLED
     for clicked in clicks:
