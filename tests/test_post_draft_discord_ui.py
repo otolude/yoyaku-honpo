@@ -3,6 +3,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import math
+import re
+import socket
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +30,7 @@ from discord_ai_reminder_bot.bot.post_draft_ui import (
     PostDraftManualInputModal,
     PostDraftModeView,
     PostDraftPreviewView,
+    _preview_embed,
     create_post_draft_mode_view,
     post_draft_ui_error_message,
     send_post_draft_mode,
@@ -44,6 +48,12 @@ GUILD = 456
 CANARY = "discord-ui-private-canary"
 MODULE = Path("src/discord_ai_reminder_bot/bot/post_draft_ui.py")
 STALE_MESSAGE = "この画面は古くなっています。現在の画面から操作してください。"
+USER_MENTION = f"<@{'1' * 17}>"
+ROLE_MENTION = f"<@&{'2' * 17}>"
+CHANNEL_MENTION = f"<#{'3' * 15}>"
+PLAIN_URL = "https://example.invalid/plain"
+MARKDOWN_LINK = "[表示名](https://example.invalid/destination)"
+CHANNEL_MENTION_START = re.compile(r"<(?=#[0-9]{15,20}>)")
 
 
 class FakeGenerationService:
@@ -120,6 +130,24 @@ def item(view: discord.ui.View, custom_id: str) -> discord.ui.Item[object]:
 
 def set_text(text_input: discord.ui.TextInput[object], value: str) -> None:
     text_input._value = value
+
+
+def expected_preview_text(raw: str) -> str:
+    mentions_escaped = discord.utils.escape_mentions(raw)
+    channels_escaped = CHANNEL_MENTION_START.sub("<\u200b", mentions_escaped)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="'count' is passed as positional argument",
+            category=DeprecationWarning,
+            module="discord.utils",
+        )
+        return discord.utils.escape_markdown(channels_escaped, ignore_links=False)
+
+
+def assert_preview_text(actual: str | None, expected: str, message: str) -> None:
+    if actual != expected:
+        pytest.fail(message, pytrace=False)
 
 
 def test_mode_view_structure_and_fixed_custom_ids() -> None:
@@ -360,6 +388,173 @@ async def test_edit_modal_starts_with_current_body_and_replaces_preview() -> Non
     submitted = interaction()
     await modal.on_submit(submitted)
     assert adapter.controller.session.current_draft().value == "変更後"
+
+
+@pytest.mark.asyncio
+async def test_manual_and_edit_preview_escape_only_display_and_accept_keeps_raw() -> None:
+    raw = (
+        f"{USER_MENTION} {ROLE_MENTION} {CHANNEL_MENTION} @mention-like\n"
+        f"{MARKDOWN_LINK}\n"
+        "**太字** *斜体*\n# 見出し\n"
+        "`inline`\n```text\ncode\n```\n"
+        f"日本語と絵文字 🎉\n{PLAIN_URL}\n"
+        "既存\\backslash"
+    )
+    expected = expected_preview_text(raw)
+    adapter, generation = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_manual").callback(selected)
+    manual = selected.response.send_modal.await_args.args[0]
+    set_text(manual.body, raw)
+
+    submitted = interaction()
+    await manual.on_submit(submitted)
+
+    first = submitted.response.send_message.await_args.kwargs
+    assert_preview_text(
+        first["embed"].description,
+        expected,
+        "Manual Preview did not apply the fixed display-only escape sequence",
+    )
+    assert first["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert adapter.controller.session.current_draft().value == raw
+    preview = first["view"]
+    edit_clicked = interaction()
+    await item(preview, "post_draft_edit").callback(edit_clicked)
+    edit = edit_clicked.response.send_modal.await_args.args[0]
+    assert edit.body.default == raw
+    set_text(edit.body, raw)
+
+    edited = interaction()
+    await edit.on_submit(edited)
+
+    second = edited.response.send_message.await_args.kwargs
+    assert_preview_text(
+        second["embed"].description,
+        expected,
+        "Edit Preview did not reuse the Manual Preview display escape",
+    )
+    assert second["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert adapter.controller.session.current_draft().value == raw
+    assert first["embed"].description == second["embed"].description
+    assert PLAIN_URL in second["embed"].description.splitlines()
+    assert USER_MENTION not in second["embed"].description
+    assert ROLE_MENTION not in second["embed"].description
+    assert CHANNEL_MENTION not in second["embed"].description
+    assert generation.calls == 0
+
+    accepted = interaction()
+    await item(second["view"], "post_draft_accept").callback(accepted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert adapter.controller.accepted_draft().value == raw
+    accept_kwargs = accepted.response.edit_message.await_args.kwargs
+    assert accept_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert raw not in accept_kwargs["content"]
+    assert accept_kwargs["embed"] is None
+
+
+def test_preview_plain_url_is_unchanged_and_does_not_open_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network_calls = 0
+
+    def reject_network(*_args: object, **_kwargs: object) -> None:
+        nonlocal network_calls
+        network_calls += 1
+        pytest.fail("Preview generation attempted a network connection", pytrace=False)
+
+    monkeypatch.setattr(socket, "create_connection", reject_network)
+    monkeypatch.setattr(socket.socket, "connect", reject_network)
+    draft = GeneratedPostDraft(PLAIN_URL)
+
+    embed = _preview_embed(draft)
+
+    assert_preview_text(
+        embed.description,
+        PLAIN_URL,
+        "plain URL display must remain identical to the raw URL",
+    )
+    assert draft.value == PLAIN_URL
+    assert network_calls == 0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "\\" * 2_000,
+        "*" * 2_000,
+        ((USER_MENTION + ROLE_MENTION + CHANNEL_MENTION + "\\*`_|~") * 40)[:2_000],
+    ],
+    ids=("backslashes", "markdown_markers", "mixed_mentions_and_markdown"),
+)
+def test_two_thousand_character_preview_escape_is_lossless_and_within_embed_limit(
+    raw: str,
+) -> None:
+    expected = expected_preview_text(raw)
+
+    embed = _preview_embed(GeneratedPostDraft(raw))
+
+    assert len(raw) == 2_000
+    assert_preview_text(
+        embed.description,
+        expected,
+        "2,000-character Preview was truncated, omitted, or escaped out of order",
+    )
+    assert len(expected) <= 4_096
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param("@everyone", id="everyone"),
+        pytest.param("@here", id="here"),
+        pytest.param(" \n ", id="whitespace"),
+        pytest.param("control\x00", id="control"),
+        pytest.param("x" * 2_001, id="over-limit"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_manual_and_edit_body_never_reaches_preview(invalid: str) -> None:
+    manual_adapter, manual_generation = ui()
+    mode = create_post_draft_mode_view(ui=manual_adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_manual").callback(selected)
+    manual = selected.response.send_modal.await_args.args[0]
+    set_text(manual.body, invalid)
+    manual_submitted = interaction()
+
+    await manual.on_submit(manual_submitted)
+
+    manual_kwargs = manual_submitted.response.send_message.await_args.kwargs
+    assert manual_adapter.controller.session.state is PostDraftUISessionState.MANUAL_ENTRY
+    assert manual_adapter.controller.session.current_draft() is None
+    assert manual_kwargs["embed"] is None
+    assert manual_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert manual_generation.calls == 0
+
+    edit_adapter, edit_generation = ui()
+    await edit_adapter.controller.choose_manual(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    await edit_adapter.controller.submit_manual(
+        text="変更前", owner_user_id=OWNER, guild_id=GUILD, now=NOW
+    )
+    preview = PostDraftPreviewView(ui=edit_adapter, timeout=60)
+    edit_adapter.activate_initial(preview)
+    edit_clicked = interaction()
+    await item(preview, "post_draft_edit").callback(edit_clicked)
+    edit = edit_clicked.response.send_modal.await_args.args[0]
+    set_text(edit.body, invalid)
+    edit_submitted = interaction()
+
+    await edit.on_submit(edit_submitted)
+
+    edit_kwargs = edit_submitted.response.send_message.await_args.kwargs
+    assert edit_adapter.controller.session.state is PostDraftUISessionState.EDITING
+    assert edit_adapter.controller.session.current_draft().value == "変更前"
+    assert edit_kwargs["embed"] is None
+    assert edit_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert edit_generation.calls == 0
 
 
 @pytest.mark.asyncio
