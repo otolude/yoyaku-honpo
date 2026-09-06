@@ -1054,34 +1054,58 @@ def item_by_id(view: discord.ui.View, custom_id: str) -> discord.ui.Item[object]
     return next(item for item in view.children if item.custom_id == custom_id)
 
 
-def _escape_channel_mentions_for_preview(value: str) -> str:
-    """Break only Discord ``<#15-20 ASCII digits>`` syntax for display."""
-    parts: list[str] = []
-    cursor = 0
-    while True:
-        marker = value.find("<#", cursor)
-        if marker < 0:
-            parts.append(value[cursor:])
-            return "".join(parts)
-        closing = value.find(">", marker + 2)
-        if closing < 0:
-            parts.append(value[cursor:])
-            return "".join(parts)
-        digits = value[marker + 2 : closing]
-        if 15 <= len(digits) <= 20 and digits.isascii() and digits.isdigit():
-            parts.append(value[cursor:marker])
-            # U+200B keeps the original text recognisable but prevents a channel link.
-            parts.append(f"<\u200b#{digits}>")
-            cursor = closing + 1
-        else:
-            parts.append(value[cursor : marker + 2])
-            cursor = marker + 2
+_PREVIEW_URL_SCHEMES = ("http://", "https://")
+_PREVIEW_URL_TERMINATES = str.isspace
+_PREVIEW_MARKDOWN_CHARACTERS = frozenset("\\*_~`|>#[]")
+_PREVIEW_MENTION_PREFIXES = ("<@!", "<@&", "<@", "<#")
+
+
+def _preview_mention_end(value: str, start: int) -> int | None:
+    prefix = next(
+        (
+            candidate
+            for candidate in _PREVIEW_MENTION_PREFIXES
+            if value.startswith(candidate, start)
+        ),
+        None,
+    )
+    if prefix is None:
+        return None
+    digits_start = start + len(prefix)
+    cursor = digits_start
+    while cursor < len(value) and "0" <= value[cursor] <= "9":
+        cursor += 1
+    if 15 <= cursor - digits_start <= 20 and cursor < len(value) and value[cursor] == ">":
+        return cursor + 1
+    return None
 
 
 def _escape_preview_text(value: str) -> str:
-    mentions_escaped = discord.utils.escape_mentions(value)
-    channels_escaped = _escape_channel_mentions_for_preview(mentions_escaped)
-    return discord.utils.escape_markdown(channels_escaped, ignore_links=False)
+    """Escape untrusted Preview text once without modifying ordinary URL spans."""
+    parts: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        if value.startswith(_PREVIEW_URL_SCHEMES, cursor):
+            url_end = cursor + 1
+            while url_end < len(value) and not _PREVIEW_URL_TERMINATES(value[url_end]):
+                url_end += 1
+            parts.append(value[cursor:url_end])
+            cursor = url_end
+            continue
+
+        mention_end = _preview_mention_end(value, cursor)
+        if mention_end is not None:
+            parts.append("<\u200b")
+            parts.append(value[cursor + 1 : mention_end])
+            cursor = mention_end
+            continue
+
+        character = value[cursor]
+        if character in _PREVIEW_MARKDOWN_CHARACTERS:
+            parts.append("\\")
+        parts.append(character)
+        cursor += 1
+    return "".join(parts)
 
 
 def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
