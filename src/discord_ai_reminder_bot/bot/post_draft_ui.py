@@ -1054,8 +1054,41 @@ def item_by_id(view: discord.ui.View, custom_id: str) -> discord.ui.Item[object]
     return next(item for item in view.children if item.custom_id == custom_id)
 
 
+def _escape_channel_mentions_for_preview(value: str) -> str:
+    """Break only Discord ``<#15-20 ASCII digits>`` syntax for display."""
+    parts: list[str] = []
+    cursor = 0
+    while True:
+        marker = value.find("<#", cursor)
+        if marker < 0:
+            parts.append(value[cursor:])
+            return "".join(parts)
+        closing = value.find(">", marker + 2)
+        if closing < 0:
+            parts.append(value[cursor:])
+            return "".join(parts)
+        digits = value[marker + 2 : closing]
+        if 15 <= len(digits) <= 20 and digits.isascii() and digits.isdigit():
+            parts.append(value[cursor:marker])
+            # U+200B keeps the original text recognisable but prevents a channel link.
+            parts.append(f"<\u200b#{digits}>")
+            cursor = closing + 1
+        else:
+            parts.append(value[cursor : marker + 2])
+            cursor = marker + 2
+
+
+def _escape_preview_text(value: str) -> str:
+    mentions_escaped = discord.utils.escape_mentions(value)
+    channels_escaped = _escape_channel_mentions_for_preview(mentions_escaped)
+    return discord.utils.escape_markdown(channels_escaped, ignore_links=False)
+
+
 def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
-    return discord.Embed(description=draft.value, colour=discord.Colour.blurple())
+    return discord.Embed(
+        description=_escape_preview_text(draft.value),
+        colour=discord.Colour.blurple(),
+    )
 
 
 async def _edit_deferred_preview(
