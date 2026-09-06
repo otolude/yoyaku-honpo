@@ -124,6 +124,7 @@ async def test_application_passes_same_key_and_returns_repository_result() -> No
     assert result.code is IdempotentScheduleCreationCode.CREATED
     passed = repository.create.await_args.args[0]
     assert passed.public_id is key
+    assert repository.create.await_args.kwargs == {"operation_at": NOW}
 
 
 @pytest.mark.asyncio
