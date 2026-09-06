@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きMVP要件
 
-本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態とし、ManualのPreview／Edit／AcceptはUsage予約、DB保存、予約確定、channel投稿へ接続しない。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
+本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、限定したPreview表示escape、`@everyone`／`@here`拒否まで実Discord確認済みである。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態とし、ManualのPreview／Edit／AcceptはUsage予約、DB保存、予約確定、channel投稿へ接続しない。実Provider、AI生成／再生成、2,000文字境界の実Discord確認、IPv6 literal URLの保持、公開投稿接続後のmention安全性、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
 
 ### 目的と操作境界
 
@@ -25,7 +25,7 @@ Provider送信前に、目的と要点が外部AIへ送られること、個人�
 
 ### 入出力・費用・障害境界
 
-- URLとDiscord Markdownは許可する。ただし確認表示では利用者入力としてescapeし、投稿時は既存の`AllowedMentions.none()`境界を維持する。
+- URLとDiscord Markdownは許可する。ただし確認表示ではPreviewの`Embed.description`だけを利用者入力としてescapeし、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。通常HTTP(S) URLはURL文字列を明示したクリック可能表示として維持し、確認したMarkdown link、装飾、code、list、mention構文だけをliteral表示する。IPv6 literal URLは通常URL保持の対象外とする。投稿時の`AllowedMentions.none()`による通知抑止は表示escapeとは別に維持し、ephemeralであることをmention安全性の代替にしない。
 - `@everyone`、`@here`、危険なUnicode制御文字、表示順を偽装し得るbidi制御文字を、利用者入力とProvider出力の両方で拒否する。
 - Provider出力は命令、URL取得、tool call、DB query、予約操作として実行せず、未信頼の文字列として再検証する。
 - Moderation API、自動retry、fallback model、複数候補、利用者文体学習はMVP対象外とする。

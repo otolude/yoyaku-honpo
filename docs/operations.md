@@ -12,7 +12,7 @@
 - user／guild rate limitと永続的な運営Budgetを監視し、再生成、timeout、cancel後の結果不明、Provider結果不明も1回分として集計する。
 - Provider payload／response、例外全文、本文、OpenAI API key、Discord token、DB URL、実IDを通常logへ出さない。
 - Provider disabled、rate limit、Budget超過、timeout、障害時は固定案内から手入力へ戻し、既存の予約作成・編集・配信を停止しない。
-- URLとMarkdownは許可するが、確認画面ではescapeし、配信では`AllowedMentions.none()`を維持する。`@everyone`、`@here`、危険な制御文字・bidi文字は入力・出力の両方で拒否する。
+- URLとMarkdownは許可するが、確認画面の`Embed.description`だけを表示用にescapeし、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。通常HTTP(S) URLはクリック可能表示を許可し、配信では別の境界として`AllowedMentions.none()`を維持する。`@everyone`、`@here`、危険な制御文字・bidi文字は入力・出力の両方で拒否する。
 - MVPではModeration API、自動retry、fallback modelを運用しない。
 
 価格表示は設定済み単価、最大token、為替、安全係数による悲観見積りと明記し、最終請求、税、為替、販売価格の保証としない。単価、モデル、保持、SDK、Provider dashboard条件は実Provider受入直前に再監査する。秘密値をcommand引数、文書、画面資料、通常logへ含めず、固定匿名合成ケースだけで受入する。
@@ -38,6 +38,16 @@ guild syncは今回1回、運用証跡上の累計4回で、global syncは0回�
 Cancelではdefer、Controller cancel、cancelled遷移、original response更新に成功し、timeout表示はなく、componentは無効化または消去された。Manualでは編集後の現在本文だけを表示して旧本文履歴を残さず、Accept後に「まだ予約・投稿されていない」旨を表示してcomponentを消去した。固定失敗event 5種類は各0件だった。
 
 終了時はsupervisor exit code 0、cleanup成功で、Bot／supervisor／container／listenerは停止した。Bot childはSIGINTで終了しprivateの正常停止markerが成立しなかったが、process／containerの停止失敗または受入不合格とはせず、private supervisorの終了観測改善候補として扱う。この記録は一般提供、本番受入、実Provider、AI有効end-to-end、予約保存・確定・投稿、ARM64 Linux実機の確認を意味しない。受入実行中にproduction code、test、Migration、設定は変更していない。
+
+### Phase 4H Preview安全境界回帰検証記録
+
+開発・検証専用Application／Guildで匿名の合成入力を用い、Manual PreviewとEdit後Previewに同じ表示変換が適用され、Edit Modalではraw本文が保たれることを確認した。通常HTTP(S) URLはクリック可能な文字列として対象の記号、query、fragmentを保持した。確認したMarkdown link、bold、italic、strike、inline code、hyphen／numbered listはliteral表示となり、user／nickname user／role／channel mention形式は名前、role、channel linkへ変換されず、LF改行、日本語、Unicode、絵文字は維持された。全画面はephemeralで、mention通知と公開channel投稿は0件だった。表示用escape、`AllowedMentions.none()`による通知抑止、ephemeralは独立した境界であり、この結果を全Markdown、全URL、IPv6 literal URL、または公開投稿接続後の安全性へ一般化しない。
+
+`@everyone`／`@here`を含むManual本文はDomain validationで拒否され、Previewへ到達せず、本文を反射しない固定案内のinitial response attempt／success／normal returnが各1件、応答後の`is_done()`がtrueだった。followup、original response編集、2回目response、Modal `on_error`、timeout、mention通知、公開投稿、`view_error_response_failed`は各0件だった。別の新規PreviewからCancelを1回実行し、defer attempt／success、Controller cancel、original response更新attempt／success、callback正常終了が各1件、claim成功、最終stateが`cancelled`でcomponentを消去した。二重Cancel、stale callback、timeout、および固定失敗event 5種類は各0件だった。
+
+通常pytestは1,781 passed／375 skipped、warning 0だった。入力上限2,000文字に対するPreview scannerのPython `len`／UTF-16 code unitの理論最大は各4,000で、Embed上限4,096以内、truncate／欠落なし、時間・追加メモリともO(N)である。2,000／2,001文字境界は自動テストだけで確認し、実Discordでは実施していない。
+
+command定義が事前確認済みのremoteと同一であることを確かめ、Discord command更新HTTPを送らない起動経路を使用した。送信を伴わないsync代替呼出しは実syncへ数えず、今回の実Guild sync attempt／成功は0／0、確認済み成功累計は4回、過去の結果不明attemptは1回、global syncとcommand更新HTTPは各0回である。generation、Usage reserve、DB保存、予約保存、予約確定、投稿処理、OpenAI client／通信／AI workerも各0件だった。通常開発DBへ接続せず、隔離DBはrevision `c72e91f4b6a3`、11業務table各0件、想定外table 0件を保持した。終了時はsupervisor、Bot child、`postgres_test`がexit code 0で、正常停止とcleanup成功を確認し、全process、container、listenerが停止した。
 
 ## 1. 文書の目的と対象環境
 

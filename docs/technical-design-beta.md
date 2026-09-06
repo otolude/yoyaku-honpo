@@ -12,7 +12,7 @@ Domainで用いるuser 3回／固定10分、guild 30回／JST日、global 50回�
 
 運営全体の安全Budget／rate limitと顧客プランQuotaは別Policyとして扱う。上位プランにも運営全体の安全上限を適用する。Plan／Entitlementとプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称や回数は未決定であり、暫定値を販売上の約束へ転用しない。
 
-本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿へは未接続である。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、限定したPreview表示escape、`@everyone`／`@here`拒否まで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿へは未接続である。実Provider、AI生成／再生成、2,000文字境界の実Discord確認、IPv6 literal URLの保持、公開投稿接続後のmention安全性、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
 
 ### Discord状態遷移
 
@@ -27,6 +27,8 @@ submitをdeferし、rate limitとBudgetを予約してからProviderをone-shot�
 本文生成requestは目的、要点、文体、長さ、固定locale、出力制約だけを持つ。Provider PortへSession、Repository、ORM、Discord object、ID、日時、秘密値を渡さない。Adapterは`store=False`、SDK retry 0、内外timeout、cancel／close、許可モデル、入力byte／token上限、出力再検証を持つ。利用者入力は未信頼データとして固定instructionから分離し、出力をURL取得、tool、command、予約、投稿、DB操作へ接続しない。
 
 URLとMarkdownは文字列として許可する。`@everyone`、`@here`、危険な制御文字・bidi制御文字はProvider呼出前と応答後に拒否する。Moderation API、自動retry、fallback modelはMVPに含めない。
+
+確認表示ではsingle-pass scannerをPreviewの`Embed.description`生成時に1回だけ適用する。ASCII case-insensitiveな`http://`／`https://`から始まり、明示したASCII URI文字だけで構成され、authority相当部分が空でないspanは原文どおりコピーする。通常URL外ではMarkdown制御文字を1文字ずつbackslash escapeし、15～20桁のASCII数字を持つuser／nickname user／role／channel mentionの完全tokenは`<`直後へU+200Bを1文字だけ挿入する。IPv6 literal URLは角括弧を必要とするため通常URL保持の対象外である。生成文字を再走査せず、raw本文へ書き戻さないため、Domain、Session、Edit Modal初期値、Accept本文は不変である。入力2,000文字に対するPython `len`とUTF-16 code unitの理論最大は各4,000で、truncate／欠落なし、時間・追加メモリともO(N)とする。表示escapeは構文のliteral表示、`AllowedMentions.none()`は通知抑止、ephemeralは閲覧範囲の境界であり、互いの代替ではない。
 
 目的、要点、条件、prompt、AI原文、生成履歴、編集途中本文は予約確定までprocess memoryだけに保持し、DBと通常logへ保存しない。確定時も編集・確認済み最終本文だけをScheduleへ保存する。本文生成はSchedule作成前の対話型処理なので`name_generation_jobs`を使用しない。
 
@@ -45,6 +47,12 @@ commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`では、Bot runtimeごとに`P
 Provider gateはfalseのままで、OpenAI client／通信／AI worker、generation service、Usage reserve、Manual経路のDB Session、予約保存、予約確定、投稿処理は各0件だった。隔離DBはrevision `c72e91f4b6a3`のsingle headでAlembic checkに成功し、11業務tableは起動前後とも各0件、想定外tableは0件だった。固定失敗event 5種類も各0件である。終了時は全process、container、listenerが停止しcleanupに成功した。Bot childのSIGINT終了をprivateの正常停止markerが捉えなかった点はsupervisor観測の改善候補であり、停止失敗やManual受入不合格を示さない。
 
 この結果は実Provider、AI生成／再生成、予約保存・確定、channel投稿、一般提供、本番受入、ARM64 Linux実機の確認ではない。UI timeout、利用枠、価格は引き続き暫定または未決定である。
+
+### Phase 4H Preview安全境界回帰結果
+
+開発・検証専用Application／Guildで、Manual PreviewとEdit後Previewに同じscannerが適用され、Edit Modalにはraw本文が表示されることを確認した。通常HTTP(S) URLでは確認対象の`_`、`*`、`~`、query、fragmentを保持し、Markdown link、bold、italic、strike、inline code、hyphen／numbered listはliteral表示となった。user／nickname user／role／channel mention形式は名前、role、channel linkへ変換されず、LF改行、日本語、Unicode、絵文字を保持した。これは確認した構文だけの受入であり、全Markdown、全URL、IPv6 literal URL、実在ID、公開投稿接続後のmention安全性を保証しない。
+
+`@everyone`／`@here`を含むManual本文はDomain validationで拒否され、Previewへ進まず、安全な固定案内へのinitial responseが正常終了した。別のPreview Cancelはdefer、claim、Controller cancel、`cancelled`遷移、original response更新、callback終了まで成功した。いずれもtimeout、mention通知、公開投稿はなく、固定失敗event 5種類は各0件だった。通常pytestは1,781 passed／375 skipped、warning 0で、2,000／2,001文字境界は自動テストだけの確認である。generation、Usage reserve、DB保存、予約保存、予約確定、投稿処理、OpenAI client／通信／AI workerは各0件で、隔離DBの11業務tableは各0件、想定外table 0件だった。終了時はsupervisor、Bot child、`postgres_test`がexit code 0、cleanup成功で全process、container、listenerが停止した。
 
 ### feature flagと受入gate
 
