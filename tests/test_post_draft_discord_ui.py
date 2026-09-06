@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import logging
 import math
 import socket
 import warnings
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock
 
 import discord
 import pytest
+from discord.webhook.async_ import async_context
 
 from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUIErrorCode,
@@ -31,6 +33,7 @@ from discord_ai_reminder_bot.bot.post_draft_ui import (
     PostDraftPreviewView,
     _escape_preview_text,
     _preview_embed,
+    _send_initial,
     create_post_draft_mode_view,
     post_draft_ui_error_message,
     send_post_draft_mode,
@@ -86,6 +89,78 @@ class FakeResponse:
 
     def is_done(self) -> bool:
         return self._done
+
+
+class BoundaryState:
+    def __init__(self) -> None:
+        self.allowed_mentions = None
+        self.http = SimpleNamespace(proxy=None, proxy_auth=None)
+        self.stored_views = 0
+
+    def store_view(self, *_args: object, **_kwargs: object) -> None:
+        self.stored_views += 1
+
+
+class BoundaryResponse(discord.InteractionResponse[object]):
+    __slots__ = ("attempts", "failures", "successes")
+
+    def __init__(self, parent: object) -> None:
+        super().__init__(parent)  # type: ignore[arg-type]
+        self.attempts = 0
+        self.successes = 0
+        self.failures = 0
+
+    async def send_message(self, *args: object, **kwargs: object) -> object:
+        self.attempts += 1
+        try:
+            result = await super().send_message(*args, **kwargs)  # type: ignore[arg-type]
+        except Exception:
+            self.failures += 1
+            raise
+        self.successes += 1
+        return result
+
+
+class BoundaryInteraction:
+    def __init__(self) -> None:
+        self.id = OWNER
+        self.token = "offline-callback-token"
+        self._state = BoundaryState()
+        self._session = object()
+        self.user = SimpleNamespace(id=OWNER)
+        self.guild_id = GUILD
+        self.channel = None
+        self.response = BoundaryResponse(self)
+        self.followup = SimpleNamespace(send=AsyncMock())
+        self.edit_original_response = AsyncMock()
+
+
+class BoundaryCallbackAdapter:
+    def __init__(self) -> None:
+        self.attempts = 0
+        self.successes = 0
+
+    async def create_interaction_response(
+        self, *_args: object, **_kwargs: object
+    ) -> dict[str, object]:
+        self.attempts += 1
+        self.successes += 1
+        return {
+            "interaction": {
+                "id": str(OWNER),
+                "response_message_ephemeral": True,
+            }
+        }
+
+
+class TrackingManualInputModal(PostDraftManualInputModal):
+    def __init__(self, *, ui: PostDraftDiscordUI, timeout: float) -> None:
+        self.on_error_calls = 0
+        super().__init__(ui=ui, timeout=timeout)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, /) -> None:
+        self.on_error_calls += 1
+        await super().on_error(interaction, error)
 
 
 def interaction(*, user_id: int = OWNER, guild_id: int | None = GUILD) -> SimpleNamespace:
@@ -306,6 +381,107 @@ async def test_invalid_manual_body_returns_fixed_error_without_generation() -> N
     assert CANARY not in observed
     assert post_draft_ui_error_message(PostDraftUIErrorCode.INVALID_RESPONSE) in observed
     assert generation.calls == 0
+
+
+@pytest.mark.parametrize("dangerous", ["@everyone", "@here"])
+@pytest.mark.asyncio
+async def test_manual_validation_error_completes_real_interaction_response_once(
+    dangerous: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    adapter, generation = ui()
+    await adapter.controller.choose_manual(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    modal = TrackingManualInputModal(ui=adapter, timeout=60)
+    set_text(modal.body, f"{CANARY}{dangerous}")
+    submitted = BoundaryInteraction()
+    callback_adapter = BoundaryCallbackAdapter()
+
+    context = async_context.set(callback_adapter)
+    try:
+        with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+            await modal._scheduled_task(submitted, [], {})
+    finally:
+        async_context.reset(context)
+
+    assert callback_adapter.attempts == 1
+    assert callback_adapter.successes == 1
+    assert submitted.response.attempts == 1
+    assert submitted.response.successes == 1
+    assert submitted.response.failures == 0
+    assert submitted.response.is_done()
+    assert submitted.followup.send.await_count == 0
+    assert submitted.edit_original_response.await_count == 0
+    assert modal.on_error_calls == 0
+    assert modal.is_finished()
+    assert adapter.controller.session.state is PostDraftUISessionState.MANUAL_ENTRY
+    assert adapter.controller.session.current_draft() is None
+    assert generation.calls == 0
+    assert not hasattr(adapter, "repository")
+    assert not hasattr(adapter, "schedule_service")
+    assert sum(record.msg == "view_error_response_failed" for record in caplog.records) == 0
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "content",
+        "include_embed",
+        "embed_is_none",
+        "include_view",
+        "view_is_none",
+        "expected_optional_keys",
+    ),
+    [
+        pytest.param("content_only", "本文", False, False, False, False, set(), id="content-only"),
+        pytest.param("embed_only", None, True, False, False, False, {"embed"}, id="embed-only"),
+        pytest.param(
+            "content_view", "本文", False, False, True, False, {"view"}, id="content-view"
+        ),
+        pytest.param(
+            "embed_view", None, True, False, True, False, {"embed", "view"}, id="embed-view"
+        ),
+        pytest.param(
+            "explicit_embed_none", "本文", True, True, False, False, set(), id="explicit-embed-none"
+        ),
+        pytest.param(
+            "explicit_view_none", "本文", False, False, True, True, set(), id="explicit-view-none"
+        ),
+        pytest.param(
+            "all_values", "本文", True, False, True, False, {"embed", "view"}, id="all-values"
+        ),
+        pytest.param("all_absent", None, False, False, False, False, set(), id="all-absent"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_initial_omits_absent_optional_fields(
+    case: str,
+    content: str | None,
+    include_embed: bool,
+    embed_is_none: bool,
+    include_view: bool,
+    view_is_none: bool,
+    expected_optional_keys: set[str],
+) -> None:
+    del case
+    submitted = interaction()
+    embed = discord.Embed(description="確認用")
+    view = discord.ui.View(timeout=60)
+    arguments: dict[str, object] = {"content": content}
+    if include_embed:
+        arguments["embed"] = None if embed_is_none else embed
+    if include_view:
+        arguments["view"] = None if view_is_none else view
+
+    await _send_initial(submitted, **arguments)  # type: ignore[arg-type]
+
+    call = submitted.response.send_message.await_args
+    assert call.args == (content,)
+    assert set(call.kwargs) == {"ephemeral", "allowed_mentions"} | expected_optional_keys
+    assert call.kwargs["ephemeral"] is True
+    assert call.kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    if "embed" in expected_optional_keys:
+        assert call.kwargs["embed"] is embed
+    if "view" in expected_optional_keys:
+        assert call.kwargs["view"] is view
 
 
 @pytest.mark.parametrize("user_id,guild_id", [(999, GUILD), (OWNER, 999), (OWNER, None)])
