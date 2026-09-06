@@ -7,7 +7,7 @@ import logging
 import math
 from collections.abc import Callable
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 import discord
 
@@ -1168,13 +1168,15 @@ async def _send_initial(
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
 ) -> None:
-    await interaction.response.send_message(
-        content,
-        embed=embed,
-        view=view,
-        ephemeral=True,
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
+    arguments: dict[str, Any] = {
+        "ephemeral": True,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+    if embed is not None:
+        arguments["embed"] = embed
+    if view is not None:
+        arguments["view"] = view
+    await interaction.response.send_message(content, **arguments)
 
 
 async def _render_cancel(

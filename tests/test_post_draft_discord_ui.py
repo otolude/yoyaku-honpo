@@ -1132,7 +1132,8 @@ async def test_invalid_manual_and_edit_body_never_reaches_preview(invalid: str) 
     manual_kwargs = manual_submitted.response.send_message.await_args.kwargs
     assert manual_adapter.controller.session.state is PostDraftUISessionState.MANUAL_ENTRY
     assert manual_adapter.controller.session.current_draft() is None
-    assert manual_kwargs["embed"] is None
+    assert "embed" not in manual_kwargs
+    assert "view" not in manual_kwargs
     assert manual_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
     assert manual_generation.calls == 0
 
@@ -1154,7 +1155,8 @@ async def test_invalid_manual_and_edit_body_never_reaches_preview(invalid: str) 
     edit_kwargs = edit_submitted.response.send_message.await_args.kwargs
     assert edit_adapter.controller.session.state is PostDraftUISessionState.EDITING
     assert edit_adapter.controller.session.current_draft().value == "変更前"
-    assert edit_kwargs["embed"] is None
+    assert "embed" not in edit_kwargs
+    assert "view" not in edit_kwargs
     assert edit_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
     assert edit_generation.calls == 0
 
