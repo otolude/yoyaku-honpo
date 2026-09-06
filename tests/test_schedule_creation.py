@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from discord_ai_reminder_bot.application.schedule_creation import (
     DuplicateScheduleWarning,
     OnceScheduleCreationService,
+    ScheduleCreationPublicId,
 )
 from discord_ai_reminder_bot.domain.enums import ScheduleStatus
 from discord_ai_reminder_bot.domain.exceptions import InvalidDateTimeError
@@ -21,6 +23,96 @@ from discord_ai_reminder_bot.domain.schedule_creation import (
 )
 
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_service_generates_public_id_once_when_not_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = uuid.uuid7()
+    generator = __import__("unittest.mock").mock.Mock(return_value=generated)
+    schedules = AsyncMock()
+    schedules.has_once_duplicate.return_value = False
+
+    async def add_schedule(schedule):
+        schedule.id = 99
+        return schedule
+
+    schedules.add.side_effect = add_schedule
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.uuid.uuid7", generator
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.ScheduleRepository",
+        lambda unused: schedules,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.ScheduleRunRepository",
+        lambda unused: AsyncMock(),
+    )
+
+    created = await OnceScheduleCreationService(AsyncMock()).create(
+        guild_id=10,
+        channel_id=20,
+        creator_user_id=30,
+        scheduled_for=NOW + timedelta(minutes=5),
+        content="body",
+        allow_duplicate=False,
+        now=NOW,
+    )
+
+    assert created.public_id == generated
+    generator.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_service_uses_supplied_public_id_without_calling_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supplied = ScheduleCreationPublicId.create(uuid.uuid7())
+    schedules = AsyncMock()
+    schedules.has_once_duplicate.return_value = False
+
+    async def add_schedule(schedule):
+        schedule.id = 99
+        return schedule
+
+    schedules.add.side_effect = add_schedule
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.uuid.uuid7",
+        __import__("unittest.mock").mock.Mock(side_effect=AssertionError),
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.ScheduleRepository",
+        lambda unused: schedules,
+    )
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.application.schedule_creation.ScheduleRunRepository",
+        lambda unused: AsyncMock(),
+    )
+
+    created = await OnceScheduleCreationService(AsyncMock()).create(
+        guild_id=10,
+        channel_id=20,
+        creator_user_id=30,
+        scheduled_for=NOW + timedelta(minutes=5),
+        content="body",
+        allow_duplicate=False,
+        now=NOW,
+        public_id=supplied,
+    )
+
+    assert created.public_id == supplied.value
+    assert schedules.add.await_args.args[0].public_id == supplied.value
+
+
+@pytest.mark.parametrize("value", [False, "", object(), uuid.uuid4()])
+def test_schedule_creation_public_id_rejects_invalid_values_without_disclosure(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError) as captured:
+        ScheduleCreationPublicId.create(value)
+    assert repr(value) not in str(captured.value)
 
 
 @pytest.mark.parametrize(
