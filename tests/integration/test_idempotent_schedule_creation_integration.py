@@ -3,7 +3,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+import pytest_asyncio
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from discord_ai_reminder_bot.application.schedule_creation import (
@@ -22,6 +23,20 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
 
 pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
+GUILD_ID = 91_000
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_created_rows(test_engine: AsyncEngine):
+    yield
+    sessions = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        schedule_ids = select(Schedule.id).where(Schedule.guild_id == GUILD_ID)
+        await session.execute(
+            delete(OperationLog).where(OperationLog.schedule_id.in_(schedule_ids))
+        )
+        await session.execute(delete(ScheduleRun).where(ScheduleRun.schedule_id.in_(schedule_ids)))
+        await session.execute(delete(Schedule).where(Schedule.guild_id == GUILD_ID))
 
 
 def service(engine: AsyncEngine) -> IdempotentScheduleCreationService:
@@ -34,7 +49,7 @@ def service(engine: AsyncEngine) -> IdempotentScheduleCreationService:
 def arguments(public_id: ScheduleCreationPublicId, *, content: str = "body") -> dict:
     return {
         "public_id": public_id,
-        "guild_id": 91_000,
+        "guild_id": GUILD_ID,
         "channel_id": 92_000,
         "creator_user_id": 93_000,
         "scheduled_for": NOW + timedelta(hours=1),
@@ -48,9 +63,30 @@ async def counts(engine: AsyncEngine) -> tuple[int, int, int]:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session:
         return (
-            int(await session.scalar(select(func.count()).select_from(Schedule)) or 0),
-            int(await session.scalar(select(func.count()).select_from(ScheduleRun)) or 0),
-            int(await session.scalar(select(func.count()).select_from(OperationLog)) or 0),
+            int(
+                await session.scalar(
+                    select(func.count()).select_from(Schedule).where(Schedule.guild_id == GUILD_ID)
+                )
+                or 0
+            ),
+            int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ScheduleRun)
+                    .join(Schedule, Schedule.id == ScheduleRun.schedule_id)
+                    .where(Schedule.guild_id == GUILD_ID)
+                )
+                or 0
+            ),
+            int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(OperationLog)
+                    .join(Schedule, Schedule.id == OperationLog.schedule_id)
+                    .where(Schedule.guild_id == GUILD_ID)
+                )
+                or 0
+            ),
         )
 
 
