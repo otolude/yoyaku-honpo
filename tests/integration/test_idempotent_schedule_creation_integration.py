@@ -2,8 +2,10 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from enum import Enum, auto
 from typing import Any
 
 import pytest
@@ -45,6 +47,19 @@ from discord_ai_reminder_bot.infrastructure.database.models import (
 pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
 GUILD_ID = 91_000
+RACE_ATTEMPTS = 2
+LOCK_WAIT_SECONDS = 5.0
+BLOCK_OBSERVATION_SECONDS = 2.0
+BLOCK_POLL_INTERVAL_SECONDS = 0.01
+BLOCK_POLL_LIMIT = 200
+RACE_DEADLINE_SECONDS = 10.0
+TASK_CLEANUP_SECONDS = 2.0
+RACE_ABORT_SECONDS = 3.0
+_TASK_DEADLINE_FAILED = "race task deadline exceeded"
+_TASK_CLEANUP_FAILED = "race task cleanup failed"
+_RACE_CONTRACT_FAILED = "race session contract failed"
+_BLOCK_OBSERVATION_FAILED = "unique-index blocking observation failed"
+_ATTEMPT_ID: ContextVar[int | None] = ContextVar("schedule_creation_attempt", default=None)
 
 
 @pytest_asyncio.fixture
@@ -286,9 +301,16 @@ async def test_serial_replay_creates_each_business_row_once(
     assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
 
 
+class _SessionRole(Enum):
+    PREFLIGHT = auto()
+    WRITE = auto()
+    RECONCILIATION = auto()
+
+
 @dataclass
 class _ConcurrencyCoordinator:
     preflight_count: int = 0
+    reconciliation_count: int = 0
     preflight_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     both_preflight_missing: asyncio.Event = field(default_factory=asyncio.Event)
     winner_flushed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -300,13 +322,87 @@ class _ConcurrencyCoordinator:
     loser_backend_pid: int | None = None
     insert_attempt_count: int = 0
     unique_wait_observed: int = 0
+    winner_attempt_id: int | None = None
+    session_roles: dict[int, list[_SessionRole]] = field(default_factory=dict)
+    preflight_attempts: set[int] = field(default_factory=set)
+    reconciliation_attempts: set[int] = field(default_factory=set)
 
-    async def preflight(self) -> None:
+    def register_session(self) -> tuple[int, _SessionRole]:
+        attempt_id = _ATTEMPT_ID.get()
+        if attempt_id is None:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
+        roles = self.session_roles.setdefault(attempt_id, [])
+        try:
+            role = (
+                _SessionRole.PREFLIGHT,
+                _SessionRole.WRITE,
+                _SessionRole.RECONCILIATION,
+            )[len(roles)]
+        except IndexError:
+            raise AssertionError(_RACE_CONTRACT_FAILED) from None
+        roles.append(role)
+        return attempt_id, role
+
+    async def preflight(self, attempt_id: int) -> None:
         async with self.preflight_lock:
+            if attempt_id in self.preflight_attempts:
+                raise AssertionError(_RACE_CONTRACT_FAILED)
+            self.preflight_attempts.add(attempt_id)
             self.preflight_count += 1
-            if self.preflight_count == 2:
+            if self.preflight_count == RACE_ATTEMPTS:
                 self.both_preflight_missing.set()
         await self.both_preflight_missing.wait()
+
+    def reconciliation(self, attempt_id: int) -> None:
+        if attempt_id in self.reconciliation_attempts:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
+        self.reconciliation_attempts.add(attempt_id)
+        self.reconciliation_count += 1
+
+    def assert_complete(self) -> None:
+        winner = self.winner_attempt_id
+        if winner is None:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
+        losers = set(self.session_roles) - {winner}
+        expected_winner = [_SessionRole.PREFLIGHT, _SessionRole.WRITE]
+        expected_loser = [
+            _SessionRole.PREFLIGHT,
+            _SessionRole.WRITE,
+            _SessionRole.RECONCILIATION,
+        ]
+        all_roles = [role for roles in self.session_roles.values() for role in roles]
+        read_session_count = sum(role is not _SessionRole.WRITE for role in all_roles)
+        write_session_count = sum(role is _SessionRole.WRITE for role in all_roles)
+        valid = (
+            len(self.session_roles) == RACE_ATTEMPTS
+            and set(self.session_roles) == set(range(RACE_ATTEMPTS))
+            and len(losers) == 1
+            and self.session_roles[winner] == expected_winner
+            and self.session_roles[next(iter(losers))] == expected_loser
+            and self.preflight_count == RACE_ATTEMPTS
+            and self.preflight_attempts == set(self.session_roles)
+            and self.reconciliation_count == 1
+            and self.reconciliation_attempts == losers
+            and read_session_count == 3
+            and write_session_count == 2
+            and self.insert_attempt_count == RACE_ATTEMPTS
+            and self.unique_wait_observed == 1
+            and self.winner_backend_pid is not None
+            and self.loser_backend_pid is not None
+            and self.winner_backend_pid != self.loser_backend_pid
+        )
+        if not valid:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
+
+
+def _is_target_schedule_lookup(statement: Any, target_public_id: uuid.UUID) -> bool:
+    descriptions = getattr(statement, "column_descriptions", ())
+    expected_lookup = select(Schedule).where(Schedule.public_id == target_public_id)
+    return bool(
+        descriptions
+        and descriptions[0].get("expr") is Schedule
+        and statement.compare(expected_lookup)
+    )
 
 
 class _CoordinatedSession(AsyncSession):
@@ -320,15 +416,23 @@ class _CoordinatedSession(AsyncSession):
         super().__init__(*args, **kwargs)
         self._coordinator = coordinator
         self._target_public_id = target_public_id
-        self._preflight_observed = False
+        self._attempt_id, self._role = coordinator.register_session()
+        self._role_observed = False
 
     async def scalar(self, statement: Any, params: Any = None, **kwargs: Any) -> Any:
         result = await super().scalar(statement, params=params, **kwargs)
-        descriptions = getattr(statement, "column_descriptions", ())
-        is_schedule_projection = bool(descriptions) and descriptions[0].get("expr") is Schedule
-        if not self._preflight_observed and is_schedule_projection and result is None:
-            self._preflight_observed = True
-            await self._coordinator.preflight()
+        if self._role in {_SessionRole.PREFLIGHT, _SessionRole.RECONCILIATION}:
+            if self._role_observed or not _is_target_schedule_lookup(
+                statement, self._target_public_id
+            ):
+                raise AssertionError(_RACE_CONTRACT_FAILED)
+            self._role_observed = True
+            if self._role is _SessionRole.PREFLIGHT:
+                if result is not None:
+                    raise AssertionError(_RACE_CONTRACT_FAILED)
+                await self._coordinator.preflight(self._attempt_id)
+            else:
+                self._coordinator.reconciliation(self._attempt_id)
         return result
 
     async def flush(self, objects: Any = None) -> None:
@@ -339,6 +443,8 @@ class _CoordinatedSession(AsyncSession):
         if not target_insert:
             await super().flush(objects)
             return
+        if self._role is not _SessionRole.WRITE:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
 
         backend_pid = int(await super().scalar(text("SELECT pg_backend_pid()")))
         async with self._coordinator.preflight_lock:
@@ -346,6 +452,7 @@ class _CoordinatedSession(AsyncSession):
             is_winner = self._coordinator.winner_task is None
             if is_winner:
                 self._coordinator.winner_task = asyncio.current_task()
+                self._coordinator.winner_attempt_id = self._attempt_id
                 self._coordinator.winner_backend_pid = backend_pid
             else:
                 self._coordinator.loser_backend_pid = backend_pid
@@ -378,22 +485,176 @@ async def _wait_for_unique_index_block(
     engine: AsyncEngine,
     coordinator: _ConcurrencyCoordinator,
 ) -> None:
-    await coordinator.loser_insert_started.wait()
-    winner_pid = coordinator.winner_backend_pid
-    loser_pid = coordinator.loser_backend_pid
-    assert winner_pid is not None and loser_pid is not None and winner_pid != loser_pid
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with asyncio.timeout(2), sessions() as session:
-        while True:
-            blocked = await session.scalar(
-                text("SELECT :winner = ANY(pg_blocking_pids(:loser))"),
-                {"winner": winner_pid, "loser": loser_pid},
-            )
-            if blocked:
-                coordinator.unique_wait_observed += 1
-                coordinator.unique_wait_reached.set()
-                return
-            await asyncio.sleep(0)
+    failed = False
+    try:
+        async with asyncio.timeout(BLOCK_OBSERVATION_SECONDS):
+            await coordinator.loser_insert_started.wait()
+            winner_pid = coordinator.winner_backend_pid
+            loser_pid = coordinator.loser_backend_pid
+            if winner_pid is None or loser_pid is None or winner_pid == loser_pid:
+                failed = True
+            else:
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+                async with sessions() as session:
+                    for _ in range(BLOCK_POLL_LIMIT):
+                        blocked = await session.scalar(
+                            text("SELECT :winner = ANY(pg_blocking_pids(:loser))"),
+                            {"winner": winner_pid, "loser": loser_pid},
+                        )
+                        if blocked:
+                            coordinator.unique_wait_observed += 1
+                            coordinator.unique_wait_reached.set()
+                            return
+                        await asyncio.sleep(BLOCK_POLL_INTERVAL_SECONDS)
+                failed = True
+    except TimeoutError:
+        failed = True
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - database detail must not escape the test boundary
+        failed = True
+    if failed:
+        raise AssertionError(_BLOCK_OBSERVATION_FAILED)
+
+
+class _ManagedTasks:
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    def create[ResultT](self, awaitable: Awaitable[ResultT]) -> asyncio.Task[ResultT]:
+        task = asyncio.create_task(awaitable)
+        self._tasks.add(task)
+        return task
+
+    async def results[ResultT](
+        self,
+        tasks: list[asyncio.Task[ResultT]],
+        *,
+        deadline: float,
+    ) -> list[ResultT]:
+        _done, pending = await asyncio.wait(tasks, timeout=deadline)
+        if pending:
+            raise AssertionError(_TASK_DEADLINE_FAILED)
+        return [task.result() for task in tasks]
+
+    async def close(self, *, deadline: float = TASK_CLEANUP_SECONDS) -> None:
+        pending = {task for task in self._tasks if not task.done()}
+        for task in pending:
+            task.cancel()
+        remaining: set[asyncio.Task[Any]] = set()
+        if pending:
+            done, remaining = await asyncio.wait(pending, timeout=deadline)
+            self._consume(done)
+        self._consume(task for task in self._tasks if task.done())
+        for task in remaining:
+            task.cancel()
+        if remaining:
+            raise AssertionError(_TASK_CLEANUP_FAILED)
+
+    @staticmethod
+    def _consume(tasks: Any) -> None:
+        for task in tasks:
+            if not task.cancelled():
+                task.exception()
+
+
+async def _run_as_attempt[ResultT](attempt_id: int, awaitable: Awaitable[ResultT]) -> ResultT:
+    token = _ATTEMPT_ID.set(attempt_id)
+    try:
+        return await awaitable
+    finally:
+        _ATTEMPT_ID.reset(token)
+
+
+async def _wait_for_event(event: asyncio.Event) -> None:
+    timed_out = False
+    try:
+        async with asyncio.timeout(BLOCK_OBSERVATION_SECONDS):
+            await event.wait()
+    except TimeoutError:
+        timed_out = True
+    if timed_out:
+        raise AssertionError(_TASK_DEADLINE_FAILED)
+
+
+async def _run_race_with_deadline(awaitable: Awaitable[None]) -> None:
+    tasks = _ManagedTasks()
+    task = tasks.create(awaitable)
+    try:
+        await tasks.results([task], deadline=RACE_DEADLINE_SECONDS)
+    finally:
+        await tasks.close(deadline=RACE_ABORT_SECONDS)
+
+
+async def test_race_coordinator_contract_is_test_local_and_attempt_scoped() -> None:
+    coordinator = _ConcurrencyCoordinator()
+    target_public_id = uuid.uuid7()
+    assert _is_target_schedule_lookup(
+        select(Schedule).where(Schedule.public_id == target_public_id), target_public_id
+    )
+    assert not _is_target_schedule_lookup(
+        select(Schedule).where(Schedule.public_id == uuid.uuid7()), target_public_id
+    )
+    assert not _is_target_schedule_lookup(
+        select(Schedule.id).where(Schedule.public_id == target_public_id), target_public_id
+    )
+    for attempt_id in range(RACE_ATTEMPTS):
+        token = _ATTEMPT_ID.set(attempt_id)
+        try:
+            assert coordinator.register_session() == (attempt_id, _SessionRole.PREFLIGHT)
+            assert coordinator.register_session() == (attempt_id, _SessionRole.WRITE)
+            assert coordinator.register_session() == (attempt_id, _SessionRole.RECONCILIATION)
+            with pytest.raises(AssertionError, match=_RACE_CONTRACT_FAILED):
+                coordinator.register_session()
+        finally:
+            _ATTEMPT_ID.reset(token)
+    assert _ATTEMPT_ID.get() is None
+    assert all(
+        roles
+        == [
+            _SessionRole.PREFLIGHT,
+            _SessionRole.WRITE,
+            _SessionRole.RECONCILIATION,
+        ]
+        for roles in coordinator.session_roles.values()
+    )
+
+
+async def test_race_deadlines_leave_observation_and_cleanup_margin() -> None:
+    assert LOCK_WAIT_SECONDS >= 5.0
+    assert BLOCK_OBSERVATION_SECONDS <= 2.0
+    assert BLOCK_POLL_LIMIT * BLOCK_POLL_INTERVAL_SECONDS <= BLOCK_OBSERVATION_SECONDS
+    assert RACE_ABORT_SECONDS > TASK_CLEANUP_SECONDS
+    assert RACE_DEADLINE_SECONDS >= LOCK_WAIT_SECONDS + RACE_ABORT_SECONDS
+
+
+@pytest.mark.parametrize("case_number", range(2))
+async def test_managed_race_tasks_are_collected_after_assertion_failure(
+    case_number: int,
+) -> None:
+    del case_number
+    managed = _ManagedTasks()
+    started = asyncio.Event()
+    never_release = asyncio.Event()
+    resource_closed = asyncio.Event()
+
+    async def hold_test_resource() -> None:
+        started.set()
+        try:
+            await never_release.wait()
+        finally:
+            resource_closed.set()
+
+    task = managed.create(hold_test_resource())
+    await _wait_for_event(started)
+    with pytest.raises(AssertionError, match=_RACE_CONTRACT_FAILED):
+        try:
+            raise AssertionError(_RACE_CONTRACT_FAILED)
+        finally:
+            await managed.close()
+    assert task.done()
+    assert task.cancelled()
+    assert resource_closed.is_set()
 
 
 @asynccontextmanager
@@ -402,7 +663,7 @@ async def _conflicting_attempts(
     key: ScheduleCreationPublicId,
     *,
     wait_seconds: float,
-) -> AsyncIterator[tuple[list[asyncio.Task], _ConcurrencyCoordinator]]:
+) -> AsyncIterator[tuple[list[asyncio.Task[Any]], _ConcurrencyCoordinator, _ManagedTasks]]:
     coordinator = _ConcurrencyCoordinator()
     creators = [
         service(
@@ -413,22 +674,19 @@ async def _conflicting_attempts(
         )
         for _ in range(2)
     ]
-    tasks: list[asyncio.Task] = []
-    managed: list[asyncio.Task] = []
+    tasks: list[asyncio.Task[Any]] = []
+    managed = _ManagedTasks()
     try:
-        for creator in creators:
-            task = asyncio.create_task(creator.create_once(**once_arguments(key)))
+        for attempt_id, creator in enumerate(creators):
+            task = managed.create(
+                _run_as_attempt(attempt_id, creator.create_once(**once_arguments(key)))
+            )
             tasks.append(task)
-            managed.append(task)
-        observer = asyncio.create_task(_wait_for_unique_index_block(engine, coordinator))
-        managed.append(observer)
-        yield tasks, coordinator
+        managed.create(_wait_for_unique_index_block(engine, coordinator))
+        yield tasks, coordinator, managed
     finally:
         coordinator.release_winner.set()
-        for task in managed:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*managed, return_exceptions=True)
+        await managed.close()
 
 
 async def test_parallel_winner_commit_within_limit_reconciles_as_already_created(
@@ -437,22 +695,25 @@ async def test_parallel_winner_commit_within_limit_reconciles_as_already_created
 ) -> None:
     key = ScheduleCreationPublicId.create(uuid.uuid7())
     await track_creation_key(key)
-    async with _conflicting_attempts(test_engine, key, wait_seconds=2) as (
-        tasks,
-        coordinator,
-    ):
-        await asyncio.wait_for(coordinator.winner_flushed.wait(), timeout=2)
-        await asyncio.wait_for(coordinator.unique_wait_reached.wait(), timeout=2)
-        coordinator.release_winner.set()
-        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=3)
-    assert {item.code for item in results} == {
-        IdempotentScheduleCreationCode.CREATED,
-        IdempotentScheduleCreationCode.ALREADY_CREATED,
-    }
-    assert coordinator.preflight_count == 2
-    assert coordinator.insert_attempt_count == 2
-    assert coordinator.unique_wait_observed == 1
-    assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
+
+    async def run() -> None:
+        async with _conflicting_attempts(test_engine, key, wait_seconds=LOCK_WAIT_SECONDS) as (
+            tasks,
+            coordinator,
+            managed,
+        ):
+            await _wait_for_event(coordinator.winner_flushed)
+            await _wait_for_event(coordinator.unique_wait_reached)
+            coordinator.release_winner.set()
+            results = await managed.results(tasks, deadline=LOCK_WAIT_SECONDS)
+        assert {item.code for item in results} == {
+            IdempotentScheduleCreationCode.CREATED,
+            IdempotentScheduleCreationCode.ALREADY_CREATED,
+        }
+        coordinator.assert_complete()
+        assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
+
+    await _run_race_with_deadline(run())
 
 
 async def test_parallel_uncommitted_winner_at_limit_returns_unknown_without_reinsert(
@@ -461,23 +722,27 @@ async def test_parallel_uncommitted_winner_at_limit_returns_unknown_without_rein
 ) -> None:
     key = ScheduleCreationPublicId.create(uuid.uuid7())
     await track_creation_key(key)
-    async with _conflicting_attempts(test_engine, key, wait_seconds=0.1) as (
-        tasks,
-        coordinator,
-    ):
-        await asyncio.wait_for(coordinator.unique_wait_reached.wait(), timeout=2)
-        winner = coordinator.winner_task
-        assert winner is not None
-        loser = next(item for item in tasks if item is not winner)
-        loser_result = await asyncio.wait_for(asyncio.shield(loser), timeout=2)
-        assert loser_result.code is IdempotentScheduleCreationCode.UNKNOWN
-        coordinator.release_winner.set()
-        winner_result = await asyncio.wait_for(winner, timeout=2)
-        assert winner_result.code is IdempotentScheduleCreationCode.CREATED
-    assert coordinator.preflight_count == 2
-    assert coordinator.insert_attempt_count == 2
-    assert coordinator.unique_wait_observed == 1
-    assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
+
+    async def run() -> None:
+        async with _conflicting_attempts(test_engine, key, wait_seconds=LOCK_WAIT_SECONDS) as (
+            tasks,
+            coordinator,
+            managed,
+        ):
+            await _wait_for_event(coordinator.unique_wait_reached)
+            winner = coordinator.winner_task
+            if winner is None:
+                raise AssertionError(_RACE_CONTRACT_FAILED)
+            loser = next(item for item in tasks if item is not winner)
+            loser_result = (await managed.results([loser], deadline=LOCK_WAIT_SECONDS + 1.0))[0]
+            assert loser_result.code is IdempotentScheduleCreationCode.UNKNOWN
+            coordinator.release_winner.set()
+            winner_result = (await managed.results([winner], deadline=2.0))[0]
+            assert winner_result.code is IdempotentScheduleCreationCode.CREATED
+        coordinator.assert_complete()
+        assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
+
+    await _run_race_with_deadline(run())
 
 
 @pytest.mark.parametrize("expire_on_commit", [False, True])
@@ -717,14 +982,13 @@ async def test_cancellation_rolls_back_complete_creation_graph(
         session_type=_CancellationSession,
         session_kwargs={"graph_flushed": graph_flushed},
     )
-    task = asyncio.create_task(creator.create_once(**once_arguments(key)))
+    managed = _ManagedTasks()
+    task = managed.create(creator.create_once(**once_arguments(key)))
     try:
-        await asyncio.wait_for(graph_flushed.wait(), timeout=2)
+        await _wait_for_event(graph_flushed)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await managed.results([task], deadline=TASK_CLEANUP_SECONDS)
     finally:
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await managed.close()
     assert await graph_counts(test_engine, key) == (0, 0, 0, 0, 0, 0, 0)
