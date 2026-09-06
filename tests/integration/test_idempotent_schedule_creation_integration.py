@@ -12,6 +12,9 @@ from discord_ai_reminder_bot.application.schedule_creation import (
     IdempotentScheduleCreationService,
     ScheduleCreationPublicId,
 )
+from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+    ScheduleCreationWaitLimit,
+)
 from discord_ai_reminder_bot.infrastructure.database.idempotent_schedule_creation_repository import (
     PostgreSQLIdempotentScheduleCreationRepository,
 )
@@ -42,7 +45,9 @@ async def cleanup_created_rows(test_engine: AsyncEngine):
 def service(engine: AsyncEngine) -> IdempotentScheduleCreationService:
     sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     return IdempotentScheduleCreationService(
-        PostgreSQLIdempotentScheduleCreationRepository(sessions)
+        PostgreSQLIdempotentScheduleCreationRepository(
+            sessions, wait_limit=ScheduleCreationWaitLimit.create(0.5)
+        )
     )
 
 
