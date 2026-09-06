@@ -8,16 +8,17 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
 - PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み
-- `/post compose`: 既存guild限定`/post` Groupへコード上で登録済み。実Discordへのcommand syncと画面受入は未実施
+- `/post compose`: 既存guild限定`/post` Groupへ登録し、開発・検証専用Application／Guildでguild限定commandとAI無効表示、Cancel、ManualのPreview／Edit／Acceptを実Discord確認済み。global command syncは行っていない
 - production Composition: Provider gateはfalseで`DisabledPostDraftGenerator`を使用し、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
-- Manualフロー: Preview／Edit／Acceptまで自動隔離確認済み。ただしUsage予約、DB保存、予約確定、channel投稿へは未接続で、採用後も「まだ予約・投稿されていない」と表示する
+- Manualフロー: Preview／Edit／Acceptまで自動隔離・実Discord確認済み。Usage予約、DB保存、予約確定、channel投稿へは未接続で、採用後も「まだ予約・投稿されていない」と表示する
 - Usage cleanupのruntime wiring／定期実行、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠: 未実装
 - 正式model、価格・費用承認、正式UI timeout: 未決定
 - 自動隔離テストとPostgreSQL統合テスト: commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`で下記の隔離runtime受入を完了
 - 実OpenAI Provider受入: 未実施
-- 実Discord受入: 未実施
+- 実Discord受入: AI無効表示、Cancel、ManualのPreview／Edit／Acceptまで確認済み。実Provider、AI生成／再生成、予約保存／確定、投稿は未確認
 - ARM64 Linux実機受入: 未実施
 - 本文生成feature flag: 初期無効を要件化、有効化不可
+- Phase 4受入集計: 確認済み37件／未確認23件（合計60件）
 
 Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する。AI本文生成が利用可能、Providerが採用済み、費用・品質・保持が確認済み、または本番公開可能であることを意味しない。
 
@@ -45,6 +46,21 @@ commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`を専用tmpfs PostgreSQL 18.4�
 - container: `Exited (0)`。`/var/lib/postgresql`はtmpfsで、mount／named Volumeなし。既存DB／Volume／実データへの影響および秘密値の表示・証跡残存なし
 
 r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推定であり、loopback TCP接続を明示的に許可したr3では同じ空DB probeが成功した。PostgreSQL設定またはMigration不具合の証拠ではない。本受入ではBot、Gateway、Discord HTTP、OpenAI、command syncを実行しておらず、実Discord画面、実Provider、AI有効状態、DB保存・予約確定・投稿、cleanup定期実行、ARM64 Linux実機は未確認である。
+
+## Phase 4H 実Discord AI無効・Manual受入
+
+開発・検証専用Application／Guildで、Provider gateとAI機能を無効のままguild限定`/post compose`を確認した。全画面はephemeralであり、入力には匿名の合成テストデータだけを用いた。これはAI有効end-to-end、実Provider、予約保存・確定・投稿、一般提供または本番の受入ではない。
+
+- [x] guild限定commandが実Discordに存在し、今回のsync 1回、累計4回、global sync 0回で、今回の意味上の追加／変更／削除が各0件であることを確認した。
+- [x] AI buttonが「AIで作成（準備中）」としてdisabledであり、OpenAI client構築／通信／AI workerが各0件であることを確認した。
+- [x] Cancelでdefer、Controller cancel、cancelled遷移、original response更新が成功し、timeout表示がなく、componentが無効化または消去され、固定失敗event 5種類が各0件であることを確認した。
+- [x] Mode → Manual Modal → Preview → Edit Modal → Preview → Acceptを実Discordで完了し、全画面がephemeralで公開channel投稿がないことを確認した。
+- [x] 編集後Previewは現在本文だけを表示し、変更していない行を保持して旧本文履歴を表示しないことを確認した。
+- [x] 「この本文を使用」を1回だけ操作するとcomponentが消え、採用完了と「まだ予約・投稿されていない」旨が表示されることを確認した。
+- [x] Manual経路のgeneration service、Usage reserve、DB Session、予約保存、予約確定、投稿処理が各0件で、Migration `c72e91f4b6a3`、single head、Alembic check成功、起動前後の11業務table各0件、想定外table 0件を確認した。
+- [x] 終了時にsupervisor exit code 0、cleanup成功、Bot／supervisor／container／listener停止を確認した。Bot childはSIGINTで終了しprivateの正常停止markerが成立しなかったが、process／container停止失敗または本受入不合格とはせず、private supervisorの終了観測改善候補として残す。
+
+受入実行中にproduction code、test、Migration、設定の変更は行っていない。本項の運用上のsync累計は製品仕様ではない。
 
 ## 利用回数・費用上限の未決事項
 
@@ -93,7 +109,7 @@ r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推
 - [ ] 日本語品質、3文体、3長さ、1～2,000文字、URL、Markdown、mention、制御文字、bidi、prompt injection風入力を確認する。
 - [ ] timeout、usage、請求、保持、dashboard条件を確認し、実結果をDB・追跡ファイル・通常logへ保存しない。
 
-## 実Discord受入
+## 実Discord AI・予約接続受入
 
 - [ ] `/post compose`で手入力とAI作成を選べる。
 - [ ] Provider送信前にprivacy、誤り、利用枠、悲観費用がephemeral表示される。

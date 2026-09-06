@@ -12,7 +12,7 @@ Domainで用いるuser 3回／固定10分、guild 30回／JST日、global 50回�
 
 運営全体の安全Budget／rate limitと顧客プランQuotaは別Policyとして扱う。上位プランにも運営全体の安全上限を適用する。Plan／Entitlementとプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称や回数は未決定であり、暫定値を販売上の約束へ転用しない。
 
-本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへコード上で登録済みだが、command syncと実Discord画面受入は未実施である。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはPreview／Edit／Acceptまでで、Usage予約、DB保存、予約確定、channel投稿へは未接続である。Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿へは未接続である。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
 
 ### Discord状態遷移
 
@@ -37,6 +37,14 @@ user／guild rate limitと運営者全体Budgetを本文生成専用責務とす
 commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`では、Bot runtimeごとに`PostDraftRuntime`と無効Compositionを1回構築し、同じ生成Service／Semaphoreを保持する。commandごとに新しいUI Session／Controller／UIを生成し、runtimeは`composition`と`clock`だけを保持してsession registry、Interaction、Message、tokenを保持しない。既存guild限定`/post` Groupの`/post compose`からはAI無効Mode Viewを生成し、ManualだけをPreview／Edit／Acceptまで進める。
 
 専用tmpfs PostgreSQL 18.4でMigration current／single head `c72e91f4b6a3`、Alembic差分なし、11業務table各0件を確認した。Runtime関連397件、残りのPostDraft DB非依存455件、Usage Repository＋cleanup integration 26件、PostgreSQL integration全体375件、DB URLなし通常pytest 1,633 passed／375 skippedで、failed、warning、想定外skipは0だった。Bot、Gateway、Discord HTTP、OpenAI、command syncは実行していないため、実Discord、実Provider、AI有効end-to-end、保存・予約確定・投稿、cleanup定期実行、ARM64 Linux実機の受入には使用しない。
+
+### Phase 4H 実Discord AI無効・Manual結果
+
+開発・検証専用Application／Guildでguild限定`/post compose`を起動し、AI buttonがdisabledの「AIで作成（準備中）」であること、Cancelのdeferからcancelled遷移とoriginal response更新まで、およびManual Modal → Preview → Edit → Preview → Acceptを確認した。画面はすべてephemeralで、編集後は現在本文だけを表示して旧本文履歴を残さず、Accept後は未予約・未投稿であることを明示してcomponentを消去した。
+
+Provider gateはfalseのままで、OpenAI client／通信／AI worker、generation service、Usage reserve、Manual経路のDB Session、予約保存、予約確定、投稿処理は各0件だった。隔離DBはrevision `c72e91f4b6a3`のsingle headでAlembic checkに成功し、11業務tableは起動前後とも各0件、想定外tableは0件だった。固定失敗event 5種類も各0件である。終了時は全process、container、listenerが停止しcleanupに成功した。Bot childのSIGINT終了をprivateの正常停止markerが捉えなかった点はsupervisor観測の改善候補であり、停止失敗やManual受入不合格を示さない。
+
+この結果は実Provider、AI生成／再生成、予約保存・確定、channel投稿、一般提供、本番受入、ARM64 Linux実機の確認ではない。UI timeout、利用枠、価格は引き続き暫定または未決定である。
 
 ### feature flagと受入gate
 

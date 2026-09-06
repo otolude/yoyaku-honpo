@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きの将来運用境界
 
-本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`も既存guild限定`/post` Groupへコード上で登録済みだが、実Discordへのcommand syncと画面受入は未実施である。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。ManualはPreview／Edit／Acceptまでで、Usage予約、DB保存、予約確定、channel投稿を行わない。Usage cleanupのruntime wiring／定期実行、Plan／Entitlement、正式model／価格／UI timeoutは未実装・未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿を行わない。実Provider、AI生成／再生成、予約接続、Usage cleanupのruntime wiring／定期実行、Plan／Entitlement、正式model／価格／UI timeoutは未実装・未確認または未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 - 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
 - AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
@@ -28,6 +28,16 @@ revision `c72e91f4b6a3`を専用tmpfs PostgreSQL 18.4で検証した。current�
 ### Phase 4H前半 無効runtime隔離検証記録
 
 commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`を専用tmpfs PostgreSQL 18.4で検証した。Migration current／single headは`c72e91f4b6a3`、checkは`No new upgrade operations detected.`であり、11業務tableは欠落・余分なく各段階後と終了時に各0件だった。Runtime関連397件、残りのPostDraft DB非依存455件、Usage Repository＋cleanup integration 26件、PostgreSQL integration全体375件が成功し、DB URLなし通常pytestは1,633 passed／375 skippedだった。failed、warning、想定外skipは0で、秘密値の表示・証跡残存、既存DB／Volume／実データへの影響はなく、専用containerは`Exited (0)`となった。Bot、Gateway、Discord HTTP、OpenAI、command syncは実行していない。
+
+### Phase 4H 実Discord AI無効・Manual検証記録
+
+開発・検証専用Application／Guildと一時的な`postgres_test`だけを使用し、guild限定`/post compose`のAI無効表示、Cancel、Manual Modal、Preview、Edit、再Preview、Acceptを実Discordで確認した。全画面はephemeralで、入力は匿名の合成テストデータとし、旧本文履歴と公開channel投稿は表示・実行されなかった。AI buttonは「AIで作成（準備中）」としてdisabledであり、実Provider、AI生成、再生成は操作していない。
+
+guild syncは今回1回、運用証跡上の累計4回で、global syncは0回、今回の意味上の追加／変更／削除は各0件だった。OpenAI client／通信／AI worker、Manual経路のgeneration service、Usage reserve、DB Session、予約保存、予約確定、投稿処理も各0件だった。Migration revisionは`c72e91f4b6a3`のsingle headでAlembic checkに成功し、11業務tableは起動前後とも各0件、想定外tableは0件だった。
+
+Cancelではdefer、Controller cancel、cancelled遷移、original response更新に成功し、timeout表示はなく、componentは無効化または消去された。Manualでは編集後の現在本文だけを表示して旧本文履歴を残さず、Accept後に「まだ予約・投稿されていない」旨を表示してcomponentを消去した。固定失敗event 5種類は各0件だった。
+
+終了時はsupervisor exit code 0、cleanup成功で、Bot／supervisor／container／listenerは停止した。Bot childはSIGINTで終了しprivateの正常停止markerが成立しなかったが、process／containerの停止失敗または受入不合格とはせず、private supervisorの終了観測改善候補として扱う。この記録は一般提供、本番受入、実Provider、AI有効end-to-end、予約保存・確定・投稿、ARM64 Linux実機の確認を意味しない。受入実行中にproduction code、test、Migration、設定は変更していない。
 
 ## 1. 文書の目的と対象環境
 
