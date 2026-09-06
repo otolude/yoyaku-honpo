@@ -1,11 +1,15 @@
 import ast
+import asyncio
 import math
+import sys
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
     IdempotentScheduleCreationCode,
@@ -19,11 +23,12 @@ from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
 from discord_ai_reminder_bot.application.schedule_creation import (
     CreatedOnceSchedule,
     CreatedRecurringSchedule,
+    DuplicateScheduleWarning,
 )
-from discord_ai_reminder_bot.domain.enums import (
-    DisplayNameSource,
-    ScheduleStatus,
-    ScheduleType,
+from discord_ai_reminder_bot.domain.enums import ScheduleStatus, ScheduleType
+from discord_ai_reminder_bot.infrastructure.database.idempotent_schedule_creation_repository import (
+    PostgreSQLIdempotentScheduleCreationRepository,
+    _Observation,
 )
 
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
@@ -72,7 +77,7 @@ def test_existing_created_dto_repr_is_unchanged() -> None:
     assert "public_id=UUID(" in repr(recurring) and "content='body'" in repr(recurring)
 
 
-@pytest.mark.parametrize("value", [False, 0, -1, math.nan, math.inf, "1", None])
+@pytest.mark.parametrize("value", [False, 0, -1, math.nan, math.inf, 10**1000, "1", None])
 def test_wait_limit_rejects_nonpositive_nonfinite_and_invalid_values(value: object) -> None:
     with pytest.raises(ValueError) as captured:
         ScheduleCreationWaitLimit.create(value)
@@ -109,6 +114,7 @@ def complete_fingerprint_and_record():
     ("field", "value"),
     [
         ("schedule_version", 2),
+        ("schedule_timestamps_pristine", False),
         ("display_name", "changed"),
         ("display_name_source", "manual"),
         ("deleted_at", NOW),
@@ -122,9 +128,15 @@ def complete_fingerprint_and_record():
         ("run_discord_message_id_present", True),
         ("run_result_code_present", True),
         ("run_error_summary_present", True),
+        ("run_timestamps_pristine", False),
+        ("creation_log_pristine", False),
         ("notification_attempt_count", 1),
         ("delivery_attempt_count", 1),
         ("name_job_count", 1),
+        ("name_job_created_at", NOW),
+        ("creation_notification_planning_enabled", False),
+        ("creation_name_generation_enabled", True),
+        ("creation_name_generator_available", True),
     ],
 )
 def test_complete_creation_graph_mismatch_is_conflict(field: str, value: object) -> None:
@@ -134,7 +146,125 @@ def test_complete_creation_graph_mismatch_is_conflict(field: str, value: object)
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("notification_type", "changed"),
+        ("recipient_type", "changed"),
+        ("recipient_id", None),
+        ("status", "processing"),
+        ("deduplication_key", "changed"),
+        ("scheduled_at", NOW),
+        ("next_attempt_at", None),
+        ("attempt_count", 1),
+        ("run_linked", False),
+        ("pristine", False),
+    ],
+)
+def test_notification_creation_state_mismatch_is_conflict(field: str, value: object) -> None:
+    expected, record = complete_fingerprint_and_record()
+    first, *remaining = record.notifications
+    changed_notification = replace(first, **{field: value})
+    changed = replace(record, notifications=(changed_notification, *remaining))
+    assert classify_schedule_creation_record(expected, changed) is (
+        IdempotentScheduleCreationCode.CONFLICT
+    )
+
+
 def test_result_contract_is_content_free_and_unknown_is_not_retryable() -> None:
     result = IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.UNKNOWN)
     assert tuple(result.__dataclass_fields__) == ("code",)
     assert "must not" in type(result).__doc__.lower()
+
+
+def repository_without_database() -> PostgreSQLIdempotentScheduleCreationRepository:
+    return PostgreSQLIdempotentScheduleCreationRepository(
+        async_sessionmaker(), wait_limit=ScheduleCreationWaitLimit.create(0.01)
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_failure_reconciles_after_leaving_raw_exception_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = complete_fingerprint_and_record()
+    repository = repository_without_database()
+    observe = AsyncMock(return_value=_Observation.MISSING)
+    create_graph = AsyncMock(side_effect=RuntimeError("database-canary"))
+    reconciliation_contexts: list[BaseException | None] = []
+
+    async def reconcile(*args: object, **kwargs: object) -> IdempotentScheduleCreationResult:
+        del args, kwargs
+        reconciliation_contexts.append(sys.exception())
+        return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.UNKNOWN)
+
+    monkeypatch.setattr(repository, "_observe", observe)
+    monkeypatch.setattr(repository, "_set_local_wait_limit", AsyncMock())
+    monkeypatch.setattr(repository, "_create_graph", create_graph)
+    monkeypatch.setattr(repository, "_reconcile_after_failure", reconcile)
+
+    result = await repository.create(expected)
+
+    assert result.code is IdempotentScheduleCreationCode.UNKNOWN
+    assert reconciliation_contexts == [None]
+    assert observe.await_count == 1
+    assert create_graph.await_count == 1
+    assert "database-canary" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_is_same_object_without_write_exception_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = complete_fingerprint_and_record()
+    repository = repository_without_database()
+    cancellation = asyncio.CancelledError()
+    monkeypatch.setattr(repository, "_observe", AsyncMock(return_value=_Observation.MISSING))
+    monkeypatch.setattr(repository, "_set_local_wait_limit", AsyncMock())
+    monkeypatch.setattr(repository, "_create_graph", AsyncMock(side_effect=cancellation))
+
+    with pytest.raises(asyncio.CancelledError) as captured:
+        await repository.create(expected)
+
+    assert captured.value is cancellation
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.asyncio
+async def test_unavailable_reconciliation_returns_unknown_without_second_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = complete_fingerprint_and_record()
+    repository = repository_without_database()
+    observe = AsyncMock(side_effect=[_Observation.MISSING, _Observation.UNAVAILABLE])
+    create_graph = AsyncMock(side_effect=RuntimeError("database-canary"))
+    monkeypatch.setattr(repository, "_observe", observe)
+    monkeypatch.setattr(repository, "_set_local_wait_limit", AsyncMock())
+    monkeypatch.setattr(repository, "_create_graph", create_graph)
+
+    result = await repository.create(expected)
+
+    assert result.code is IdempotentScheduleCreationCode.UNKNOWN
+    assert observe.await_count == 2
+    assert create_graph.await_count == 1
+    assert "database-canary" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_business_duplicate_without_matching_key_is_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected, _ = complete_fingerprint_and_record()
+    repository = repository_without_database()
+    observe = AsyncMock(side_effect=[_Observation.MISSING, _Observation.MISSING])
+    create_graph = AsyncMock(side_effect=DuplicateScheduleWarning)
+    monkeypatch.setattr(repository, "_observe", observe)
+    monkeypatch.setattr(repository, "_set_local_wait_limit", AsyncMock())
+    monkeypatch.setattr(repository, "_create_graph", create_graph)
+
+    result = await repository.create(expected)
+
+    assert result.code is IdempotentScheduleCreationCode.CONFLICT
+    assert observe.await_count == 2
+    assert create_graph.await_count == 1
