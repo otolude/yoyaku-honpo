@@ -316,6 +316,7 @@ class IdempotentScheduleCreationService:
         allow_duplicate: bool,
         now: datetime,
     ) -> IdempotentScheduleCreationResult:
+        operation_at = require_utc(now)
         fingerprint = OnceScheduleCreationFingerprint.create(
             public_id=public_id,
             guild_id=guild_id,
@@ -324,7 +325,7 @@ class IdempotentScheduleCreationService:
             scheduled_for=scheduled_for,
             content=content,
             allow_duplicate=allow_duplicate,
-            now=now,
+            now=operation_at,
             notification_planning_enabled=(
                 self._configured_guild_id is not None and self._configured_guild_id == guild_id
             ),
@@ -339,7 +340,7 @@ class IdempotentScheduleCreationService:
                 else False
             ),
         )
-        return await self._repository.create(fingerprint)
+        return await self._repository.create(fingerprint, operation_at=operation_at)
 
     async def create_recurring(
         self,
@@ -356,6 +357,7 @@ class IdempotentScheduleCreationService:
         allow_duplicate: bool,
         now: datetime,
     ) -> IdempotentScheduleCreationResult:
+        operation_at = require_utc(now)
         fingerprint = RecurringScheduleCreationFingerprint.create(
             public_id=public_id,
             guild_id=guild_id,
@@ -367,7 +369,7 @@ class IdempotentScheduleCreationService:
             end_date=end_date,
             content=content,
             allow_duplicate=allow_duplicate,
-            now=now,
+            now=operation_at,
             notification_planning_enabled=(
                 self._configured_guild_id is not None and self._configured_guild_id == guild_id
             ),
@@ -382,7 +384,7 @@ class IdempotentScheduleCreationService:
                 else False
             ),
         )
-        return await self._repository.create(fingerprint)
+        return await self._repository.create(fingerprint, operation_at=operation_at)
 
 
 def _first_recurring_run(

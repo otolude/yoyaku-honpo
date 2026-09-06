@@ -413,12 +413,15 @@ async def _conflicting_attempts(
         )
         for _ in range(2)
     ]
-    tasks = [
-        asyncio.create_task(creator.create_once(**once_arguments(key))) for creator in creators
-    ]
-    observer = asyncio.create_task(_wait_for_unique_index_block(engine, coordinator))
-    managed = [*tasks, observer]
+    tasks: list[asyncio.Task] = []
+    managed: list[asyncio.Task] = []
     try:
+        for creator in creators:
+            task = asyncio.create_task(creator.create_once(**once_arguments(key)))
+            tasks.append(task)
+            managed.append(task)
+        observer = asyncio.create_task(_wait_for_unique_index_block(engine, coordinator))
+        managed.append(observer)
         yield tasks, coordinator
     finally:
         coordinator.release_winner.set()

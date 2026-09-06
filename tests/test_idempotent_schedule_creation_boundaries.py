@@ -6,6 +6,7 @@ import uuid
 from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Self
 from unittest.mock import AsyncMock
 
 import pytest
@@ -316,7 +317,7 @@ class _RollbackCancellationSession:
     def __init__(self, cancellation: asyncio.CancelledError) -> None:
         self._cancellation = cancellation
 
-    async def __aenter__(self) -> "_RollbackCancellationSession":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> bool:

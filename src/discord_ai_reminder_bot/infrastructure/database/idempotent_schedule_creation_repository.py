@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import datetime
 from enum import Enum, auto
+from typing import NoReturn
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -78,7 +80,10 @@ class PostgreSQLIdempotentScheduleCreationRepository:
         self._wait_limit = wait_limit
 
     async def create(
-        self, fingerprint: ScheduleCreationFingerprint
+        self,
+        fingerprint: ScheduleCreationFingerprint,
+        *,
+        operation_at: datetime,
     ) -> IdempotentScheduleCreationResult:
         before = await self._observe(fingerprint.public_id)
         if before is _Observation.UNAVAILABLE:
@@ -87,17 +92,14 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             return IdempotentScheduleCreationResult(
                 classify_schedule_creation_record(fingerprint, before)
             )
-        await self._after_preflight_missing()
-
         cancelled: asyncio.CancelledError | None = None
         failure: _WriteFailure | None = None
         try:
             async with self._sessions() as session, session.begin():
                 await self._set_local_wait_limit(session)
-                await self._create_graph(session, fingerprint)
+                await self._create_graph(session, fingerprint, operation_at=operation_at)
                 await self._add_creation_log(session, fingerprint)
                 await session.flush()
-                await self._after_graph_flushed()
                 observed = await self._observe_in_session(session, fingerprint.public_id)
                 if not isinstance(observed, ScheduleCreationRecord) or (
                     classify_schedule_creation_record(fingerprint, observed)
@@ -112,16 +114,23 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             failure = _WriteFailure.UNKNOWN
 
         if cancelled is not None:
-            raise cancelled from None
+            _raise_detached_cancellation(cancelled)
         if failure is not None:
-            return await self._reconcile_after_failure(fingerprint, failure=failure)
+            reconciliation: IdempotentScheduleCreationResult | None = None
+            try:
+                reconciliation = await self._reconcile_after_failure(fingerprint, failure=failure)
+            except asyncio.CancelledError as caught:
+                cancelled = caught
+            except Exception:  # noqa: BLE001 - an unprovable read has one fixed result
+                reconciliation = IdempotentScheduleCreationResult(
+                    IdempotentScheduleCreationCode.UNKNOWN
+                )
+            if cancelled is not None:
+                _raise_detached_cancellation(cancelled)
+            if reconciliation is not None:
+                return reconciliation
+            return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.UNKNOWN)
         return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.CREATED)
-
-    async def _after_preflight_missing(self) -> None:
-        """Test coordination hook; production performs no work."""
-
-    async def _after_graph_flushed(self) -> None:
-        """Test coordination hook; production performs no work."""
 
     async def _set_local_wait_limit(self, session: AsyncSession) -> None:
         milliseconds = max(1, math.ceil(self._wait_limit.seconds * 1000))
@@ -134,6 +143,8 @@ class PostgreSQLIdempotentScheduleCreationRepository:
         self,
         session: AsyncSession,
         fingerprint: ScheduleCreationFingerprint,
+        *,
+        operation_at: datetime,
     ) -> None:
         policy = NameGenerationRegistrationPolicy(
             enabled=fingerprint.name_generation_enabled,
@@ -154,7 +165,7 @@ class PostgreSQLIdempotentScheduleCreationRepository:
                 scheduled_for=fingerprint.next_run_at,
                 content=fingerprint.content,
                 allow_duplicate=fingerprint.allow_duplicate,
-                now=fingerprint.operation_at,
+                now=operation_at,
                 public_id=fingerprint.public_id,
             )
             return
@@ -172,7 +183,7 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             end_date=fingerprint.end_date,
             content=fingerprint.content,
             allow_duplicate=fingerprint.allow_duplicate,
-            now=fingerprint.operation_at,
+            now=operation_at,
             public_id=fingerprint.public_id,
         )
 
@@ -228,7 +239,7 @@ class PostgreSQLIdempotentScheduleCreationRepository:
         except Exception:  # noqa: BLE001 - an unprovable read has one fixed result
             return _Observation.UNAVAILABLE
         if cancelled is not None:
-            raise cancelled from None
+            _raise_detached_cancellation(cancelled)
         return _Observation.UNAVAILABLE
 
     async def _observe_in_session(
@@ -254,10 +265,7 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             (
                 await session.scalars(
                     select(OperationLog)
-                    .where(
-                        OperationLog.schedule_id == schedule.id,
-                        OperationLog.action == OperationAction.CREATED.value,
-                    )
+                    .where(OperationLog.schedule_id == schedule.id)
                     .order_by(OperationLog.id)
                 )
             ).all()
@@ -315,7 +323,8 @@ class PostgreSQLIdempotentScheduleCreationRepository:
                 attempt_count=item.attempt_count,
                 run_linked=(run is not None and item.schedule_run_id == run.id),
                 pristine=(
-                    item.claimed_by is None
+                    item.created_at is not None
+                    and item.claimed_by is None
                     and item.claimed_at is None
                     and item.lease_expires_at is None
                     and item.started_at is None
@@ -329,7 +338,9 @@ class PostgreSQLIdempotentScheduleCreationRepository:
         )
         name_job = name_jobs[0] if len(name_jobs) == 1 else None
         name_job_pristine = name_job is None or (
-            name_job.expected_schedule_version == 1
+            name_job.created_at is not None
+            and name_job.updated_at is not None
+            and name_job.expected_schedule_version == 1
             and name_job.status == NameGenerationJobStatus.PENDING.value
             and name_job.reserved_cost_microunits == 0
             and name_job.claimed_at is None
@@ -352,7 +363,11 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             weekday=schedule.weekday,
             end_date=schedule.end_date,
             schedule_version=schedule.version,
-            schedule_timestamps_pristine=schedule.created_at == schedule.updated_at,
+            schedule_timestamps_pristine=(
+                schedule.created_at is not None
+                and schedule.updated_at is not None
+                and schedule.created_at == schedule.updated_at
+            ),
             display_name=schedule.display_name,
             display_name_source=schedule.display_name_source,
             deleted_at=schedule.deleted_at,
@@ -371,7 +386,12 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             run_discord_message_id_present=(run is not None and run.discord_message_id is not None),
             run_result_code_present=run is not None and run.result_code is not None,
             run_error_summary_present=run is not None and run.error_summary is not None,
-            run_timestamps_pristine=(run is not None and run.created_at == run.updated_at),
+            run_timestamps_pristine=(
+                run is not None
+                and run.created_at is not None
+                and run.updated_at is not None
+                and run.created_at == run.updated_at
+            ),
             creation_log_count=len(creation_logs),
             creation_actor_user_id=(
                 creation_log.actor_user_id
@@ -390,6 +410,8 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             ),
             creation_log_pristine=(
                 creation_log is not None
+                and creation_log.action == OperationAction.CREATED.value
+                and creation_log.created_at is not None
                 and creation_log.delete_kind is None
                 and creation_log.delete_reason is None
             ),
@@ -397,9 +419,15 @@ class PostgreSQLIdempotentScheduleCreationRepository:
             notification_attempt_count=notification_attempt_count,
             delivery_attempt_count=delivery_attempt_count,
             name_job_count=len(name_jobs),
-            name_job_created_at=name_job.created_at if name_job is not None else None,
             name_job_pristine=name_job_pristine,
         )
+
+
+def _raise_detached_cancellation(error: asyncio.CancelledError) -> NoReturn:
+    error.__cause__ = None
+    error.__context__ = None
+    error.__traceback__ = None
+    raise error
 
 
 async def _count_for_ids(

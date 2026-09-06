@@ -66,10 +66,14 @@ class ScheduleCreationWaitLimit:
     def create(cls, value: object) -> ScheduleCreationWaitLimit:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError(_INVALID_WAIT_LIMIT)  # noqa: TRY004
+        invalid_conversion = False
         try:
             seconds = float(value)
         except OverflowError, ValueError:
-            raise ValueError(_INVALID_WAIT_LIMIT) from None
+            invalid_conversion = True
+            seconds = 0.0
+        if invalid_conversion:
+            raise ValueError(_INVALID_WAIT_LIMIT)
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError(_INVALID_WAIT_LIMIT)
         instance = object.__new__(cls)
@@ -130,7 +134,6 @@ class OnceScheduleCreationFingerprint:
     name_generation_enabled: bool = field(repr=False)
     name_generator_available: bool = field(repr=False)
     notification_planning_enabled: bool = field(repr=False)
-    operation_at: datetime = field(repr=False)
 
     @classmethod
     def create(
@@ -182,7 +185,6 @@ class OnceScheduleCreationFingerprint:
             name_generation_enabled=name_generation_enabled,
             name_generator_available=name_generator_available,
             notification_planning_enabled=notification_planning_enabled,
-            operation_at=now,
         )
 
 
@@ -205,7 +207,6 @@ class RecurringScheduleCreationFingerprint:
     name_generation_enabled: bool = field(repr=False)
     name_generator_available: bool = field(repr=False)
     notification_planning_enabled: bool = field(repr=False)
-    operation_at: datetime = field(repr=False)
 
     @classmethod
     def create(
@@ -268,7 +269,6 @@ class RecurringScheduleCreationFingerprint:
             name_generation_enabled=name_generation_enabled,
             name_generator_available=name_generator_available,
             notification_planning_enabled=notification_planning_enabled,
-            operation_at=now,
         )
 
 
@@ -320,7 +320,6 @@ class ScheduleCreationRecord:
     notification_attempt_count: int = field(default=0, repr=False)
     delivery_attempt_count: int = field(default=0, repr=False)
     name_job_count: int = field(default=0, repr=False)
-    name_job_created_at: datetime | None = field(default=None, repr=False)
     name_job_pristine: bool = field(default=True, repr=False)
 
     def as_fields(self) -> dict[str, object]:
@@ -373,7 +372,6 @@ class ScheduleCreationRecord:
             notification_attempt_count=0,
             delivery_attempt_count=0,
             name_job_count=int(expected.expect_name_job),
-            name_job_created_at=(expected.operation_at if expected.expect_name_job else None),
             name_job_pristine=True,
         )
 
@@ -396,7 +394,10 @@ class IdempotentScheduleCreationPort(Protocol):
     """
 
     async def create(
-        self, fingerprint: ScheduleCreationFingerprint
+        self,
+        fingerprint: ScheduleCreationFingerprint,
+        *,
+        operation_at: datetime,
     ) -> IdempotentScheduleCreationResult: ...
 
 
