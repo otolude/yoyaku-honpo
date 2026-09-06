@@ -1055,9 +1055,46 @@ def item_by_id(view: discord.ui.View, custom_id: str) -> discord.ui.Item[object]
 
 
 _PREVIEW_URL_SCHEMES = ("http://", "https://")
-_PREVIEW_URL_TERMINATES = str.isspace
-_PREVIEW_MARKDOWN_CHARACTERS = frozenset("\\*_~`|>#[]")
+_PREVIEW_URL_PUNCTUATION = frozenset("-._~:/?#@!$&'()*+,;=%")
+_PREVIEW_MARKDOWN_CHARACTERS = frozenset("\\*_~`|><#[]-.")
 _PREVIEW_MENTION_PREFIXES = ("<@!", "<@&", "<@", "<#")
+
+
+def _preview_url_scheme_end(value: str, start: int) -> int | None:
+    for scheme in _PREVIEW_URL_SCHEMES:
+        if start + len(scheme) > len(value):
+            continue
+        for offset, expected in enumerate(scheme):
+            actual = value[start + offset]
+            if "A" <= actual <= "Z":
+                actual = chr(ord(actual) + ord("a") - ord("A"))
+            if actual != expected:
+                break
+        else:
+            return start + len(scheme)
+    return None
+
+
+def _is_preview_url_character(character: str) -> bool:
+    return character.isascii() and (character.isalnum() or character in _PREVIEW_URL_PUNCTUATION)
+
+
+def _preview_url_end(value: str, start: int) -> int | None:
+    scheme_end = _preview_url_scheme_end(value, start)
+    if scheme_end is None:
+        return None
+    cursor = scheme_end
+    while (
+        cursor < len(value)
+        and _is_preview_url_character(value[cursor])
+        and value[cursor] not in "/?#"
+    ):
+        cursor += 1
+    if cursor == scheme_end:
+        return None
+    while cursor < len(value) and _is_preview_url_character(value[cursor]):
+        cursor += 1
+    return cursor
 
 
 def _preview_mention_end(value: str, start: int) -> int | None:
@@ -1085,19 +1122,17 @@ def _escape_preview_text(value: str) -> str:
     parts: list[str] = []
     cursor = 0
     while cursor < len(value):
-        if value.startswith(_PREVIEW_URL_SCHEMES, cursor):
-            url_end = cursor + 1
-            while url_end < len(value) and not _PREVIEW_URL_TERMINATES(value[url_end]):
-                url_end += 1
-            parts.append(value[cursor:url_end])
-            cursor = url_end
-            continue
-
         mention_end = _preview_mention_end(value, cursor)
         if mention_end is not None:
             parts.append("<\u200b")
             parts.append(value[cursor + 1 : mention_end])
             cursor = mention_end
+            continue
+
+        url_end = _preview_url_end(value, cursor)
+        if url_end is not None:
+            parts.append(value[cursor:url_end])
+            cursor = url_end
             continue
 
         character = value[cursor]
