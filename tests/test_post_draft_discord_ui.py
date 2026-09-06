@@ -53,7 +53,7 @@ ROLE_MENTION = f"<@&{'2' * 17}>"
 CHANNEL_MENTION = f"<#{'3' * 15}>"
 PLAIN_URL = "https://example.invalid/plain"
 MARKDOWN_LINK = "[表示名](https://example.invalid/destination)"
-MARKDOWN_CHARACTERS = "\\*_~`|>#[]"
+MARKDOWN_CHARACTERS = "\\*_~`|><#[]-."
 
 
 class FakeGenerationService:
@@ -404,7 +404,7 @@ async def test_manual_and_edit_preview_escape_only_display_and_accept_keeps_raw(
         "既存\\backslash"
     )
     expected = (
-        f"<\u200b@{'1' * 17}> <\u200b@&{'2' * 17}> <\u200b#{'3' * 15}> @mention-like\n"
+        f"<\u200b@{'1' * 17}> <\u200b@&{'2' * 17}> <\u200b#{'3' * 15}> @mention\\-like\n"
         "\\[表示名\\](https://example.invalid/destination)\n"
         "\\*\\*太字\\*\\* \\*斜体\\*\n\\# 見出し\n"
         "\\`inline\\`\n\\`\\`\\`text\ncode\n\\`\\`\\`\n"
@@ -462,6 +462,50 @@ async def test_manual_and_edit_preview_escape_only_display_and_accept_keeps_raw(
     accept_kwargs = accepted.response.edit_message.await_args.kwargs
     assert accept_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
     assert raw not in accept_kwargs["content"]
+    assert accept_kwargs["embed"] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_and_edit_keep_raw_while_escaping_strict_url_boundaries() -> None:
+    raw = "HTTPS://example.invalid/a_b`tail` - item 12. item"
+    expected = "HTTPS://example.invalid/a_b\\`tail\\` \\- item 12\\. item"
+    adapter, generation = ui()
+    mode = create_post_draft_mode_view(ui=adapter)
+    selected = interaction()
+    await item(mode, "post_draft_mode_manual").callback(selected)
+    manual = selected.response.send_modal.await_args.args[0]
+    set_text(manual.body, raw)
+
+    submitted = interaction()
+    await manual.on_submit(submitted)
+
+    first = submitted.response.send_message.await_args.kwargs
+    assert_preview_text(first["embed"].description, expected, "Manual strict Preview changed")
+    assert first["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert adapter.controller.session.current_draft().value == raw
+    edit_clicked = interaction()
+    await item(first["view"], "post_draft_edit").callback(edit_clicked)
+    edit = edit_clicked.response.send_modal.await_args.args[0]
+    assert edit.body.default == raw
+    set_text(edit.body, raw)
+
+    edited = interaction()
+    await edit.on_submit(edited)
+
+    second = edited.response.send_message.await_args.kwargs
+    assert_preview_text(second["embed"].description, expected, "Edit strict Preview changed")
+    assert second["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert adapter.controller.session.current_draft().value == raw
+    assert first["embed"].description == second["embed"].description
+    assert generation.calls == 0
+
+    accepted = interaction()
+    await item(second["view"], "post_draft_accept").callback(accepted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert adapter.controller.accepted_draft().value == raw
+    accept_kwargs = accepted.response.edit_message.await_args.kwargs
+    assert accept_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
     assert accept_kwargs["embed"] is None
 
 
@@ -524,10 +568,12 @@ def test_preview_preserves_complete_normal_url_span(raw: str) -> None:
 @pytest.mark.parametrize(
     "separator", [" ", "\t", "\n", "\u3000"], ids=("space", "tab", "lf", "wide-space")
 )
-def test_preview_url_span_ends_only_before_unicode_whitespace(separator: str) -> None:
+def test_preview_url_keeps_uri_punctuation_and_stops_before_closing_bracket(
+    separator: str,
+) -> None:
     url = "https://example.invalid/path_~(*)?q=*value*#fragment.,!?)]"
     raw = f"*before*{separator}{url}{separator}*after*"
-    expected = f"\\*before\\*{separator}{url}{separator}\\*after\\*"
+    expected = f"\\*before\\*{separator}{url[:-1]}\\]{separator}\\*after\\*"
 
     rendered = _escape_preview_text(raw)
 
@@ -536,6 +582,212 @@ def test_preview_url_span_ends_only_before_unicode_whitespace(separator: str) ->
         expected,
         "URL terminator or surrounding Markdown escape changed",
     )
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    ("http://", "https://", "HTTP://", "HTTPS://", "Http://", "HtTpS://"),
+)
+def test_preview_matches_http_scheme_ascii_case_insensitively_without_rewriting(
+    scheme: str,
+) -> None:
+    raw = f"{scheme}example.invalid/path_name*~(segment)?query=*value*#fragment"
+
+    rendered = _preview_embed(GeneratedPostDraft(raw)).description
+
+    assert_preview_text(rendered, raw, "HTTP scheme case or URL content changed")
+
+
+def test_preview_preserves_each_allowed_ascii_uri_character_and_percent_text() -> None:
+    raw = "https://user@example.invalid/AZaz09-._~:/?#@!$&'()*+,;=%25%ZZ"
+
+    rendered = _preview_embed(GeneratedPostDraft(raw)).description
+
+    assert_preview_text(rendered, raw, "an allowed ASCII URI character changed")
+
+
+@pytest.mark.parametrize(
+    ("terminator", "expected_suffix"),
+    (
+        ("\\", "\\\\\\_tail\\_"),
+        ("`", "\\`\\_tail\\_"),
+        ("|", "\\|\\_tail\\_"),
+        ("<", "\\<\\_tail\\_"),
+        (">", "\\>\\_tail\\_"),
+        ("[", "\\[\\_tail\\_"),
+        ("]", "\\]\\_tail\\_"),
+        ('"', '"\\_tail\\_'),
+        ("“", "“\\_tail\\_"),
+        (" ", " \\_tail\\_"),
+        ("\t", "\t\\_tail\\_"),
+        ("\n", "\n\\_tail\\_"),
+        ("\x00", "\x00\\_tail\\_"),
+        ("日", "日\\_tail\\_"),
+    ),
+    ids=(
+        "backslash",
+        "backtick",
+        "vertical-bar",
+        "less-than",
+        "greater-than",
+        "opening-bracket",
+        "closing-bracket",
+        "ascii-quote",
+        "unicode-quote",
+        "space",
+        "tab",
+        "lf",
+        "control",
+        "non-ascii",
+    ),
+)
+def test_preview_url_stops_before_each_disallowed_character(
+    terminator: str, expected_suffix: str
+) -> None:
+    url = "https://example.invalid/path_name*~(segment)?query=value#fragment"
+    raw = f"{url}{terminator}_tail_"
+
+    rendered = _escape_preview_text(raw)
+
+    assert_preview_text(rendered, f"{url}{expected_suffix}", "URL consumed a disallowed suffix")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("https://", "https://"),
+        ("https:///path-name", "https:///path\\-name"),
+        ("https://?query=*value*", "https://?query=\\*value\\*"),
+        ("https://#fragment*", "https://\\#fragment\\*"),
+        ("https://`code`", "https://\\`code\\`"),
+    ),
+    ids=("no-tail", "empty-authority", "query-only", "fragment-only", "invalid-start"),
+)
+def test_preview_does_not_protect_url_with_empty_authority(raw: str, expected: str) -> None:
+    rendered = _escape_preview_text(raw)
+
+    assert_preview_text(rendered, expected, "URL with empty authority was protected")
+
+
+def test_preview_treats_ipv6_literal_url_as_unsupported_and_escapes_it_safely() -> None:
+    raw = "https://[2001:db8::1]/path_name"
+    expected = "https://\\[2001:db8::1\\]/path\\_name"
+
+    rendered = _escape_preview_text(raw)
+
+    assert_preview_text(rendered, expected, "unsupported IPv6 literal URL was protected")
+
+
+@pytest.mark.parametrize(
+    ("raw_suffix", "expected_suffix"),
+    (
+        ("`code`", "\\`code\\`"),
+        ("```code```", "\\`\\`\\`code\\`\\`\\`"),
+        ("||spoiler||", "\\|\\|spoiler\\|\\|"),
+        ("[label](https://other.invalid/path)", "\\[label\\](https://other.invalid/path)"),
+    ),
+    ids=("inline-code", "fenced-code", "spoiler", "masked-link"),
+)
+def test_preview_escapes_markdown_immediately_after_url(
+    raw_suffix: str, expected_suffix: str
+) -> None:
+    url = "https://example.invalid/path_name"
+
+    rendered = _preview_embed(GeneratedPostDraft(f"{url}{raw_suffix}")).description
+
+    assert_preview_text(rendered, f"{url}{expected_suffix}", "URL absorbed adjacent Markdown")
+
+
+def test_preview_escapes_both_backticks_around_url() -> None:
+    url = "https://example.invalid/path_name"
+
+    inline = _preview_embed(GeneratedPostDraft(f"`{url}`")).description
+    fenced = _preview_embed(GeneratedPostDraft(f"```{url}```")).description
+
+    assert_preview_text(inline, f"\\`{url}\\`", "inline URL code delimiter remained active")
+    assert_preview_text(
+        fenced,
+        f"\\`\\`\\`{url}\\`\\`\\`",
+        "fenced URL code delimiter remained active",
+    )
+
+
+def test_preview_escapes_angle_autolink_and_preserves_inner_url() -> None:
+    url = "https://example.invalid/path_name"
+
+    rendered = _preview_embed(GeneratedPostDraft(f"<{url}>")).description
+
+    assert_preview_text(rendered, f"\\<{url}\\>", "angle autolink remained active")
+
+
+@pytest.mark.parametrize(
+    "mention",
+    (
+        f"<@{'1' * 15}>",
+        f"<@!{'2' * 16}>",
+        f"<@&{'3' * 17}>",
+        f"<#{'4' * 20}>",
+    ),
+    ids=("user", "nickname-user", "role", "channel"),
+)
+def test_preview_url_stops_before_and_escapes_adjacent_mention(mention: str) -> None:
+    url = "https://user@example.invalid/path"
+    expected_mention = f"<\u200b{mention[1:]}"
+
+    rendered = _preview_embed(GeneratedPostDraft(f"{url}{mention}")).description
+
+    assert_preview_text(rendered, f"{url}{expected_mention}", "URL absorbed adjacent mention")
+
+
+def test_preview_keeps_separated_urls_and_does_not_guess_a_missing_delimiter() -> None:
+    first = "HTTPS://example.invalid/a_b"
+    second = "http://other.invalid/c*d"
+
+    separated = _preview_embed(GeneratedPostDraft(f"{first} {second}")).description
+    joined = _preview_embed(GeneratedPostDraft(f"{first}{second}")).description
+
+    assert_preview_text(separated, f"{first} {second}", "separated URLs changed")
+    assert_preview_text(joined, f"{first}{second}", "joined URL-like text was split or changed")
+
+
+def test_preview_escapes_masked_link_before_a_separate_normal_url() -> None:
+    masked_url = "https://example.invalid/masked_path"
+    plain_url = "HTTP://other.invalid/plain*path"
+    raw = f"[label]({masked_url}) {plain_url}"
+    expected = f"\\[label\\]({masked_url}) {plain_url}"
+
+    rendered = _preview_embed(GeneratedPostDraft(raw)).description
+
+    assert_preview_text(rendered, expected, "masked link or following normal URL changed")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("- item", "\\- item"),
+        ("* item", "\\* item"),
+        ("1. item", "1\\. item"),
+        ("12. item", "12\\. item"),
+        ("-# subtext", "\\-\\# subtext"),
+        ("# heading", "\\# heading"),
+        ("> quote", "\\> quote"),
+        (">>> quote", "\\>\\>\\> quote"),
+        ("||spoiler||", "\\|\\|spoiler\\|\\|"),
+        ("[label](https://example.invalid/path)", "\\[label\\](https://example.invalid/path)"),
+        ("<https://example.invalid/path>", "\\<https://example.invalid/path\\>"),
+        ("`code`", "\\`code\\`"),
+        ("```text\ncode\n```", "\\`\\`\\`text\ncode\n\\`\\`\\`"),
+        ("__underline__", "\\_\\_underline\\_\\_"),
+        ("**bold**", "\\*\\*bold\\*\\*"),
+        ("_italic_", "\\_italic\\_"),
+        ("~~strike~~", "\\~\\~strike\\~\\~"),
+        ("version 1.2 - ok", "version 1\\.2 \\- ok"),
+    ),
+)
+def test_preview_disables_each_supported_discord_markdown_form(raw: str, expected: str) -> None:
+    rendered = _preview_embed(GeneratedPostDraft(raw)).description
+
+    assert_preview_text(rendered, expected, "Discord Markdown remained active")
 
 
 def test_preview_disables_every_markdown_link_on_same_and_separate_lines() -> None:
@@ -627,7 +879,7 @@ def test_preview_escapes_each_adjacent_complete_mention_once() -> None:
 
 def test_preview_does_not_overconvert_ordinary_mention_like_characters() -> None:
     raw = "通常の<tag>と#hashと@nameと<#short>"
-    expected = "通常の<tag\\>と\\#hashと@nameと<\\#short\\>"
+    expected = "通常の\\<tag\\>と\\#hashと@nameと\\<\\#short\\>"
 
     rendered = _preview_embed(GeneratedPostDraft(raw)).description
 
@@ -646,12 +898,24 @@ def test_preview_generation_has_no_warnings() -> None:
     ("raw", "expected_length", "expected_utf16_units"),
     [
         ("\\" * 2_000, 4_000, 4_000),
-        (MARKDOWN_CHARACTERS * 200, 4_000, 4_000),
+        (
+            (MARKDOWN_CHARACTERS * math.ceil(2_000 / len(MARKDOWN_CHARACTERS)))[:2_000],
+            4_000,
+            4_000,
+        ),
         ((USER_MENTION + ROLE_MENTION + CHANNEL_MENTION) * 33 + "x" * 53, 2_099, 2_099),
         ("https://example.invalid/" + "*_~()#?q=_" * 197 + "x" * 6, 2_000, 2_000),
+        ("HTTPS://EXAMPLE.invalid/" + "*_~()#?q=_" * 197 + "x" * 6, 2_000, 2_000),
         ("😀" * 2_000, 2_000, 4_000),
     ],
-    ids=("backslashes", "all-markdown", "all-mentions", "normal-url", "astral-unicode"),
+    ids=(
+        "backslashes",
+        "all-markdown",
+        "all-mentions",
+        "normal-url",
+        "uppercase-url",
+        "astral-unicode",
+    ),
 )
 def test_two_thousand_character_preview_is_lossless_within_both_embed_limits(
     raw: str, expected_length: int, expected_utf16_units: int
