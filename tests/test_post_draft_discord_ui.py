@@ -507,6 +507,127 @@ async def test_schedule_edit_modal_submit_replaces_input_through_callback() -> N
 
 
 @pytest.mark.asyncio
+async def test_schedule_edit_modal_generation_stales_previous_submit() -> None:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    class Port:
+        async def create_once(self, **kwargs):
+            raise AssertionError
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
+
+    session = PostDraftScheduleSession(
+        scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+    )
+    session.select_type(ScheduleType.ONCE)
+    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    controller = PostDraftScheduleController(
+        session=session, port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate()
+    )
+    view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+
+    def click() -> SimpleNamespace:
+        response = SimpleNamespace(
+            is_done=lambda: False,
+            send_modal=AsyncMock(),
+            send_message=AsyncMock(),
+            edit_message=AsyncMock(),
+        )
+        return SimpleNamespace(
+            user=SimpleNamespace(id=1),
+            guild_id=2,
+            channel_id=3,
+            channel=SimpleNamespace(
+                id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text
+            ),
+            response=response,
+        )
+
+    first = click()
+    await view.children[1].callback(first)
+    old_modal = first.response.send_modal.await_args.args[0]
+    second = click()
+    await view.children[1].callback(second)
+    assert view._edit_generation == 2
+    submit = click()
+    await old_modal.on_submit(submit)
+    assert session.snapshot().confirmation_revision == 1
+    assert submit.response.edit_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_invalid_input_preserves_confirmation() -> None:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    class Port:
+        async def create_once(self, **kwargs):
+            raise AssertionError
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
+
+    session = PostDraftScheduleSession(
+        scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+    )
+    session.select_type(ScheduleType.ONCE)
+    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    controller = PostDraftScheduleController(
+        session=session, port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate()
+    )
+    view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+    click = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        guild_id=2,
+        channel_id=3,
+        channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text),
+        response=SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock()),
+    )
+    await view.children[1].callback(click)
+    modal = click.response.send_modal.await_args.args[0]
+    set_text(modal.scheduled_at, "not-a-date")
+    submit_response = SimpleNamespace(
+        is_done=lambda: False, send_message=AsyncMock(), edit_message=AsyncMock()
+    )
+    submit = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        guild_id=2,
+        channel_id=3,
+        channel=click.channel,
+        response=submit_response,
+    )
+    before = session.snapshot()
+    await modal.on_submit(submit)
+    assert session.snapshot() == before
+    assert submit_response.send_message.await_count == 1
+    assert submit_response.edit_message.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
     view = create_post_draft_mode_view(ui=adapter)
