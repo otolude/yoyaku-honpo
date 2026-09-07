@@ -164,3 +164,134 @@ def test_schedule_session_has_no_public_id_or_infrastructure_dependency() -> Non
     source = inspect.getsource(PostDraftScheduleSession)
     assert "sqlalchemy" not in source
     assert "discord" not in source
+
+
+def _ready_session(schedule_type: ScheduleType = ScheduleType.ONCE):
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleSession,
+    )
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(schedule_type)
+    if schedule_type is ScheduleType.ONCE:
+        session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    return session
+
+
+def test_controller_maps_once_and_result() -> None:
+    from datetime import datetime
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+        IdempotentScheduleCreationResult,
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleController,
+        PostDraftScheduleState,
+    )
+
+    calls: list[dict[str, object]] = []
+
+    class Port:
+        async def create_once(self, **kwargs):
+            calls.append(kwargs)
+            return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.CREATED)
+
+    public_id = ScheduleCreationPublicId.create(uuid7())
+    controller = PostDraftScheduleController(
+        session=_ready_session(), port=Port(), public_id_factory=lambda: public_id
+    )
+    result = __import__("asyncio").run(controller.confirm(now=datetime(2030, 1, 1, tzinfo=UTC)))
+    assert result.code is IdempotentScheduleCreationCode.CREATED
+    assert controller.snapshot().state is PostDraftScheduleState.COMPLETED
+    assert calls == [
+        {
+            "public_id": public_id,
+            "guild_id": 2,
+            "channel_id": 3,
+            "creator_user_id": 1,
+            "scheduled_for": datetime(2030, 1, 1, tzinfo=UTC),
+            "content": "本文",
+            "allow_duplicate": False,
+            "now": datetime(2030, 1, 1, tzinfo=UTC),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "state"),
+    [
+        ("ALREADY_CREATED", "COMPLETED"),
+        ("CONFLICT", "CONFLICT"),
+        ("UNKNOWN", "UNKNOWN"),
+    ],
+)
+def test_controller_maps_all_results(code: str, state: str) -> None:
+    from datetime import datetime
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+        IdempotentScheduleCreationResult,
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleController,
+        PostDraftScheduleState,
+    )
+
+    result_code = IdempotentScheduleCreationCode[code]
+
+    class Port:
+        async def create_once(self, **kwargs):
+            return IdempotentScheduleCreationResult(result_code)
+
+    controller = PostDraftScheduleController(
+        session=_ready_session(),
+        port=Port(),
+        public_id_factory=lambda: ScheduleCreationPublicId.create(uuid7()),
+    )
+    __import__("asyncio").run(controller.confirm(now=datetime(2030, 1, 1, tzinfo=UTC)))
+    assert controller.snapshot().state is PostDraftScheduleState[state]
+
+
+def test_controller_rejects_second_confirm_without_new_side_effect() -> None:
+    from datetime import datetime
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+        IdempotentScheduleCreationResult,
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleController
+
+    factory_calls = 0
+    service_calls = 0
+
+    def factory():
+        nonlocal factory_calls
+        factory_calls += 1
+        return ScheduleCreationPublicId.create(uuid7())
+
+    class Port:
+        async def create_once(self, **kwargs):
+            nonlocal service_calls
+            service_calls += 1
+            return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.CREATED)
+
+    import asyncio
+
+    controller = PostDraftScheduleController(
+        session=_ready_session(), port=Port(), public_id_factory=factory
+    )
+    asyncio.run(controller.confirm(now=datetime(2030, 1, 1, tzinfo=UTC)))
+    with pytest.raises(ValueError):
+        asyncio.run(controller.confirm(now=datetime(2030, 1, 1, tzinfo=UTC)))
+    assert factory_calls == 1
+    assert service_calls == 1
