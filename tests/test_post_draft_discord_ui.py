@@ -628,6 +628,61 @@ async def test_schedule_edit_invalid_input_preserves_confirmation() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("once", "2030-01-01T00:00:00+00:00"),
+        ("daily", "09:30:00"),
+        ("daily_none", "09:30:00"),
+        ("weekly", "2"),
+        ("weekly_none", "2"),
+    ],
+)
+async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected: str) -> None:
+    from datetime import date, datetime, time
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftDailyScheduleInput, PostDraftOnceScheduleInput,
+        PostDraftScheduleController, PostDraftScheduleSession, PostDraftScheduleScope,
+        PostDraftWeeklyScheduleInput,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    class Port:
+        async def create_once(self, **kwargs): raise AssertionError
+        async def create_recurring(self, **kwargs): raise AssertionError
+
+    scope = PostDraftScheduleScope(1, 2, 3)
+    session = PostDraftScheduleSession(scope=scope, accepted_draft=GeneratedPostDraft("本文"))
+    if kind == "once":
+        session.select_type(ScheduleType.ONCE)
+        session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    elif kind.startswith("daily"):
+        session.select_type(ScheduleType.DAILY)
+        session.set_validated_input(PostDraftDailyScheduleInput(time(9, 30), None if kind.endswith("none") else date(2030, 2, 1)))
+    else:
+        session.select_type(ScheduleType.WEEKLY)
+        session.set_validated_input(PostDraftWeeklyScheduleInput(time(9, 30), 2, None if kind.endswith("none") else date(2030, 2, 1)))
+    controller = PostDraftScheduleController(session=session, port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate())
+    view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+    response = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    interaction = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3,
+        channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text), response=response)
+    before = session.snapshot()
+    await view.children[1].callback(interaction)
+    modal = response.send_modal.await_args.args[0]
+    values = [getattr(item, "default", "") for item in modal.children]
+    assert expected in values
+    assert "本文" not in values and "1" not in values
+    submit_response = SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
+    submit = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3, channel=interaction.channel, response=submit_response)
+    await modal.on_submit(submit)
+    assert submit_response.edit_message.await_count == 1
+    assert session.snapshot().confirmation_revision == before.confirmation_revision + 1
+
+
+@pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
     view = create_post_draft_mode_view(ui=adapter)
