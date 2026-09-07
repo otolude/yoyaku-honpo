@@ -56,7 +56,9 @@ ACCEPTED_MESSAGE = (
 )
 POST_DRAFT_SCHEDULE_CREATED_MESSAGE = "予約を作成しました。"
 POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE = "この操作の予約はすでに作成されています。"
-POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE = "予約を確定できませんでした。入力内容を確認し、文章作成からやり直してください。"
+POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE = (
+    "予約を確定できませんでした。入力内容を確認し、文章作成からやり直してください。"
+)
 POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE = (
     "予約結果を確認できませんでした。重複を避けるため再実行していません。"
     "予約一覧で登録状況を確認してください。"
@@ -1183,6 +1185,35 @@ def _schedule_confirmation_embed(controller: object) -> discord.Embed:
     )
 
 
+async def _schedule_guard(
+    interaction: discord.Interaction, controller: object, expected: str
+) -> bool:
+    response = getattr(interaction, "response", None)
+    if response is None or getattr(response, "is_done", lambda: False)():
+        return False
+    user_id = getattr(getattr(interaction, "user", None), "id", None)
+    scope = getattr(getattr(controller, "session", None), "scope", None)
+    channel = getattr(interaction, "channel", None)
+    state = getattr(controller.snapshot(), "state", None)
+    valid = (
+        isinstance(user_id, int)
+        and not isinstance(user_id, bool)
+        and user_id > 0
+        and scope is not None
+        and user_id == scope.owner_user_id
+        and getattr(interaction, "guild_id", None) == scope.guild_id
+        and getattr(interaction, "channel_id", None) == scope.channel_id
+        and getattr(channel, "id", None) == scope.channel_id
+        and getattr(getattr(channel, "guild", None), "id", None) == scope.guild_id
+        and getattr(channel, "type", None) is discord.ChannelType.text
+        and getattr(state, "value", None) == expected
+    )
+    if not valid:
+        await _respond_stale(interaction)
+        return False
+    return True
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1190,6 +1221,8 @@ class PostDraftScheduleTypeView(discord.ui.View):
         super().__init__(timeout=_validated_timeout(timeout))
         self.controller = controller
         self._now = now
+        self._claim_lock = asyncio.Lock()
+        self._claimed = False
         for label, value, style in (
             ("単発", "once", discord.ButtonStyle.primary),
             ("毎日", "daily", discord.ButtonStyle.secondary),
@@ -1210,6 +1243,11 @@ class PostDraftScheduleTypeView(discord.ui.View):
 
     def _select(self, value: str) -> Callable[[discord.Interaction], object]:
         async def callback(interaction: discord.Interaction) -> None:
+            if not await _schedule_guard(interaction, self.controller, "schedule_type_selection"):
+                return
+            if not await self._claim():
+                await _respond_stale(interaction)
+                return
             if getattr(interaction.response, "is_done", lambda: False)():
                 await _respond_stale(interaction)
                 return
@@ -1232,6 +1270,8 @@ class PostDraftScheduleTypeView(discord.ui.View):
         return callback
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
+        if not await _schedule_guard(interaction, self.controller, "schedule_type_selection"):
+            return
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
@@ -1239,13 +1279,34 @@ class PostDraftScheduleTypeView(discord.ui.View):
         await interaction.response.defer(thinking=False)
         self.stop()
 
+    async def _claim(self) -> bool:
+        async with self._claim_lock:
+            if self._claimed or self.is_finished():
+                return False
+            self._claimed = True
+            return True
+
 
 class _PostDraftScheduleInputModal(discord.ui.Modal):
     def __init__(self, *, controller: object, title: str, timeout: float) -> None:
         super().__init__(title=title, timeout=_validated_timeout(timeout))
         self.controller = controller
+        self._claim_lock = asyncio.Lock()
+        self._claimed = False
+
+    async def _claim(self) -> bool:
+        async with self._claim_lock:
+            if self._claimed or self.is_finished():
+                return False
+            self._claimed = True
+            return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await _schedule_guard(interaction, self.controller, "schedule_input"):
+            return
+        if not await self._claim():
+            await _respond_stale(interaction)
+            return
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
@@ -1353,6 +1414,8 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
         super().__init__(timeout=_validated_timeout(timeout))
         self.controller = controller
         self._now = now
+        self._claim_lock = asyncio.Lock()
+        self._claimed = False
         for label, style, callback in (
             ("予約を確定", discord.ButtonStyle.success, self._confirm),
             ("予約条件を編集", discord.ButtonStyle.secondary, self._edit),
@@ -1365,10 +1428,14 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
             self.add_item(button)
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
+        if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
+            return
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
         await interaction.response.defer(thinking=False)
+        if not await self._claim():
+            return
         try:
             result = await self.controller.confirm(now=self._now())
             code = getattr(result, "code", None)
@@ -1398,13 +1465,19 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
             self.stop()
 
     async def _edit(self, interaction: discord.Interaction) -> None:
+        if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
+            return
         await _respond_stale(interaction)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
+        if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
+            return
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
         await interaction.response.defer(thinking=False)
+        if not await self._claim():
+            return
         try:
             self.controller.session.cancel()
             await interaction.edit_original_response(
@@ -1416,6 +1489,13 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
         except Exception:  # noqa: BLE001
             return
         self.stop()
+
+    async def _claim(self) -> bool:
+        async with self._claim_lock:
+            if self._claimed or self.is_finished():
+                return False
+            self._claimed = True
+            return True
 
 
 async def _edit_deferred_preview(
