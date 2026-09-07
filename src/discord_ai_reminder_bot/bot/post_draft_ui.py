@@ -1407,6 +1407,18 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
         )
 
 
+class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
+    """Edit shell; atomic replacement is performed by the next UI slice."""
+
+
+class PostDraftDailyScheduleEditModal(PostDraftDailyScheduleModal):
+    """Edit shell; atomic replacement is performed by the next UI slice."""
+
+
+class PostDraftWeeklyScheduleEditModal(PostDraftWeeklyScheduleModal):
+    """Edit shell; atomic replacement is performed by the next UI slice."""
+
+
 class PostDraftScheduleConfirmationView(discord.ui.View):
     """Unconnected final confirmation shell; persistence is owned by the controller."""
 
