@@ -365,8 +365,8 @@ def test_schedule_input_modals_exist_with_expected_fields() -> None:
 def test_schedule_result_messages_are_fixed_and_retry_free() -> None:
     from discord_ai_reminder_bot.bot.post_draft_ui import (
         POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE,
-        POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
         POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE,
+        POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
         POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
     )
 

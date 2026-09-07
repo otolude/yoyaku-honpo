@@ -54,6 +54,13 @@ STALE_UI_MESSAGE = "この画面は古くなっています。現在の画面か
 ACCEPTED_MESSAGE = (
     "本文を採用しました。まだ予約・投稿はされていません。後続画面で予約を確定してください。"
 )
+POST_DRAFT_SCHEDULE_CREATED_MESSAGE = "予約を作成しました。"
+POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE = "この操作の予約はすでに作成されています。"
+POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE = "予約を確定できませんでした。入力内容を確認し、文章作成からやり直してください。"
+POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE = (
+    "予約結果を確認できませんでした。重複を避けるため再実行していません。"
+    "予約一覧で登録状況を確認してください。"
+)
 
 _ERROR_MESSAGES = {
     PostDraftUIErrorCode.DISABLED: "AI文章作成は現在利用できません。手入力をご利用ください。",
@@ -1358,13 +1365,56 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
             self.add_item(button)
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
-        await _respond_stale(interaction)
+        if getattr(interaction.response, "is_done", lambda: False)():
+            await _respond_stale(interaction)
+            return
+        await interaction.response.defer(thinking=False)
+        try:
+            result = await self.controller.confirm(now=self._now())
+            code = getattr(result, "code", None)
+            value = getattr(code, "value", None)
+            message = {
+                "created": POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
+                "already_created": POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE,
+                "conflict": POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE,
+                "unknown": POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
+            }.get(value, POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE)
+            await interaction.edit_original_response(
+                content=message,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            await interaction.edit_original_response(
+                content=POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        finally:
+            self.stop()
 
     async def _edit(self, interaction: discord.Interaction) -> None:
         await _respond_stale(interaction)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
-        del interaction
+        if getattr(interaction.response, "is_done", lambda: False)():
+            await _respond_stale(interaction)
+            return
+        await interaction.response.defer(thinking=False)
+        try:
+            self.controller.session.cancel()
+            await interaction.edit_original_response(
+                content="予約設定をキャンセルしました。予約は作成されていません。",
+                embed=None,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:  # noqa: BLE001
+            return
         self.stop()
 
 
