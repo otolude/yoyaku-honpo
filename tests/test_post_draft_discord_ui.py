@@ -2167,3 +2167,175 @@ def test_transport_failure_canary_is_not_retained_by_ui() -> None:
     assert CANARY not in observed
     assert not hasattr(adapter, "interaction")
     assert not hasattr(adapter, "message")
+
+
+def _race_case() -> tuple[object, object, object]:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+        IdempotentScheduleCreationResult,
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    class Port:
+        def __init__(self):
+            self.calls = 0
+
+        async def create_once(self, **kwargs):
+            self.calls += 1
+            return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.CREATED)
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
+
+    session = PostDraftScheduleSession(
+        scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+    )
+    session.select_type(ScheduleType.ONCE)
+    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    port = Port()
+    controller = PostDraftScheduleController(
+        session=session, port=port, public_id_factory=lambda: ScheduleCreationPublicId.generate()
+    )
+    return (
+        session,
+        controller,
+        PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60),
+    )
+
+
+class _RaceInteraction:
+    def __init__(self, response: object) -> None:
+        self.user = SimpleNamespace(id=1)
+        self.guild_id = 2
+        self.channel_id = 3
+        self.channel = SimpleNamespace(
+            id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text
+        )
+        self.response = response
+        self.edit_original_response_attempts = 0
+        self.edit_original_response_returns = 0
+        self.edit_original_response_kwargs: dict[str, object] = {}
+
+    async def edit_original_response(self, **kwargs: object) -> None:
+        self.edit_original_response_attempts += 1
+        self.edit_original_response_kwargs = kwargs
+        self.edit_original_response_returns += 1
+
+
+def _race_interaction(response: object) -> _RaceInteraction:
+    return _RaceInteraction(response)
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_wins_against_delayed_edit_submit() -> None:
+    session, _controller, view = _race_case()
+    opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(opened))
+    modal = opened.send_modal.await_args.args[0]
+    confirm = SimpleNamespace(
+        is_done=lambda: False, defer=AsyncMock(), edit_original_response=AsyncMock()
+    )
+    await view.children[0].callback(_race_interaction(confirm))
+    submit = SimpleNamespace(
+        is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
+    )
+    await modal.on_submit(_race_interaction(submit))
+    assert session.snapshot().state.value == "completed"
+    assert submit.edit_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_cancel_wins_against_delayed_edit_submit() -> None:
+    session, _controller, view = _race_case()
+    opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(opened))
+    modal = opened.send_modal.await_args.args[0]
+    cancel = SimpleNamespace(
+        is_done=lambda: False, defer=AsyncMock(), edit_original_response=AsyncMock()
+    )
+    await view.children[2].callback(_race_interaction(cancel))
+    submit = SimpleNamespace(
+        is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
+    )
+    await modal.on_submit(_race_interaction(submit))
+    assert session.snapshot().state.value == "cancelled"
+    assert submit.edit_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_submit_wins_against_old_view_actions() -> None:
+    _session, _controller, view = _race_case()
+    opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(opened))
+    modal = opened.send_modal.await_args.args[0]
+    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+    submit = SimpleNamespace(
+        is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
+    )
+    await modal.on_submit(_race_interaction(submit))
+    assert submit.edit_message.await_count == 1
+    assert view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_modal_duplicate_submit_is_bounded() -> None:
+    _session, _controller, view = _race_case()
+    opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(opened))
+    modal = opened.send_modal.await_args.args[0]
+    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+    responses = [
+        SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
+        for _ in range(2)
+    ]
+    await asyncio.gather(*(modal.on_submit(_race_interaction(r)) for r in responses))
+    assert sum(r.edit_message.await_count for r in responses) <= 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_old_and_new_edit_modals_compete_safely() -> None:
+    _session, _controller, view = _race_case()
+    first = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(first))
+    old = first.send_modal.await_args.args[0]
+    second = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(second))
+    new = second.send_modal.await_args.args[0]
+    set_text(old.scheduled_at, "2030-01-02T00:00:00+00:00")
+    set_text(new.scheduled_at, "2030-01-03T00:00:00+00:00")
+    responses = [
+        SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
+        for _ in range(2)
+    ]
+    await asyncio.gather(
+        old.on_submit(_race_interaction(responses[0])),
+        new.on_submit(_race_interaction(responses[1])),
+    )
+    assert sum(r.edit_message.await_count for r in responses) <= 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_submit_rechecks_revision_after_lock() -> None:
+    session, _controller, view = _race_case()
+    opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
+    await view.children[1].callback(_race_interaction(opened))
+    modal = opened.send_modal.await_args.args[0]
+    current = session.snapshot()
+    session.replace_validated_input(
+        current.validated_input, expected_revision=current.confirmation_revision
+    )
+    submit = SimpleNamespace(
+        is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
+    )
+    await modal.on_submit(_race_interaction(submit))
+    assert submit.edit_message.await_count == 0
