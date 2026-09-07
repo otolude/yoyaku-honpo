@@ -377,6 +377,16 @@ def test_schedule_result_messages_are_fixed_and_retry_free() -> None:
     assert "retry" not in POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE.lower()
 
 
+def test_schedule_interaction_guard_and_claim_are_present() -> None:
+    from discord_ai_reminder_bot.bot.post_draft_ui import (
+        PostDraftScheduleConfirmationView,
+        PostDraftScheduleTypeView,
+    )
+
+    assert hasattr(PostDraftScheduleTypeView, "_claim")
+    assert hasattr(PostDraftScheduleConfirmationView, "_claim")
+
+
 @pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
