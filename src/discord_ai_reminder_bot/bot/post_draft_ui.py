@@ -129,6 +129,8 @@ class PostDraftDiscordUI:
         "_ui_lock",
         "controller",
         "length",
+        "schedule_composition",
+        "schedule_scope",
         "timeout_seconds",
         "tone",
     )
@@ -140,12 +142,16 @@ class PostDraftDiscordUI:
         now: Callable[[], datetime],
         reservation_factory: Callable[[datetime], PostDraftUsageReservation],
         timeout_seconds: object,
+        schedule_scope: object,
+        schedule_composition: object,
     ) -> None:
         if not isinstance(controller, PostDraftUISessionController):
             raise TypeError("invalid post draft Discord UI")
         timeout = _validated_timeout(timeout_seconds)
         if not callable(now) or not callable(reservation_factory):
             raise TypeError("invalid post draft Discord UI dependency")
+        if schedule_scope is None or schedule_composition is None:
+            raise TypeError("invalid post draft schedule dependency")
         self.controller = controller
         self._active_component: _PostDraftView | _PostDraftModal | None = None
         self._pending_component: _PostDraftView | _PostDraftModal | None = None
@@ -159,6 +165,8 @@ class PostDraftDiscordUI:
         self.timeout_seconds = timeout
         self.tone = PostTone.POLITE
         self.length = PostLength.STANDARD
+        self.schedule_scope = schedule_scope
+        self.schedule_composition = schedule_composition
 
     def __repr__(self) -> str:
         return "PostDraftDiscordUI()"

@@ -16,15 +16,15 @@ import discord
 import pytest
 from discord.webhook.async_ import async_context
 
+from discord_ai_reminder_bot.application.post_draft_schedule import (
+    PostDraftScheduleComposition,
+    PostDraftScheduleScope,
+)
 from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUIErrorCode,
     PostDraftUISession,
     PostDraftUISessionController,
     PostDraftUISessionState,
-)
-from discord_ai_reminder_bot.application.post_draft_schedule import (
-    PostDraftScheduleComposition,
-    PostDraftScheduleScope,
 )
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
 from discord_ai_reminder_bot.bot.post_draft_ui import (
@@ -194,9 +194,11 @@ def ui(
     service: FakeGenerationService | None = None,
 ) -> tuple[PostDraftDiscordUI, FakeGenerationService]:
     value, generation = controller(service)
+
     class Port:
         async def create_once(self, **kwargs):
             raise AssertionError
+
         async def create_recurring(self, **kwargs):
             raise AssertionError
 

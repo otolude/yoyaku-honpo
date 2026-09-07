@@ -67,7 +67,9 @@ def disabled_runtime() -> tuple[PostDraftRuntime, MagicMock]:
     service = MagicMock()
     composition = MagicMock(effective_enabled=False, service=service)
     schedule = MagicMock(spec=PostDraftScheduleComposition)
-    return PostDraftRuntime(composition=composition, schedule_composition=schedule, clock=FixedClock(NOW)), service
+    return PostDraftRuntime(
+        composition=composition, schedule_composition=schedule, clock=FixedClock(NOW)
+    ), service
 
 
 @pytest.mark.parametrize(
