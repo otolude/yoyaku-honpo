@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import StrEnum
 from typing import Protocol
 
 from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+    IdempotentScheduleCreationCode,
     IdempotentScheduleCreationResult,
     ScheduleCreationPublicId,
 )
@@ -222,3 +225,114 @@ class PostDraftScheduleSession:
     def _require_state(self, *allowed: str) -> None:
         if self._state not in allowed:
             raise ValueError("invalid schedule session state transition")
+
+
+class PostDraftScheduleConfirmationError(Exception):
+    """Fixed application error for an inconclusive schedule confirmation."""
+
+    def __init__(self) -> None:
+        super().__init__("post draft schedule confirmation failed")
+
+
+class PostDraftScheduleController:
+    __slots__ = ("_lock", "_port", "_public_id_factory", "_session")
+
+    def __init__(
+        self,
+        *,
+        session: PostDraftScheduleSession,
+        port: PostDraftSchedulePort,
+        public_id_factory: Callable[[], ScheduleCreationPublicId],
+    ) -> None:
+        if not isinstance(session, PostDraftScheduleSession):
+            raise TypeError("session must be a PostDraftScheduleSession")
+        self._session = session
+        self._port = port
+        self._public_id_factory = public_id_factory
+        self._lock = asyncio.Lock()
+
+    def snapshot(self) -> PostDraftScheduleSnapshot:
+        return self._session.snapshot()
+
+    async def confirm(self, *, now: datetime) -> IdempotentScheduleCreationResult:
+        async with self._lock:
+            self._session.begin_saving()
+            try:
+                public_id = self._public_id_factory()
+                if not isinstance(public_id, ScheduleCreationPublicId):
+                    raise TypeError("public_id_factory returned an invalid value")
+            except Exception:  # noqa: BLE001
+                self._session.mark_unknown()
+                raise PostDraftScheduleConfirmationError from None
+
+            try:
+                result = await self._call_port(public_id=public_id, now=now)
+            except asyncio.CancelledError:
+                self._session.mark_unknown()
+                raise
+            except Exception:  # noqa: BLE001
+                self._session.mark_unknown()
+                raise PostDraftScheduleConfirmationError from None
+
+            if not isinstance(result, IdempotentScheduleCreationResult):
+                self._session.mark_unknown()
+                raise PostDraftScheduleConfirmationError
+            match result.code:
+                case (
+                    IdempotentScheduleCreationCode.CREATED
+                    | IdempotentScheduleCreationCode.ALREADY_CREATED
+                ):
+                    self._session.mark_completed()
+                case IdempotentScheduleCreationCode.CONFLICT:
+                    self._session.mark_conflict()
+                case IdempotentScheduleCreationCode.UNKNOWN:
+                    self._session.mark_unknown()
+                case _:
+                    self._session.mark_unknown()
+                    raise PostDraftScheduleConfirmationError
+            return result
+
+    async def _call_port(
+        self, *, public_id: ScheduleCreationPublicId, now: datetime
+    ) -> IdempotentScheduleCreationResult:
+        snapshot = self._session.snapshot()
+        scope = self._session.scope
+        common = {
+            "public_id": public_id,
+            "guild_id": scope.guild_id,
+            "channel_id": scope.channel_id,
+            "creator_user_id": scope.owner_user_id,
+            "content": self._session.accepted_draft.value,
+            "allow_duplicate": snapshot.allow_duplicate,
+            "now": now,
+        }
+        if snapshot.schedule_type is ScheduleType.ONCE:
+            value = snapshot.validated_input
+            if not isinstance(value, PostDraftOnceScheduleInput):
+                raise TypeError("invalid once schedule input")
+            return await self._port.create_once(
+                **common,
+                scheduled_for=value.scheduled_at,
+            )
+        value = snapshot.validated_input
+        if snapshot.schedule_type is ScheduleType.DAILY and isinstance(
+            value, PostDraftDailyScheduleInput
+        ):
+            return await self._port.create_recurring(
+                **common,
+                schedule_type=ScheduleType.DAILY,
+                local_time=value.local_time,
+                weekday=None,
+                end_date=value.end_date,
+            )
+        if snapshot.schedule_type is ScheduleType.WEEKLY and isinstance(
+            value, PostDraftWeeklyScheduleInput
+        ):
+            return await self._port.create_recurring(
+                **common,
+                schedule_type=ScheduleType.WEEKLY,
+                local_time=value.local_time,
+                weekday=value.weekday,
+                end_date=value.end_date,
+            )
+        raise TypeError("invalid recurring schedule input")
