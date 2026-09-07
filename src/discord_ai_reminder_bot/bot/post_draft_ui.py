@@ -1366,7 +1366,6 @@ class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
 
     def __init__(self, *, controller: object, timeout: float) -> None:
         super().__init__(controller=controller, title="単発予約", timeout=timeout)
-        self.add_item(self.scheduled_at)
 
     def _parse(self) -> object:
         from datetime import datetime
@@ -1388,8 +1387,6 @@ class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
 
     def __init__(self, *, controller: object, timeout: float) -> None:
         super().__init__(controller=controller, title="毎日予約", timeout=timeout)
-        self.add_item(self.local_time)
-        self.add_item(self.end_date)
 
     def _parse(self) -> object:
         from datetime import date, time
@@ -1418,9 +1415,6 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
 
     def __init__(self, *, controller: object, timeout: float) -> None:
         super().__init__(controller=controller, title="毎週予約", timeout=timeout)
-        self.add_item(self.weekday)
-        self.add_item(self.local_time)
-        self.add_item(self.end_date)
 
     def _parse(self) -> object:
         from datetime import date, time

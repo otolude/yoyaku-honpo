@@ -640,18 +640,27 @@ async def test_schedule_edit_invalid_input_preserves_confirmation() -> None:
 )
 async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected: str) -> None:
     from datetime import date, datetime, time
-    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
+    )
     from discord_ai_reminder_bot.application.post_draft_schedule import (
-        PostDraftDailyScheduleInput, PostDraftOnceScheduleInput,
-        PostDraftScheduleController, PostDraftScheduleSession, PostDraftScheduleScope,
+        PostDraftDailyScheduleInput,
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
         PostDraftWeeklyScheduleInput,
     )
     from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
     from discord_ai_reminder_bot.domain.enums import ScheduleType
 
     class Port:
-        async def create_once(self, **kwargs): raise AssertionError
-        async def create_recurring(self, **kwargs): raise AssertionError
+        async def create_once(self, **kwargs):
+            raise AssertionError
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
 
     scope = PostDraftScheduleScope(1, 2, 3)
     session = PostDraftScheduleSession(scope=scope, accepted_draft=GeneratedPostDraft("本文"))
@@ -660,15 +669,30 @@ async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected
         session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
     elif kind.startswith("daily"):
         session.select_type(ScheduleType.DAILY)
-        session.set_validated_input(PostDraftDailyScheduleInput(time(9, 30), None if kind.endswith("none") else date(2030, 2, 1)))
+        session.set_validated_input(
+            PostDraftDailyScheduleInput(
+                time(9, 30), None if kind.endswith("none") else date(2030, 2, 1)
+            )
+        )
     else:
         session.select_type(ScheduleType.WEEKLY)
-        session.set_validated_input(PostDraftWeeklyScheduleInput(time(9, 30), 2, None if kind.endswith("none") else date(2030, 2, 1)))
-    controller = PostDraftScheduleController(session=session, port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate())
+        session.set_validated_input(
+            PostDraftWeeklyScheduleInput(
+                time(9, 30), 2, None if kind.endswith("none") else date(2030, 2, 1)
+            )
+        )
+    controller = PostDraftScheduleController(
+        session=session, port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate()
+    )
     view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
     response = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
-    interaction = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3,
-        channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text), response=response)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        guild_id=2,
+        channel_id=3,
+        channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text),
+        response=response,
+    )
     before = session.snapshot()
     await view.children[1].callback(interaction)
     modal = response.send_modal.await_args.args[0]
@@ -677,8 +701,16 @@ async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected
     assert "本文" not in values and "1" not in values
     for field in modal.children:
         set_text(field, str(getattr(field, "default", "")))
-    submit_response = SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
-    submit = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3, channel=interaction.channel, response=submit_response)
+    submit_response = SimpleNamespace(
+        is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
+    )
+    submit = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        guild_id=2,
+        channel_id=3,
+        channel=interaction.channel,
+        response=submit_response,
+    )
     await modal.on_submit(submit)
     assert submit_response.edit_message.await_count == 1
     assert session.snapshot().confirmation_revision == before.confirmation_revision + 1
@@ -692,24 +724,39 @@ async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected
         ("weekly", ["post_draft_weekday", "post_draft_weekly_time", "post_draft_weekly_end"]),
     ],
 )
-def test_schedule_modal_children_are_registered_once(modal_name: str, expected_ids: list[str]) -> None:
-    from discord_ai_reminder_bot.application.post_draft_schedule import (
-        PostDraftScheduleController, PostDraftScheduleSession, PostDraftScheduleScope,
+def test_schedule_modal_children_are_registered_once(
+    modal_name: str, expected_ids: list[str]
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
     )
-    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
     from discord_ai_reminder_bot.bot.post_draft_ui import (
-        PostDraftDailyScheduleEditModal, PostDraftDailyScheduleModal,
-        PostDraftOnceScheduleEditModal, PostDraftOnceScheduleModal,
-        PostDraftWeeklyScheduleEditModal, PostDraftWeeklyScheduleModal,
+        PostDraftDailyScheduleEditModal,
+        PostDraftDailyScheduleModal,
+        PostDraftOnceScheduleEditModal,
+        PostDraftOnceScheduleModal,
+        PostDraftWeeklyScheduleEditModal,
+        PostDraftWeeklyScheduleModal,
     )
 
     class Port:
-        async def create_once(self, **kwargs): raise AssertionError
-        async def create_recurring(self, **kwargs): raise AssertionError
+        async def create_once(self, **kwargs):
+            raise AssertionError
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
 
     controller = PostDraftScheduleController(
-        session=PostDraftScheduleSession(scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")),
-        port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate(),
+        session=PostDraftScheduleSession(
+            scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+        ),
+        port=Port(),
+        public_id_factory=lambda: ScheduleCreationPublicId.generate(),
     )
     classes = {
         "once": (PostDraftOnceScheduleModal, PostDraftOnceScheduleEditModal),
@@ -718,10 +765,20 @@ def test_schedule_modal_children_are_registered_once(modal_name: str, expected_i
     }
     regular, edit = classes[modal_name]
     normal = regular(controller=controller, timeout=60)
-    edited = edit(controller=controller, source=object(), generation=1, revision=1, timeout=60,
-                  **({"default": "2030-01-01T00:00:00+00:00"} if modal_name == "once" else
-                     {"local_default": "09:30:00", "end_default": ""} if modal_name == "daily" else
-                     {"weekday_default": "2", "local_default": "09:30:00", "end_default": ""}))
+    edited = edit(
+        controller=controller,
+        source=object(),
+        generation=1,
+        revision=1,
+        timeout=60,
+        **(
+            {"default": "2030-01-01T00:00:00+00:00"}
+            if modal_name == "once"
+            else {"local_default": "09:30:00", "end_default": ""}
+            if modal_name == "daily"
+            else {"weekday_default": "2", "local_default": "09:30:00", "end_default": ""}
+        ),
+    )
     for modal in (normal, edited):
         ids = [item.custom_id for item in modal.children]
         assert ids == expected_ids
