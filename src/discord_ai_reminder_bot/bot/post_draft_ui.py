@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import discord
@@ -1158,6 +1158,24 @@ def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
     )
 
 
+def _schedule_confirmation_embed(controller: object) -> discord.Embed:
+    snapshot = controller.snapshot()
+    draft = controller.session.accepted_draft
+    description = _escape_preview_text(draft.value)
+    if len(description) > 2000:
+        raise ValueError("schedule confirmation exceeds embed limit")
+    return (
+        discord.Embed(
+            title="予約内容の確認",
+            description=description,
+            colour=discord.Colour.blurple(),
+        )
+        .add_field(name="予約種別", value=str(snapshot.schedule_type.value), inline=False)
+        .add_field(name="タイムゾーン", value="Asia/Tokyo", inline=True)
+        .add_field(name="重複予約", value="許可しない", inline=True)
+    )
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1185,14 +1203,140 @@ class PostDraftScheduleTypeView(discord.ui.View):
 
     def _select(self, value: str) -> Callable[[discord.Interaction], object]:
         async def callback(interaction: discord.Interaction) -> None:
-            _ = value
-            await _respond_stale(interaction)
+            if getattr(interaction.response, "is_done", lambda: False)():
+                await _respond_stale(interaction)
+                return
+            try:
+                schedule_type = __import__(
+                    "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
+                ).ScheduleType
+                self.controller.session.select_type(schedule_type(value))
+                modal_type = {
+                    "once": PostDraftOnceScheduleModal,
+                    "daily": PostDraftDailyScheduleModal,
+                    "weekly": PostDraftWeeklyScheduleModal,
+                }[value]
+                await interaction.response.send_modal(
+                    modal_type(controller=self.controller, timeout=self.timeout)
+                )
+            except TypeError, ValueError, KeyError:
+                await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
 
         return callback
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
-        del interaction
+        if getattr(interaction.response, "is_done", lambda: False)():
+            await _respond_stale(interaction)
+            return
+        self.controller.session.cancel()
+        await interaction.response.defer(thinking=False)
         self.stop()
+
+
+class _PostDraftScheduleInputModal(discord.ui.Modal):
+    def __init__(self, *, controller: object, title: str, timeout: float) -> None:
+        super().__init__(title=title, timeout=_validated_timeout(timeout))
+        self.controller = controller
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if getattr(interaction.response, "is_done", lambda: False)():
+            await _respond_stale(interaction)
+            return
+        try:
+            value = self._parse()
+            self.controller.session.set_validated_input(value)
+            embed = _schedule_confirmation_embed(self.controller)
+            await interaction.response.edit_message(
+                embed=embed,
+                content=None,
+                view=PostDraftScheduleConfirmationView(
+                    controller=self.controller, now=lambda: datetime.now(UTC), timeout=900
+                ),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except TypeError, ValueError:
+            await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+
+    def _parse(self) -> object:
+        raise NotImplementedError
+
+
+class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
+    scheduled_at = discord.ui.TextInput(
+        label="日時", required=True, custom_id="post_draft_schedule_at"
+    )
+
+    def __init__(self, *, controller: object, timeout: float) -> None:
+        super().__init__(controller=controller, title="単発予約", timeout=timeout)
+        self.add_item(self.scheduled_at)
+
+    def _parse(self) -> object:
+        from datetime import datetime
+
+        input_type = __import__(
+            "discord_ai_reminder_bot.application.post_draft_schedule",
+            fromlist=["PostDraftOnceScheduleInput"],
+        ).PostDraftOnceScheduleInput
+        return input_type(datetime.fromisoformat(str(self.scheduled_at.value)))
+
+
+class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
+    local_time = discord.ui.TextInput(
+        label="時刻", required=True, custom_id="post_draft_daily_time"
+    )
+    end_date = discord.ui.TextInput(
+        label="終了日（任意）", required=False, custom_id="post_draft_daily_end"
+    )
+
+    def __init__(self, *, controller: object, timeout: float) -> None:
+        super().__init__(controller=controller, title="毎日予約", timeout=timeout)
+        self.add_item(self.local_time)
+        self.add_item(self.end_date)
+
+    def _parse(self) -> object:
+        from datetime import date, time
+
+        input_type = __import__(
+            "discord_ai_reminder_bot.application.post_draft_schedule",
+            fromlist=["PostDraftDailyScheduleInput"],
+        ).PostDraftDailyScheduleInput
+        end = str(self.end_date.value).strip()
+        return input_type(
+            local_time=time.fromisoformat(str(self.local_time.value)),
+            end_date=date.fromisoformat(end) if end else None,
+        )
+
+
+class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
+    weekday = discord.ui.TextInput(
+        label="曜日（0=月曜）", required=True, custom_id="post_draft_weekday"
+    )
+    local_time = discord.ui.TextInput(
+        label="時刻", required=True, custom_id="post_draft_weekly_time"
+    )
+    end_date = discord.ui.TextInput(
+        label="終了日（任意）", required=False, custom_id="post_draft_weekly_end"
+    )
+
+    def __init__(self, *, controller: object, timeout: float) -> None:
+        super().__init__(controller=controller, title="毎週予約", timeout=timeout)
+        self.add_item(self.weekday)
+        self.add_item(self.local_time)
+        self.add_item(self.end_date)
+
+    def _parse(self) -> object:
+        from datetime import date, time
+
+        input_type = __import__(
+            "discord_ai_reminder_bot.application.post_draft_schedule",
+            fromlist=["PostDraftWeeklyScheduleInput"],
+        ).PostDraftWeeklyScheduleInput
+        end = str(self.end_date.value).strip()
+        return input_type(
+            local_time=time.fromisoformat(str(self.local_time.value)),
+            weekday=int(str(self.weekday.value)),
+            end_date=date.fromisoformat(end) if end else None,
+        )
 
 
 class PostDraftScheduleConfirmationView(discord.ui.View):
