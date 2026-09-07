@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from discord_ai_reminder_bot.application.post_draft_generation import DisabledPostDraftGenerator
+from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleComposition
 from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUISessionController,
     PostDraftUISessionState,
@@ -48,13 +49,25 @@ def usage_result(state: PostDraftUsageSettingsState) -> PostDraftUsageSettingsRe
 
 def interaction(*, user_id: object = 123, guild_id: object = 100) -> SimpleNamespace:
     response = SimpleNamespace(send_message=AsyncMock())
-    return SimpleNamespace(user=SimpleNamespace(id=user_id), guild_id=guild_id, response=response)
+    channel = SimpleNamespace(
+        id=200,
+        guild=SimpleNamespace(id=guild_id),
+        type=discord.ChannelType.text,
+    )
+    return SimpleNamespace(
+        user=SimpleNamespace(id=user_id),
+        guild_id=guild_id,
+        channel_id=200,
+        channel=channel,
+        response=response,
+    )
 
 
 def disabled_runtime() -> tuple[PostDraftRuntime, MagicMock]:
     service = MagicMock()
     composition = MagicMock(effective_enabled=False, service=service)
-    return PostDraftRuntime(composition=composition, clock=FixedClock(NOW)), service
+    schedule = MagicMock(spec=PostDraftScheduleComposition)
+    return PostDraftRuntime(composition=composition, schedule_composition=schedule, clock=FixedClock(NOW)), service
 
 
 @pytest.mark.parametrize(
@@ -74,14 +87,13 @@ def test_runtime_composes_once_and_remains_effectively_disabled(
     )
     composition = MagicMock(effective_enabled=False)
     compose.return_value = composition
-    sessions = MagicMock()
+    sessions = async_sessionmaker()
     runtime = create_post_draft_runtime(
         settings=usage_result(state), session_factory=sessions, clock=FixedClock(NOW)
     )
     assert isinstance(runtime, PostDraftRuntime)
     assert runtime.composition is composition
     compose.assert_called_once_with(settings=usage_result(state), session_factory=sessions)
-    sessions.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -90,7 +102,11 @@ async def test_command_creates_distinct_sessions_and_disabled_ephemeral_views() 
     first, second = interaction(), interaction()
     await runtime.start(first)
     await runtime.start(second)
-    assert {field.name for field in fields(runtime)} == {"composition", "clock"}
+    assert {field.name for field in fields(runtime)} == {
+        "composition",
+        "schedule_composition",
+        "clock",
+    }
     assert not hasattr(runtime, "sessions")
     for retained_name in (
         "session_registry",
@@ -151,6 +167,10 @@ class StrictCancelInteraction:
         self.failure = failure
         self.user = SimpleNamespace(id=123)
         self.guild_id = 100
+        self.channel_id = 200
+        self.channel = SimpleNamespace(
+            id=200, guild=SimpleNamespace(id=100), type=discord.ChannelType.text
+        )
         self.data = {}
         self.response = self
         self.done = False

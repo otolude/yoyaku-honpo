@@ -22,6 +22,10 @@ from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUISessionController,
     PostDraftUISessionState,
 )
+from discord_ai_reminder_bot.application.post_draft_schedule import (
+    PostDraftScheduleComposition,
+    PostDraftScheduleScope,
+)
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
 from discord_ai_reminder_bot.bot.post_draft_ui import (
     PostDraftAIInputModal,
@@ -190,11 +194,20 @@ def ui(
     service: FakeGenerationService | None = None,
 ) -> tuple[PostDraftDiscordUI, FakeGenerationService]:
     value, generation = controller(service)
+    class Port:
+        async def create_once(self, **kwargs):
+            raise AssertionError
+        async def create_recurring(self, **kwargs):
+            raise AssertionError
+
+    schedule = PostDraftScheduleComposition(port=Port(), public_id_factory=lambda: None)  # type: ignore[arg-type]
     adapter = PostDraftDiscordUI(
         controller=value,
         now=lambda: NOW,
         reservation_factory=lambda _now: cast(PostDraftUsageReservation, object()),
         timeout_seconds=60,
+        schedule_scope=PostDraftScheduleScope(OWNER, GUILD, 300),
+        schedule_composition=schedule,
     )
     return adapter, generation
 
@@ -302,6 +315,18 @@ def test_timeout_must_be_positive_and_finite(timeout: object) -> None:
             now=lambda: NOW,
             reservation_factory=lambda _now: cast(PostDraftUsageReservation, object()),
             timeout_seconds=timeout,
+            schedule_scope=PostDraftScheduleScope(OWNER, GUILD, 300),
+            schedule_composition=PostDraftScheduleComposition(
+                port=type(
+                    "Port",
+                    (),
+                    {
+                        "create_once": lambda self, **kwargs: None,
+                        "create_recurring": lambda self, **kwargs: None,
+                    },
+                )(),
+                public_id_factory=lambda: None,
+            ),
         )
 
 
