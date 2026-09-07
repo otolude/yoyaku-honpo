@@ -1,4 +1,5 @@
 import inspect
+from datetime import UTC
 
 import pytest
 
@@ -9,9 +10,9 @@ from discord_ai_reminder_bot.application.post_draft_schedule import (
     PostDraftSchedulePort,
     PostDraftScheduleScope,
 )
-from discord_ai_reminder_bot.domain.post_draft_generation import GeneratedPostDraft
-from discord_ai_reminder_bot.domain.enums import ScheduleType
 from discord_ai_reminder_bot.application.schedule_creation import IdempotentScheduleCreationService
+from discord_ai_reminder_bot.domain.enums import ScheduleType
+from discord_ai_reminder_bot.domain.post_draft_generation import GeneratedPostDraft
 
 
 def test_port_signatures_match_service() -> None:
@@ -67,11 +68,11 @@ def test_schedule_session_initial_state_and_fixed_values() -> None:
 
 
 def test_schedule_session_selects_types_and_rejects_mismatched_input() -> None:
-    from datetime import date, datetime, time, timezone
+    from datetime import date, datetime, time
 
     from discord_ai_reminder_bot.application.post_draft_schedule import (
-        PostDraftOnceScheduleInput,
         PostDraftDailyScheduleInput,
+        PostDraftOnceScheduleInput,
         PostDraftScheduleSession,
         PostDraftScheduleState,
         PostDraftWeeklyScheduleInput,
@@ -79,17 +80,21 @@ def test_schedule_session_selects_types_and_rejects_mismatched_input() -> None:
 
     session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
     session.select_type(ScheduleType.ONCE)
-    with pytest.raises(ValueError):
-        session.set_validated_input(PostDraftDailyScheduleInput(local_time=time(9, 0), end_date=None))
+    with pytest.raises(TypeError):
+        session.set_validated_input(
+            PostDraftDailyScheduleInput(local_time=time(9, 0), end_date=None)
+        )
     session.set_validated_input(
-        PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=timezone.utc))
+        PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=UTC))
     )
     assert session.snapshot().state is PostDraftScheduleState.FINAL_CONFIRMATION
     session.edit_schedule_input()
     assert session.snapshot().state is PostDraftScheduleState.SCHEDULE_INPUT
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         session.set_validated_input(
-            PostDraftWeeklyScheduleInput(local_time=time(9, 0), weekday=0, end_date=date(2030, 1, 31))
+            PostDraftWeeklyScheduleInput(
+                local_time=time(9, 0), weekday=0, end_date=date(2030, 1, 31)
+            )
         )
 
 
@@ -103,7 +108,7 @@ def test_schedule_session_selects_every_schedule_type(schedule_type: ScheduleTyp
 
 
 def test_schedule_session_transitions_results_and_rejects_terminal_mutation() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from discord_ai_reminder_bot.application.post_draft_schedule import (
         PostDraftOnceScheduleInput,
@@ -114,7 +119,7 @@ def test_schedule_session_transitions_results_and_rejects_terminal_mutation() ->
     session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
     session.select_type(ScheduleType.ONCE)
     session.set_validated_input(
-        PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=timezone.utc))
+        PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=UTC))
     )
     session.begin_saving()
     assert session.snapshot().state is PostDraftScheduleState.SAVING
@@ -135,12 +140,14 @@ def test_schedule_session_terminal_paths(method: str) -> None:
         session.cancel()
     else:
         session.select_type(ScheduleType.ONCE)
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftOnceScheduleInput
+        from discord_ai_reminder_bot.application.post_draft_schedule import (
+            PostDraftOnceScheduleInput,
+        )
 
         session.set_validated_input(
-            PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=timezone.utc))
+            PostDraftOnceScheduleInput(scheduled_at=datetime(2030, 1, 1, tzinfo=UTC))
         )
         session.begin_saving()
         getattr(session, method)()
