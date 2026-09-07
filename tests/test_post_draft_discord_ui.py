@@ -452,7 +452,7 @@ async def test_schedule_edit_modal_submit_replaces_input_through_callback() -> N
     click = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3, channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text), response=click_response)
     await view.children[1].callback(click)
     modal = click_response.send_modal.await_args.args[0]
-    set_text(modal.scheduled_at, "2030-01-02 00:00")
+    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
     submit_response = SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
     submit = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3, channel=SimpleNamespace(id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text), response=submit_response)
     await modal.on_submit(submit)

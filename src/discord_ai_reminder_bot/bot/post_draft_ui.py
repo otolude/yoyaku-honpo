@@ -1303,7 +1303,8 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
             return True
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not await _schedule_guard(interaction, self.controller, "schedule_input"):
+        expected_state = "final_confirmation" if hasattr(self, "source") else "schedule_input"
+        if not await _schedule_guard(interaction, self.controller, expected_state):
             return
         if not await self._claim():
             await _respond_stale(interaction)
@@ -1331,21 +1332,28 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
 
     async def _submit_edit(self, interaction: discord.Interaction, value: object) -> None:
         source = self.source
-        if source.is_finished() or self.generation != source._edit_generation:
-            await _respond_stale(interaction)
-            return
-        if self.controller.snapshot().confirmation_revision != self.revision:
-            await _respond_stale(interaction)
-            return
-        self.controller.session.replace_validated_input(value, expected_revision=self.revision)
-        await interaction.response.edit_message(
-            embed=_schedule_confirmation_embed(self.controller),
-            view=PostDraftScheduleConfirmationView(
+        async with source._claim_lock:
+            snapshot = self.controller.snapshot()
+            if (
+                source.is_finished()
+                or source._claimed
+                or self.generation != source._edit_generation
+                or snapshot.confirmation_revision != self.revision
+                or snapshot.state.value != "final_confirmation"
+                or snapshot.schedule_type.value != self.schedule_type.value
+            ):
+                await _respond_stale(interaction)
+                return
+            self.controller.session.replace_validated_input(value, expected_revision=self.revision)
+            new_view = PostDraftScheduleConfirmationView(
                 controller=self.controller, now=source._now, timeout=source.timeout
-            ),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        source.stop()
+            )
+            await interaction.response.edit_message(
+                embed=_schedule_confirmation_embed(self.controller),
+                view=new_view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            source.stop()
 
     def _parse(self) -> object:
         raise NotImplementedError
@@ -1442,6 +1450,7 @@ class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
+        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.ONCE
         self.scheduled_at.default = default
 
 
@@ -1459,6 +1468,7 @@ class PostDraftDailyScheduleEditModal(PostDraftDailyScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
+        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.DAILY
         self.local_time.default, self.end_date.default = local_default, end_default
 
 
@@ -1477,6 +1487,7 @@ class PostDraftWeeklyScheduleEditModal(PostDraftWeeklyScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
+        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.WEEKLY
         self.weekday.default, self.local_time.default, self.end_date.default = (
             weekday_default,
             local_default,
