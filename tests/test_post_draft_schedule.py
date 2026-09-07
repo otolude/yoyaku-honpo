@@ -166,6 +166,66 @@ def test_schedule_session_has_no_public_id_or_infrastructure_dependency() -> Non
     assert "discord" not in source
 
 
+def test_schedule_session_atomic_edit_revision() -> None:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleSession,
+    )
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(ScheduleType.ONCE)
+    first = PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC))
+    second = PostDraftOnceScheduleInput(datetime(2030, 1, 2, tzinfo=UTC))
+    session.set_validated_input(first)
+    assert session.snapshot().confirmation_revision == 1
+    replaced = session.replace_validated_input(second, expected_revision=1)
+    assert replaced.confirmation_revision == 2
+    assert replaced.state.name == "FINAL_CONFIRMATION"
+    assert replaced.validated_input == second
+    with pytest.raises(ValueError):
+        session.replace_validated_input(first, expected_revision=1)
+    assert session.snapshot().validated_input == second
+    assert session.snapshot().confirmation_revision == 2
+
+
+@pytest.mark.parametrize("revision", [True, False, -1, "1", None])
+def test_atomic_edit_rejects_invalid_revision(revision: object) -> None:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleSession,
+    )
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(ScheduleType.ONCE)
+    value = PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC))
+    session.set_validated_input(value)
+    with pytest.raises((TypeError, ValueError)):
+        session.replace_validated_input(value, expected_revision=revision)  # type: ignore[arg-type]
+
+
+def test_atomic_edit_rejects_non_confirmation_states_without_mutation() -> None:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleSession,
+    )
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(ScheduleType.ONCE)
+    value = PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC))
+    session.set_validated_input(value)
+    session.begin_saving()
+    with pytest.raises(ValueError):
+        session.replace_validated_input(value, expected_revision=1)
+    assert session.snapshot().state.name == "SAVING"
+    assert session.snapshot().confirmation_revision == 1
+
+
 def _ready_session(schedule_type: ScheduleType = ScheduleType.ONCE):
     from datetime import datetime
 
