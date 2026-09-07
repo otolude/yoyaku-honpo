@@ -1,4 +1,6 @@
-from collections.abc import Sequence
+import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import func, select, table, text
@@ -20,6 +22,46 @@ TABLES: Sequence[str] = (
     "name_generation_jobs",
     "name_generation_budget_buckets",
 )
+
+
+@contextmanager
+def preserve_logging_state() -> Iterator[None]:
+    root = logging.getLogger()
+    manager = logging.root.manager
+    root_state = (
+        root.disabled,
+        root.level,
+        root.propagate,
+        list(root.handlers),
+        list(root.filters),
+    )
+    states = {
+        name: (
+            logger.disabled,
+            logger.level,
+            logger.propagate,
+            list(logger.handlers),
+            list(logger.filters),
+        )
+        for name, logger in manager.loggerDict.items()
+        if isinstance(logger, logging.Logger)
+    }
+    try:
+        yield
+    finally:
+        root.disabled, root.level, root.propagate = root_state[:3]
+        root.handlers[:] = root_state[3]
+        root.filters[:] = root_state[4]
+        for name, state in states.items():
+            logger = logging.getLogger(name)
+            logger.disabled, logger.level, logger.propagate = state[:3]
+            logger.handlers[:] = state[3]
+            logger.filters[:] = state[4]
+        for name, logger in list(manager.loggerDict.items()):
+            if name not in states and isinstance(logger, logging.Logger):
+                logger.handlers.clear()
+                logger.filters.clear()
+                logger.disabled = False
 
 
 async def database_snapshot(engine: AsyncEngine) -> tuple[str, tuple[int, ...], tuple[str, ...]]:
@@ -64,17 +106,18 @@ def test_official_wrapper_current_check_and_noop_upgrade_on_test_database(
 ) -> None:
     monkeypatch.setenv("TEST_DATABASE_URL", test_database_url)
     common = ["--target", "test", "--expected-database", "discord_bot_test"]
-    assert migrate.main([*common, "current"]) == 0
-    assert migrate.main([*common, "check"]) == 0
-    assert (
-        migrate.main(
-            [
-                *common,
-                "--confirm",
-                "test:discord_bot_test:upgrade",
-                "upgrade",
-                "head",
-            ]
+    with preserve_logging_state():
+        assert migrate.main([*common, "current"]) == 0
+        assert migrate.main([*common, "check"]) == 0
+        assert (
+            migrate.main(
+                [
+                    *common,
+                    "--confirm",
+                    "test:discord_bot_test:upgrade",
+                    "upgrade",
+                    "head",
+                ]
+            )
+            == 0
         )
-        == 0
-    )
