@@ -1158,6 +1158,72 @@ def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
     )
 
 
+class PostDraftScheduleTypeView(discord.ui.View):
+    """Unconnected schedule-type selection UI for the next post-draft slice."""
+
+    def __init__(self, *, controller: object, now: Callable[[], datetime], timeout: float) -> None:
+        super().__init__(timeout=_validated_timeout(timeout))
+        self.controller = controller
+        self._now = now
+        for label, value, style in (
+            ("単発", "once", discord.ButtonStyle.primary),
+            ("毎日", "daily", discord.ButtonStyle.secondary),
+            ("毎週", "weekly", discord.ButtonStyle.secondary),
+        ):
+            button = discord.ui.Button(
+                label=label, style=style, custom_id=f"post_draft_schedule_{value}"
+            )
+            button.callback = self._select(value)
+            self.add_item(button)
+        cancel = discord.ui.Button(
+            label="キャンセル",
+            style=discord.ButtonStyle.danger,
+            custom_id="post_draft_schedule_cancel",
+        )
+        cancel.callback = self._cancel
+        self.add_item(cancel)
+
+    def _select(self, value: str) -> Callable[[discord.Interaction], object]:
+        async def callback(interaction: discord.Interaction) -> None:
+            _ = value
+            await _respond_stale(interaction)
+
+        return callback
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        del interaction
+        self.stop()
+
+
+class PostDraftScheduleConfirmationView(discord.ui.View):
+    """Unconnected final confirmation shell; persistence is owned by the controller."""
+
+    def __init__(self, *, controller: object, now: Callable[[], datetime], timeout: float) -> None:
+        super().__init__(timeout=_validated_timeout(timeout))
+        self.controller = controller
+        self._now = now
+        for label, style, callback in (
+            ("予約を確定", discord.ButtonStyle.success, self._confirm),
+            ("予約条件を編集", discord.ButtonStyle.secondary, self._edit),
+            ("キャンセル", discord.ButtonStyle.danger, self._cancel),
+        ):
+            button = discord.ui.Button(
+                label=label, style=style, custom_id=f"post_draft_schedule_{label}"
+            )
+            button.callback = callback
+            self.add_item(button)
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        await _respond_stale(interaction)
+
+    async def _edit(self, interaction: discord.Interaction) -> None:
+        await _respond_stale(interaction)
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        del interaction
+        self.stop()
+
+
 async def _edit_deferred_preview(
     interaction: discord.Interaction, *, view: PostDraftPreviewView, draft: GeneratedPostDraft
 ) -> None:
