@@ -279,10 +279,11 @@ async def graph_counts(engine: AsyncEngine, key: ScheduleCreationPublicId) -> tu
             (DeliveryAttempt, DeliveryAttempt.schedule_run_id.in_(run_ids)),
             (NameGenerationJob, NameGenerationJob.schedule_id.in_(schedule_ids)),
         )
-        return tuple(
-            int(await session.scalar(select(func.count()).select_from(model).where(condition)) or 0)
-            for model, condition in models_and_conditions
-        )
+        counts: list[int] = []
+        for model, condition in models_and_conditions:
+            count = await session.scalar(select(func.count()).select_from(model).where(condition))
+            counts.append(int(count or 0))
+        return tuple(counts)
 
 
 async def test_serial_replay_creates_each_business_row_once(
@@ -421,10 +422,11 @@ class _CoordinatedSession(AsyncSession):
 
     async def scalar(self, statement: Any, params: Any = None, **kwargs: Any) -> Any:
         result = await super().scalar(statement, params=params, **kwargs)
-        if self._role in {_SessionRole.PREFLIGHT, _SessionRole.RECONCILIATION}:
-            if self._role_observed or not _is_target_schedule_lookup(
-                statement, self._target_public_id
-            ):
+        if (
+            self._role in {_SessionRole.PREFLIGHT, _SessionRole.RECONCILIATION}
+            and not self._role_observed
+        ):
+            if not _is_target_schedule_lookup(statement, self._target_public_id):
                 raise AssertionError(_RACE_CONTRACT_FAILED)
             self._role_observed = True
             if self._role is _SessionRole.PREFLIGHT:
