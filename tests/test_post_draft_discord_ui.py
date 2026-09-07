@@ -332,6 +332,21 @@ def test_timeout_must_be_positive_and_finite(timeout: object) -> None:
         )
 
 
+def test_schedule_type_view_has_four_actions() -> None:
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleTypeView
+
+    view = PostDraftScheduleTypeView(controller=object(), now=lambda: NOW, timeout=60)
+    assert [item.label for item in view.children] == ["単発", "毎日", "毎週", "キャンセル"]
+
+
+def test_schedule_confirmation_view_has_no_body_back_action() -> None:
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+
+    view = PostDraftScheduleConfirmationView(controller=object(), now=lambda: NOW, timeout=60)
+    labels = [item.label for item in view.children]
+    assert labels == ["予約を確定", "予約条件を編集", "キャンセル"]
+
+
 @pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
