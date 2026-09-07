@@ -675,11 +675,57 @@ async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected
     values = [getattr(item, "default", "") for item in modal.children]
     assert expected in values
     assert "本文" not in values and "1" not in values
+    for field in modal.children:
+        set_text(field, str(getattr(field, "default", "")))
     submit_response = SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
     submit = SimpleNamespace(user=SimpleNamespace(id=1), guild_id=2, channel_id=3, channel=interaction.channel, response=submit_response)
     await modal.on_submit(submit)
     assert submit_response.edit_message.await_count == 1
     assert session.snapshot().confirmation_revision == before.confirmation_revision + 1
+
+
+@pytest.mark.parametrize(
+    ("modal_name", "expected_ids"),
+    [
+        ("once", ["post_draft_schedule_at"]),
+        ("daily", ["post_draft_daily_time", "post_draft_daily_end"]),
+        ("weekly", ["post_draft_weekday", "post_draft_weekly_time", "post_draft_weekly_end"]),
+    ],
+)
+def test_schedule_modal_children_are_registered_once(modal_name: str, expected_ids: list[str]) -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleController, PostDraftScheduleSession, PostDraftScheduleScope,
+    )
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+    from discord_ai_reminder_bot.bot.post_draft_ui import (
+        PostDraftDailyScheduleEditModal, PostDraftDailyScheduleModal,
+        PostDraftOnceScheduleEditModal, PostDraftOnceScheduleModal,
+        PostDraftWeeklyScheduleEditModal, PostDraftWeeklyScheduleModal,
+    )
+
+    class Port:
+        async def create_once(self, **kwargs): raise AssertionError
+        async def create_recurring(self, **kwargs): raise AssertionError
+
+    controller = PostDraftScheduleController(
+        session=PostDraftScheduleSession(scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")),
+        port=Port(), public_id_factory=lambda: ScheduleCreationPublicId.generate(),
+    )
+    classes = {
+        "once": (PostDraftOnceScheduleModal, PostDraftOnceScheduleEditModal),
+        "daily": (PostDraftDailyScheduleModal, PostDraftDailyScheduleEditModal),
+        "weekly": (PostDraftWeeklyScheduleModal, PostDraftWeeklyScheduleEditModal),
+    }
+    regular, edit = classes[modal_name]
+    normal = regular(controller=controller, timeout=60)
+    edited = edit(controller=controller, source=object(), generation=1, revision=1, timeout=60,
+                  **({"default": "2030-01-01T00:00:00+00:00"} if modal_name == "once" else
+                     {"local_default": "09:30:00", "end_default": ""} if modal_name == "daily" else
+                     {"weekday_default": "2", "local_default": "09:30:00", "end_default": ""}))
+    for modal in (normal, edited):
+        ids = [item.custom_id for item in modal.children]
+        assert ids == expected_ids
+        assert len(ids) == len(set(ids))
 
 
 @pytest.mark.asyncio
