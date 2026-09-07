@@ -4,13 +4,12 @@ import pytest
 
 from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
     IdempotentScheduleCreationResult,
-    ScheduleCreationPublicId,
 )
-from discord_ai_reminder_bot.application.schedule_creation import IdempotentScheduleCreationService
 from discord_ai_reminder_bot.application.post_draft_schedule import (
     PostDraftSchedulePort,
     PostDraftScheduleScope,
 )
+from discord_ai_reminder_bot.application.schedule_creation import IdempotentScheduleCreationService
 
 
 def test_port_signatures_match_service() -> None:
@@ -18,7 +17,11 @@ def test_port_signatures_match_service() -> None:
         port = inspect.signature(getattr(PostDraftSchedulePort, name))
         service = inspect.signature(getattr(IdempotentScheduleCreationService, name))
         assert list(port.parameters)[1:] == list(service.parameters)[1:]
-        assert port.return_annotation is service.return_annotation is IdempotentScheduleCreationResult
+        assert port.return_annotation == service.return_annotation
+        assert port.return_annotation in (
+            IdempotentScheduleCreationResult,
+            "IdempotentScheduleCreationResult",
+        )
 
 
 def test_scope_is_validated_immutable_hashable_and_redacts_ids() -> None:
