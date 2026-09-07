@@ -362,6 +362,21 @@ def test_schedule_input_modals_exist_with_expected_fields() -> None:
     assert hasattr(PostDraftWeeklyScheduleModal, "end_date")
 
 
+def test_schedule_result_messages_are_fixed_and_retry_free() -> None:
+    from discord_ai_reminder_bot.bot.post_draft_ui import (
+        POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE,
+        POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
+        POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE,
+        POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
+    )
+
+    assert "予約を作成しました" in POST_DRAFT_SCHEDULE_CREATED_MESSAGE
+    assert "すでに作成" in POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE
+    assert "確認できませんでした" in POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE
+    assert "再実行していません" in POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE
+    assert "retry" not in POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE.lower()
+
+
 @pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
