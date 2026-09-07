@@ -1450,7 +1450,9 @@ class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
-        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.ONCE
+        self.schedule_type = __import__(
+            "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
+        ).ScheduleType.ONCE
         self.scheduled_at.default = default
 
 
@@ -1468,7 +1470,9 @@ class PostDraftDailyScheduleEditModal(PostDraftDailyScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
-        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.DAILY
+        self.schedule_type = __import__(
+            "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
+        ).ScheduleType.DAILY
         self.local_time.default, self.end_date.default = local_default, end_default
 
 
@@ -1487,7 +1491,9 @@ class PostDraftWeeklyScheduleEditModal(PostDraftWeeklyScheduleModal):
     ) -> None:
         super().__init__(controller=controller, timeout=timeout)
         self.source, self.generation, self.revision = source, generation, revision
-        self.schedule_type = __import__("discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]).ScheduleType.WEEKLY
+        self.schedule_type = __import__(
+            "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
+        ).ScheduleType.WEEKLY
         self.weekday.default, self.local_time.default, self.end_date.default = (
             weekday_default,
             local_default,
