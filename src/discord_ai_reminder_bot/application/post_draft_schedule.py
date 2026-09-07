@@ -254,6 +254,10 @@ class PostDraftScheduleController:
     def snapshot(self) -> PostDraftScheduleSnapshot:
         return self._session.snapshot()
 
+    @property
+    def session(self) -> PostDraftScheduleSession:
+        return self._session
+
     async def confirm(self, *, now: datetime) -> IdempotentScheduleCreationResult:
         async with self._lock:
             self._session.begin_saving()
@@ -336,3 +340,39 @@ class PostDraftScheduleController:
                 end_date=value.end_date,
             )
         raise TypeError("invalid recurring schedule input")
+
+
+class PostDraftScheduleComposition:
+    __slots__ = ("_port", "_public_id_factory")
+
+    def __init__(
+        self,
+        *,
+        port: PostDraftSchedulePort,
+        public_id_factory: Callable[[], ScheduleCreationPublicId],
+    ) -> None:
+        if port is None or not callable(getattr(port, "create_once", None)):
+            raise TypeError("invalid post draft schedule port")
+        if not callable(getattr(port, "create_recurring", None)):
+            raise TypeError("invalid post draft schedule port")
+        if public_id_factory is None or not callable(public_id_factory):
+            raise TypeError("invalid post draft schedule public id factory")
+        self._port = port
+        self._public_id_factory = public_id_factory
+
+    def start(
+        self,
+        *,
+        scope: PostDraftScheduleScope,
+        accepted_draft: GeneratedPostDraft,
+    ) -> PostDraftScheduleController:
+        if not isinstance(scope, PostDraftScheduleScope):
+            raise TypeError("invalid post draft schedule scope")
+        if not isinstance(accepted_draft, GeneratedPostDraft):
+            raise TypeError("invalid post draft accepted draft")
+        session = PostDraftScheduleSession(scope=scope, accepted_draft=accepted_draft)
+        return PostDraftScheduleController(
+            session=session,
+            port=self._port,
+            public_id_factory=self._public_id_factory,
+        )

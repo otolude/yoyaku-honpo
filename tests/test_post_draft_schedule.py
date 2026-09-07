@@ -300,7 +300,9 @@ def test_controller_rejects_second_confirm_without_new_side_effect() -> None:
 def test_composition_starts_independent_controller_sessions_without_side_effects() -> None:
     from uuid import uuid7
 
-    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
+    )
     from discord_ai_reminder_bot.application.post_draft_schedule import (
         PostDraftScheduleComposition,
         PostDraftScheduleState,
