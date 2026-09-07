@@ -80,6 +80,7 @@ class PostDraftScheduleSnapshot:
     validated_input: object | None = field(repr=False)
     timezone: str = field(repr=False)
     allow_duplicate: bool = field(repr=False)
+    confirmation_revision: int = field(repr=False)
 
     def __repr__(self) -> str:
         return "PostDraftScheduleSnapshot()"
@@ -140,7 +141,14 @@ class PostDraftScheduleScope:
 
 
 class PostDraftScheduleSession:
-    __slots__ = ("_accepted_draft", "_schedule_type", "_scope", "_state", "_validated_input")
+    __slots__ = (
+        "_accepted_draft",
+        "_confirmation_revision",
+        "_schedule_type",
+        "_scope",
+        "_state",
+        "_validated_input",
+    )
 
     def __init__(
         self, *, scope: PostDraftScheduleScope, accepted_draft: GeneratedPostDraft
@@ -154,6 +162,7 @@ class PostDraftScheduleSession:
         self._state = PostDraftScheduleState.SCHEDULE_TYPE_SELECTION
         self._schedule_type: ScheduleType | None = None
         self._validated_input: object | None = None
+        self._confirmation_revision = 0
 
     @property
     def scope(self) -> PostDraftScheduleScope:
@@ -170,6 +179,7 @@ class PostDraftScheduleSession:
             validated_input=self._validated_input,
             timezone="Asia/Tokyo",
             allow_duplicate=False,
+            confirmation_revision=self._confirmation_revision,
         )
 
     def select_type(self, schedule_type: ScheduleType) -> None:
@@ -189,7 +199,29 @@ class PostDraftScheduleSession:
         if not isinstance(value, expected):
             raise TypeError("schedule input does not match selected type")
         self._validated_input = value
+        self._confirmation_revision += 1
         self._state = PostDraftScheduleState.FINAL_CONFIRMATION
+
+    def replace_validated_input(
+        self, new_input: object, *, expected_revision: int
+    ) -> PostDraftScheduleSnapshot:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise TypeError("invalid confirmation revision")
+        if expected_revision < 0:
+            raise ValueError("invalid confirmation revision")
+        self._require_state(PostDraftScheduleState.FINAL_CONFIRMATION)
+        if self._validated_input is None or expected_revision != self._confirmation_revision:
+            raise ValueError("stale confirmation revision")
+        expected = {
+            ScheduleType.ONCE: PostDraftOnceScheduleInput,
+            ScheduleType.DAILY: PostDraftDailyScheduleInput,
+            ScheduleType.WEEKLY: PostDraftWeeklyScheduleInput,
+        }[self._schedule_type]
+        if not isinstance(new_input, expected):
+            raise TypeError("schedule input does not match selected type")
+        self._validated_input = new_input
+        self._confirmation_revision += 1
+        return self.snapshot()
 
     def edit_schedule_input(self) -> None:
         self._require_state(PostDraftScheduleState.FINAL_CONFIRMATION)
