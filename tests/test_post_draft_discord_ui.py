@@ -347,6 +347,21 @@ def test_schedule_confirmation_view_has_no_body_back_action() -> None:
     assert labels == ["予約を確定", "予約条件を編集", "キャンセル"]
 
 
+def test_schedule_input_modals_exist_with_expected_fields() -> None:
+    from discord_ai_reminder_bot.bot.post_draft_ui import (
+        PostDraftDailyScheduleModal,
+        PostDraftOnceScheduleModal,
+        PostDraftWeeklyScheduleModal,
+    )
+
+    assert hasattr(PostDraftOnceScheduleModal, "scheduled_at")
+    assert hasattr(PostDraftDailyScheduleModal, "local_time")
+    assert hasattr(PostDraftDailyScheduleModal, "end_date")
+    assert hasattr(PostDraftWeeklyScheduleModal, "weekday")
+    assert hasattr(PostDraftWeeklyScheduleModal, "local_time")
+    assert hasattr(PostDraftWeeklyScheduleModal, "end_date")
+
+
 @pytest.mark.asyncio
 async def test_owner_ai_flow_uses_modal_defer_and_original_edit_once() -> None:
     adapter, generation = ui()
