@@ -295,3 +295,59 @@ def test_controller_rejects_second_confirm_without_new_side_effect() -> None:
         asyncio.run(controller.confirm(now=datetime(2030, 1, 1, tzinfo=UTC)))
     assert factory_calls == 1
     assert service_calls == 1
+
+
+def test_composition_starts_independent_controller_sessions_without_side_effects() -> None:
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import ScheduleCreationPublicId
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleComposition,
+        PostDraftScheduleState,
+    )
+
+    class Port:
+        async def create_once(self, **kwargs):
+            raise AssertionError("port must not be called")
+
+        async def create_recurring(self, **kwargs):
+            raise AssertionError("port must not be called")
+
+    factory_calls = 0
+
+    def factory() -> ScheduleCreationPublicId:
+        nonlocal factory_calls
+        factory_calls += 1
+        return ScheduleCreationPublicId.create(uuid7())
+
+    composition = PostDraftScheduleComposition(port=Port(), public_id_factory=factory)
+    first = composition.start(scope=_scope(), accepted_draft=_draft())
+    second = composition.start(scope=_scope(), accepted_draft=_draft())
+    assert first is not second
+    assert first.snapshot().state is PostDraftScheduleState.SCHEDULE_TYPE_SELECTION
+    assert first.session is not second.session
+    assert first.session.scope == _scope()
+    assert first.session.accepted_draft == _draft()
+    assert first._port is second._port  # type: ignore[attr-defined]
+    assert first._public_id_factory is second._public_id_factory  # type: ignore[attr-defined]
+    assert factory_calls == 0
+
+
+@pytest.mark.parametrize("kwargs", [{"port": None}, {"public_id_factory": None}])
+def test_composition_rejects_missing_dependencies(kwargs: dict[str, object]) -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleComposition
+
+    values: dict[str, object] = {
+        "port": object(),
+        "public_id_factory": lambda: None,
+    }
+    values.update(kwargs)
+    with pytest.raises(TypeError):
+        PostDraftScheduleComposition(**values)  # type: ignore[arg-type]
+
+
+def test_composition_rejects_non_callable_factory() -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleComposition
+
+    with pytest.raises(TypeError):
+        PostDraftScheduleComposition(port=object(), public_id_factory=object())  # type: ignore[arg-type]
