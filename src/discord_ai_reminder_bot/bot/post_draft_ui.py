@@ -1223,6 +1223,7 @@ class PostDraftScheduleTypeView(discord.ui.View):
         self._now = now
         self._claim_lock = asyncio.Lock()
         self._claimed = False
+        self._edit_generation = 0
         for label, value, style in (
             ("単発", "once", discord.ButtonStyle.primary),
             ("毎日", "daily", discord.ButtonStyle.secondary),
@@ -1312,6 +1313,9 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
             return
         try:
             value = self._parse()
+            if hasattr(self, "source"):
+                await self._submit_edit(interaction, value)
+                return
             self.controller.session.set_validated_input(value)
             embed = _schedule_confirmation_embed(self.controller)
             await interaction.response.edit_message(
@@ -1324,6 +1328,24 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
             )
         except TypeError, ValueError:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+
+    async def _submit_edit(self, interaction: discord.Interaction, value: object) -> None:
+        source = self.source
+        if source.is_finished() or self.generation != source._edit_generation:
+            await _respond_stale(interaction)
+            return
+        if self.controller.snapshot().confirmation_revision != self.revision:
+            await _respond_stale(interaction)
+            return
+        self.controller.session.replace_validated_input(value, expected_revision=self.revision)
+        await interaction.response.edit_message(
+            embed=_schedule_confirmation_embed(self.controller),
+            view=PostDraftScheduleConfirmationView(
+                controller=self.controller, now=source._now, timeout=source.timeout
+            ),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        source.stop()
 
     def _parse(self) -> object:
         raise NotImplementedError
@@ -1408,15 +1430,58 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
 
 
 class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
-    """Edit shell; atomic replacement is performed by the next UI slice."""
+    def __init__(
+        self,
+        *,
+        controller: object,
+        source: object,
+        generation: int,
+        revision: int,
+        timeout: float,
+        default: str,
+    ) -> None:
+        super().__init__(controller=controller, timeout=timeout)
+        self.source, self.generation, self.revision = source, generation, revision
+        self.scheduled_at.default = default
 
 
 class PostDraftDailyScheduleEditModal(PostDraftDailyScheduleModal):
-    """Edit shell; atomic replacement is performed by the next UI slice."""
+    def __init__(
+        self,
+        *,
+        controller: object,
+        source: object,
+        generation: int,
+        revision: int,
+        timeout: float,
+        local_default: str,
+        end_default: str,
+    ) -> None:
+        super().__init__(controller=controller, timeout=timeout)
+        self.source, self.generation, self.revision = source, generation, revision
+        self.local_time.default, self.end_date.default = local_default, end_default
 
 
 class PostDraftWeeklyScheduleEditModal(PostDraftWeeklyScheduleModal):
-    """Edit shell; atomic replacement is performed by the next UI slice."""
+    def __init__(
+        self,
+        *,
+        controller: object,
+        source: object,
+        generation: int,
+        revision: int,
+        timeout: float,
+        weekday_default: str,
+        local_default: str,
+        end_default: str,
+    ) -> None:
+        super().__init__(controller=controller, timeout=timeout)
+        self.source, self.generation, self.revision = source, generation, revision
+        self.weekday.default, self.local_time.default, self.end_date.default = (
+            weekday_default,
+            local_default,
+            end_default,
+        )
 
 
 class PostDraftScheduleConfirmationView(discord.ui.View):
@@ -1428,6 +1493,7 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
         self._now = now
         self._claim_lock = asyncio.Lock()
         self._claimed = False
+        self._edit_generation = 0
         for label, style, callback in (
             ("予約を確定", discord.ButtonStyle.success, self._confirm),
             ("予約条件を編集", discord.ButtonStyle.secondary, self._edit),
@@ -1479,7 +1545,47 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
     async def _edit(self, interaction: discord.Interaction) -> None:
         if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
             return
-        await _respond_stale(interaction)
+        if getattr(interaction.response, "is_done", lambda: False)():
+            await _respond_stale(interaction)
+            return
+        snapshot = self.controller.snapshot()
+        self._edit_generation += 1
+        generation = self._edit_generation
+        value = snapshot.validated_input
+        try:
+            if snapshot.schedule_type.value == "once":
+                modal = PostDraftOnceScheduleEditModal(
+                    controller=self.controller,
+                    source=self,
+                    generation=generation,
+                    revision=snapshot.confirmation_revision,
+                    timeout=900,
+                    default=value.scheduled_at.isoformat(),
+                )
+            elif snapshot.schedule_type.value == "daily":
+                modal = PostDraftDailyScheduleEditModal(
+                    controller=self.controller,
+                    source=self,
+                    generation=generation,
+                    revision=snapshot.confirmation_revision,
+                    timeout=900,
+                    local_default=value.local_time.isoformat(),
+                    end_default=value.end_date.isoformat() if value.end_date else "",
+                )
+            else:
+                modal = PostDraftWeeklyScheduleEditModal(
+                    controller=self.controller,
+                    source=self,
+                    generation=generation,
+                    revision=snapshot.confirmation_revision,
+                    timeout=900,
+                    weekday_default=str(value.weekday),
+                    local_default=value.local_time.isoformat(),
+                    end_default=value.end_date.isoformat() if value.end_date else "",
+                )
+            await interaction.response.send_modal(modal)
+        except TypeError, ValueError:
+            await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
