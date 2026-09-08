@@ -1949,6 +1949,10 @@ async def test_stale_preview_callbacks_do_not_mutate_or_generate() -> None:
             attempted.response.send_message.assert_not_awaited()
             assert STALE_MESSAGE in str(attempted.edit_original_response.await_args)
             assert "view" not in attempted.edit_original_response.await_args.kwargs
+        elif custom_id == "post_draft_accept":
+            attempted.response.defer.assert_awaited_once_with(thinking=False)
+            attempted.response.send_message.assert_not_awaited()
+            attempted.edit_original_response.assert_not_awaited()
         else:
             assert STALE_MESSAGE in str(attempted.response.send_message.await_args)
     assert service.calls == calls

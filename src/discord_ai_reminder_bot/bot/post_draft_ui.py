@@ -54,6 +54,8 @@ STALE_UI_MESSAGE = "この画面は古くなっています。現在の画面か
 ACCEPTED_MESSAGE = (
     "本文を採用しました。まだ予約・投稿はされていません。後続画面で予約を確定してください。"
 )
+SCHEDULE_TYPE_SELECTION_MESSAGE = "本文を採用しました。まだ予約・投稿はされていません。"
+SCHEDULE_HANDOFF_ERROR_MESSAGE = "予約設定画面を開始できませんでした。最初からやり直してください。"
 POST_DRAFT_SCHEDULE_CREATED_MESSAGE = "予約を作成しました。"
 POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE = "この操作の予約はすでに作成されています。"
 POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE = (
@@ -816,27 +818,101 @@ class PostDraftPreviewView(_PostDraftView):
         )
 
     async def _accept(self, interaction: discord.Interaction) -> None:
+        if not _schedule_handoff_scope_matches(interaction, self.ui.schedule_scope):
+            await _respond_error(interaction, PostDraftUIErrorCode.NOT_OWNER)
+            return
+        if getattr(interaction.response, "is_done", lambda: False)():
+            return
+        try:
+            await interaction.response.defer(thinking=False)
+        except Exception:  # noqa: BLE001 - an ambiguous defer is never retried
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=None,
+                schedule_controller=None,
+                event="schedule_handoff_defer_failed",
+                cancel_post_draft=True,
+            )
+            return
         if not await self.ui.claim(self, consume=True):
-            await _respond_stale(interaction)
             return
         user_id, guild_id = self.ui.ids(interaction)
         try:
             await self.ui.controller.accept(
                 owner_user_id=user_id, guild_id=guild_id, now=self.ui._now()
             )
-            await self.ui.deactivate(self)
-        except PostDraftUISessionError as error:
-            await _respond_error(interaction, error.code)
+        except Exception:  # noqa: BLE001 - acceptance details remain private
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=None,
+                schedule_controller=None,
+                event="schedule_handoff_accept_failed",
+            )
+            await _respond_schedule_handoff_error(interaction)
             return
         try:
-            await interaction.response.edit_message(
-                content=ACCEPTED_MESSAGE,
-                embed=None,
-                view=None,
+            accepted_draft = self.ui.controller.accepted_draft()
+        except Exception:  # noqa: BLE001 - accepted draft details remain private
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=None,
+                schedule_controller=None,
+                event="schedule_handoff_accept_failed",
+            )
+            await _respond_schedule_handoff_error(interaction)
+            return
+        schedule_controller: object | None = None
+        try:
+            schedule_controller = self.ui.schedule_composition.start(
+                scope=self.ui.schedule_scope,
+                accepted_draft=accepted_draft,
+            )
+        except Exception:  # noqa: BLE001 - composition details remain private
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=None,
+                schedule_controller=None,
+                event="schedule_handoff_composition_failed",
+            )
+            await _respond_schedule_handoff_error(interaction)
+            return
+        candidate: object | None = None
+        try:
+            candidate = PostDraftScheduleTypeView(
+                controller=schedule_controller,
+                now=self.ui._now,
+                timeout=self.ui.timeout_seconds,
+            )
+            embed = _schedule_type_handoff_embed(accepted_draft)
+        except Exception:  # noqa: BLE001 - render details remain private
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=candidate,
+                schedule_controller=schedule_controller,
+                event="schedule_handoff_render_failed",
+            )
+            return
+        try:
+            await interaction.edit_original_response(
+                content=SCHEDULE_TYPE_SELECTION_MESSAGE,
+                embed=embed,
+                view=candidate,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except Exception:  # noqa: BLE001, S110 - accepted state remains authoritative
-            pass
+            await self.ui.deactivate(self)
+        except Exception:  # noqa: BLE001 - an ambiguous response is never retried
+            await _abort_schedule_handoff(
+                ui=self.ui,
+                source=self,
+                candidate=candidate,
+                schedule_controller=schedule_controller,
+                event="schedule_handoff_response_failed",
+            )
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         await self.ui.cancel(interaction, self)
@@ -1165,6 +1241,96 @@ def _preview_embed(draft: GeneratedPostDraft) -> discord.Embed:
         description=_escape_preview_text(draft.value),
         colour=discord.Colour.blurple(),
     )
+
+
+def _schedule_type_handoff_embed(draft: GeneratedPostDraft) -> discord.Embed:
+    description = _escape_preview_text(draft.value)
+    if len(description) > 2000:
+        raise ValueError("schedule type selection exceeds embed limit")
+    return discord.Embed(
+        title="予約種別を選択",
+        description=description,
+        colour=discord.Colour.blurple(),
+    )
+
+
+def _schedule_handoff_scope_matches(interaction: discord.Interaction, scope: object) -> bool:
+    user_id = getattr(getattr(interaction, "user", None), "id", None)
+    guild_id = getattr(interaction, "guild_id", None)
+    channel_id = getattr(interaction, "channel_id", None)
+    channel = getattr(interaction, "channel", None)
+    return (
+        isinstance(user_id, int)
+        and not isinstance(user_id, bool)
+        and user_id == getattr(scope, "owner_user_id", None)
+        and isinstance(guild_id, int)
+        and not isinstance(guild_id, bool)
+        and guild_id == getattr(scope, "guild_id", None)
+        and isinstance(channel_id, int)
+        and not isinstance(channel_id, bool)
+        and channel_id == getattr(scope, "channel_id", None)
+        and getattr(channel, "id", None) == channel_id
+        and getattr(getattr(channel, "guild", None), "id", None) == guild_id
+        and getattr(channel, "type", None) is discord.ChannelType.text
+    )
+
+
+async def _abort_schedule_handoff(
+    *,
+    ui: PostDraftDiscordUI,
+    source: object,
+    candidate: object | None,
+    schedule_controller: object | None,
+    event: str,
+    cancel_post_draft: bool = False,
+) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    if cancel_post_draft:
+        try:
+            scope = ui.schedule_scope
+            await ui.controller.cancel(
+                owner_user_id=scope.owner_user_id,
+                guild_id=scope.guild_id,
+                now=ui._now(),
+            )
+        except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+            abort_failed = True
+    if schedule_controller is not None:
+        try:
+            schedule_controller.session.cancel()
+        except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+            abort_failed = True
+    try:
+        if not await ui.deactivate(source):
+            ui._stop_component(source)
+    except Exception:  # noqa: BLE001 - attempt every terminal cleanup step
+        abort_failed = True
+        try:
+            ui._stop_component(source)
+        except Exception:  # noqa: BLE001, S110 - report only the fixed abort event
+            pass
+    if candidate is not None:
+        try:
+            if hasattr(candidate, "_claimed"):
+                candidate._claimed = True
+            candidate.stop()
+        except Exception:  # noqa: BLE001 - attempt every terminal cleanup step
+            abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_handoff_abort_failed")
+
+
+async def _respond_schedule_handoff_error(interaction: discord.Interaction) -> None:
+    try:
+        await interaction.edit_original_response(
+            content=SCHEDULE_HANDOFF_ERROR_MESSAGE,
+            embed=None,
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception:  # noqa: BLE001, S110 - an ambiguous response is never retried
+        pass
 
 
 def _schedule_confirmation_embed(controller: object) -> discord.Embed:
