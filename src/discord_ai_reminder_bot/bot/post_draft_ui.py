@@ -1290,6 +1290,59 @@ def _render_schedule_cancel_response() -> dict[str, Any]:
     }
 
 
+def _abort_schedule_type(
+    *, controller: object, source: object, candidate: object | None, event: str
+) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    try:
+        controller.session.cancel()
+    except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+        abort_failed = True
+    seen: set[int] = set()
+    for component in (source, candidate):
+        if component is None or id(component) in seen:
+            continue
+        seen.add(id(component))
+        try:
+            if hasattr(component, "_claimed"):
+                component._claimed = True
+            component.stop()
+        except Exception:  # noqa: BLE001 - attempt every terminal cleanup step
+            abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_type_abort_failed")
+
+
+def _abort_schedule_input(
+    *,
+    controller: object,
+    source: object | None,
+    modal: object,
+    candidate: object | None,
+    event: str,
+) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    try:
+        controller.session.cancel()
+    except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+        abort_failed = True
+    seen: set[int] = set()
+    for component in (source, modal, candidate):
+        if component is None or id(component) in seen:
+            continue
+        seen.add(id(component))
+        try:
+            if hasattr(component, "_claimed"):
+                component._claimed = True
+            component.stop()
+        except Exception:  # noqa: BLE001 - attempt every terminal cleanup step
+            abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_input_abort_failed")
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1333,16 +1386,41 @@ class PostDraftScheduleTypeView(discord.ui.View):
                     "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
                 ).ScheduleType
                 self.controller.session.select_type(schedule_type(value))
+            except Exception:  # noqa: BLE001 - mutation details remain private
+                _abort_schedule_type(
+                    controller=self.controller,
+                    source=self,
+                    candidate=None,
+                    event="schedule_type_controller_failed",
+                )
+                return
+            modal: object | None = None
+            try:
                 modal_type = {
                     "once": PostDraftOnceScheduleModal,
                     "daily": PostDraftDailyScheduleModal,
                     "weekly": PostDraftWeeklyScheduleModal,
                 }[value]
-                await interaction.response.send_modal(
-                    modal_type(controller=self.controller, timeout=self.timeout)
+                modal = modal_type(
+                    controller=self.controller, source_type=self, timeout=self.timeout
                 )
-            except TypeError, ValueError, KeyError:
-                await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+            except Exception:  # noqa: BLE001 - modal construction details remain private
+                _abort_schedule_type(
+                    controller=self.controller,
+                    source=self,
+                    candidate=modal,
+                    event="schedule_type_render_failed",
+                )
+                return
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:  # noqa: BLE001 - an ambiguous transport is never retried
+                _abort_schedule_type(
+                    controller=self.controller,
+                    source=self,
+                    candidate=modal,
+                    event="schedule_type_modal_transport_failed",
+                )
 
         return callback
 
@@ -1365,9 +1443,12 @@ class PostDraftScheduleTypeView(discord.ui.View):
 
 
 class _PostDraftScheduleInputModal(discord.ui.Modal):
-    def __init__(self, *, controller: object, title: str, timeout: float) -> None:
+    def __init__(
+        self, *, controller: object, title: str, timeout: float, source_type: object | None = None
+    ) -> None:
         super().__init__(title=title, timeout=_validated_timeout(timeout))
         self.controller = controller
+        self.source_type = source_type
         self._claim_lock = asyncio.Lock()
         self._claimed = False
 
@@ -1388,23 +1469,86 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
+        if hasattr(self, "source"):
+            try:
+                value = self._parse()
+            except TypeError, ValueError:
+                await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+                return
+            await self._submit_edit(interaction, value)
+            return
         try:
             value = self._parse()
-            if hasattr(self, "source"):
-                await self._submit_edit(interaction, value)
-                return
+        except Exception:  # noqa: BLE001 - validation details remain private
+            _abort_schedule_input(
+                controller=self.controller,
+                source=self.source_type,
+                modal=self,
+                candidate=None,
+                event="schedule_input_validation_failed",
+            )
+            if not getattr(interaction.response, "is_done", lambda: False)():
+                try:
+                    await _send_initial(
+                        interaction,
+                        content=post_draft_ui_error_message(
+                            PostDraftUIErrorCode.INVALID_TRANSITION
+                        ),
+                    )
+                except Exception:  # noqa: BLE001, S110 - never retry validation transport
+                    pass
+            return
+        try:
             self.controller.session.set_validated_input(value)
+        except Exception:  # noqa: BLE001 - mutation details remain private
+            _abort_schedule_input(
+                controller=self.controller,
+                source=self.source_type,
+                modal=self,
+                candidate=None,
+                event="schedule_input_controller_failed",
+            )
+            if not getattr(interaction.response, "is_done", lambda: False)():
+                try:
+                    await _send_initial(
+                        interaction,
+                        content=post_draft_ui_error_message(
+                            PostDraftUIErrorCode.INVALID_TRANSITION
+                        ),
+                    )
+                except Exception:  # noqa: BLE001, S110 - never retry mutation transport
+                    pass
+            return
+        candidate: object | None = None
+        try:
+            candidate = PostDraftScheduleConfirmationView(
+                controller=self.controller, now=lambda: datetime.now(UTC), timeout=900
+            )
             embed = _schedule_confirmation_embed(self.controller)
+        except Exception:  # noqa: BLE001 - render details remain private
+            _abort_schedule_input(
+                controller=self.controller,
+                source=self.source_type,
+                modal=self,
+                candidate=candidate,
+                event="schedule_input_render_failed",
+            )
+            return
+        try:
             await interaction.response.edit_message(
                 embed=embed,
                 content=None,
-                view=PostDraftScheduleConfirmationView(
-                    controller=self.controller, now=lambda: datetime.now(UTC), timeout=900
-                ),
+                view=candidate,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except TypeError, ValueError:
-            await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+        except Exception:  # noqa: BLE001 - an ambiguous response is never retried
+            _abort_schedule_input(
+                controller=self.controller,
+                source=self.source_type,
+                modal=self,
+                candidate=candidate,
+                event="schedule_input_response_failed",
+            )
 
     async def _submit_edit(self, interaction: discord.Interaction, value: object) -> None:
         source = self.source
@@ -1474,8 +1618,12 @@ class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
         label="日時", required=True, custom_id="post_draft_schedule_at"
     )
 
-    def __init__(self, *, controller: object, timeout: float) -> None:
-        super().__init__(controller=controller, title="単発予約", timeout=timeout)
+    def __init__(
+        self, *, controller: object, timeout: float, source_type: object | None = None
+    ) -> None:
+        super().__init__(
+            controller=controller, title="単発予約", timeout=timeout, source_type=source_type
+        )
 
     def _parse(self) -> object:
         from datetime import datetime
@@ -1495,8 +1643,12 @@ class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
         label="終了日（任意）", required=False, custom_id="post_draft_daily_end"
     )
 
-    def __init__(self, *, controller: object, timeout: float) -> None:
-        super().__init__(controller=controller, title="毎日予約", timeout=timeout)
+    def __init__(
+        self, *, controller: object, timeout: float, source_type: object | None = None
+    ) -> None:
+        super().__init__(
+            controller=controller, title="毎日予約", timeout=timeout, source_type=source_type
+        )
 
     def _parse(self) -> object:
         from datetime import date, time
@@ -1523,8 +1675,12 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
         label="終了日（任意）", required=False, custom_id="post_draft_weekly_end"
     )
 
-    def __init__(self, *, controller: object, timeout: float) -> None:
-        super().__init__(controller=controller, title="毎週予約", timeout=timeout)
+    def __init__(
+        self, *, controller: object, timeout: float, source_type: object | None = None
+    ) -> None:
+        super().__init__(
+            controller=controller, title="毎週予約", timeout=timeout, source_type=source_type
+        )
 
     def _parse(self) -> object:
         from datetime import date, time
