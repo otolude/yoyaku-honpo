@@ -1242,6 +1242,25 @@ def _abort_schedule_edit(
         _LOGGER.warning("schedule_edit_abort_failed")
 
 
+def _abort_schedule_confirm(*, controller: object, source: object, event: str) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    try:
+        state = getattr(controller.snapshot(), "state", None)
+        if getattr(state, "value", None) == "final_confirmation":
+            controller.session.cancel()
+    except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+        abort_failed = True
+    try:
+        if hasattr(source, "_claimed"):
+            source._claimed = True
+        source.stop()
+    except Exception:  # noqa: BLE001 - confirmation failure remains bounded
+        abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_confirm_abort_failed")
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1584,34 +1603,67 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
-        await interaction.response.defer(thinking=False)
+        try:
+            await interaction.response.defer(thinking=False)
+        except Exception:  # noqa: BLE001 - an ambiguous defer is never retried
+            _abort_schedule_confirm(
+                controller=self.controller,
+                source=self,
+                event="schedule_confirm_defer_failed",
+            )
+            return
         if not await self._claim():
             return
         try:
-            result = await self.controller.confirm(now=self._now())
-            code = getattr(result, "code", None)
-            value = getattr(code, "value", None)
-            message = {
-                "created": POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
-                "already_created": POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE,
-                "conflict": POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE,
-                "unknown": POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
-            }.get(value, POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE)
-            await interaction.edit_original_response(
-                content=message,
-                embed=None,
-                view=None,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            await interaction.edit_original_response(
-                content=POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
-                embed=None,
-                view=None,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            try:
+                result = await self.controller.confirm(now=self._now())
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - controller details remain private
+                _abort_schedule_confirm(
+                    controller=self.controller,
+                    source=self,
+                    event="schedule_confirm_controller_failed",
+                )
+                try:
+                    await interaction.edit_original_response(
+                        content=POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
+                        embed=None,
+                        view=None,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except Exception:  # noqa: BLE001, S110 - never retry the fixed unknown response
+                    pass
+                return
+            try:
+                code = getattr(result, "code", None)
+                value = getattr(code, "value", None)
+                message = {
+                    "created": POST_DRAFT_SCHEDULE_CREATED_MESSAGE,
+                    "already_created": POST_DRAFT_SCHEDULE_ALREADY_CREATED_MESSAGE,
+                    "conflict": POST_DRAFT_SCHEDULE_CONFLICT_MESSAGE,
+                    "unknown": POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE,
+                }.get(value, POST_DRAFT_SCHEDULE_UNKNOWN_MESSAGE)
+            except Exception:  # noqa: BLE001 - render details remain private
+                _abort_schedule_confirm(
+                    controller=self.controller,
+                    source=self,
+                    event="schedule_confirm_render_failed",
+                )
+                return
+            try:
+                await interaction.edit_original_response(
+                    content=message,
+                    embed=None,
+                    view=None,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - an ambiguous response is never retried
+                _abort_schedule_confirm(
+                    controller=self.controller,
+                    source=self,
+                    event="schedule_confirm_response_failed",
+                )
         finally:
             self.stop()
 
