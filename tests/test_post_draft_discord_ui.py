@@ -28,6 +28,9 @@ from discord_ai_reminder_bot.application.post_draft_ui_session import (
 )
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
 from discord_ai_reminder_bot.bot.post_draft_ui import (
+    ACCEPT_CUSTOM_ID,
+    EDIT_CUSTOM_ID,
+    REGENERATE_CUSTOM_ID,
     PostDraftAIInputModal,
     PostDraftAISettingsView,
     PostDraftDiscordUI,
@@ -168,9 +171,16 @@ class TrackingManualInputModal(PostDraftManualInputModal):
 
 
 def interaction(*, user_id: int = OWNER, guild_id: int | None = GUILD) -> SimpleNamespace:
+    channel = SimpleNamespace(
+        id=300,
+        guild=SimpleNamespace(id=guild_id),
+        type=discord.ChannelType.text,
+    )
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id),
         guild_id=guild_id,
+        channel_id=300,
+        channel=channel,
         response=FakeResponse(),
         edit_original_response=AsyncMock(),
         followup=SimpleNamespace(send=AsyncMock()),
@@ -1022,9 +1032,17 @@ async def test_accept_only_reports_not_reserved_and_performs_no_save_or_post() -
     clicked = interaction()
     await item(view, "post_draft_accept").callback(clicked)
     assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
-    content = clicked.response.edit_message.await_args.kwargs["content"]
+    clicked.response.defer.assert_awaited_once_with(thinking=False)
+    rendered = clicked.edit_original_response.await_args.kwargs
+    content = rendered["content"]
     assert "本文を採用しました" in content
     assert "まだ予約・投稿はされていません" in content
+    assert [child.label for child in rendered["view"].children] == [
+        "単発",
+        "毎日",
+        "毎週",
+        "キャンセル",
+    ]
     assert not hasattr(adapter, "repository")
     assert not hasattr(adapter, "schedule_service")
 
@@ -1115,10 +1133,17 @@ async def test_manual_and_edit_preview_escape_only_display_and_accept_keeps_raw(
 
     assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
     assert adapter.controller.accepted_draft().value == raw
-    accept_kwargs = accepted.response.edit_message.await_args.kwargs
+    accepted.response.defer.assert_awaited_once_with(thinking=False)
+    accept_kwargs = accepted.edit_original_response.await_args.kwargs
     assert accept_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
     assert raw not in accept_kwargs["content"]
-    assert accept_kwargs["embed"] is None
+    assert raw not in accept_kwargs["embed"].description
+    assert [child.label for child in accept_kwargs["view"].children] == [
+        "単発",
+        "毎日",
+        "毎週",
+        "キャンセル",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1160,9 +1185,11 @@ async def test_manual_and_edit_keep_raw_while_escaping_strict_url_boundaries() -
 
     assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
     assert adapter.controller.accepted_draft().value == raw
-    accept_kwargs = accepted.response.edit_message.await_args.kwargs
+    accepted.response.defer.assert_awaited_once_with(thinking=False)
+    accept_kwargs = accepted.edit_original_response.await_args.kwargs
     assert accept_kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
-    assert accept_kwargs["embed"] is None
+    assert raw not in accept_kwargs["content"]
+    assert accept_kwargs["embed"].description == expected
 
 
 def test_preview_plain_url_is_unchanged_and_does_not_open_network(
@@ -4049,3 +4076,593 @@ async def test_schedule_type_and_input_success_preserves_kind_contract(kind: str
         discord.AllowedMentions.none().to_dict()
     )
     _assert_schedule_input_has_no_creation(controller, factory, port)
+
+
+class _HandoffController(PostDraftUISessionController):
+    def __init__(
+        self,
+        *,
+        session: PostDraftUISession,
+        service: FakeGenerationService,
+        accept_failure: bool = False,
+        accepted_draft_failure: bool = False,
+    ) -> None:
+        super().__init__(session=session, generation_service=service)
+        self.accept_failure = accept_failure
+        self.accepted_draft_failure = accepted_draft_failure
+        self.accept_calls = 0
+        self.accepted_draft_calls = 0
+        self.cancel_calls = 0
+
+    async def accept(self, **kwargs: object) -> GeneratedPostDraft:
+        self.accept_calls += 1
+        if self.accept_failure:
+            raise RuntimeError(CANARY)
+        return await super().accept(**kwargs)
+
+    def accepted_draft(self) -> GeneratedPostDraft:
+        self.accepted_draft_calls += 1
+        if self.accepted_draft_failure:
+            raise RuntimeError(CANARY)
+        return super().accepted_draft()
+
+    async def cancel(self, **kwargs: object) -> None:
+        self.cancel_calls += 1
+        await super().cancel(**kwargs)
+
+
+class _HandoffScheduleSession:
+    def __new__(
+        cls, *, scope: object, accepted_draft: GeneratedPostDraft, cancel_failure: bool
+    ) -> object:
+        from discord_ai_reminder_bot.application.post_draft_schedule import (
+            PostDraftScheduleSession,
+        )
+
+        class Session(PostDraftScheduleSession):
+            def __init__(self) -> None:
+                super().__init__(scope=scope, accepted_draft=accepted_draft)  # type: ignore[arg-type]
+                self.cancel_attempts = 0
+
+            def cancel(self) -> None:
+                self.cancel_attempts += 1
+                if cancel_failure:
+                    raise RuntimeError(CANARY)
+                super().cancel()
+
+        return Session()
+
+
+class _HandoffComposition:
+    def __init__(self, *, failure: bool = False, cancel_failure: bool = False) -> None:
+        from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+            IdempotentScheduleCreationCode,
+        )
+
+        self.failure = failure
+        self.cancel_failure = cancel_failure
+        self.calls = 0
+        self.scope: object | None = None
+        self.accepted_draft: GeneratedPostDraft | None = None
+        self.sessions: list[object] = []
+        self.controllers: list[object] = []
+        self.port = _ScheduleConfirmPort(IdempotentScheduleCreationCode.CREATED)
+        self.factory = _ScheduleConfirmFactory()
+
+    def start(self, *, scope: object, accepted_draft: GeneratedPostDraft) -> object:
+        from discord_ai_reminder_bot.application.post_draft_schedule import (
+            PostDraftScheduleController,
+        )
+
+        self.calls += 1
+        self.scope = scope
+        self.accepted_draft = accepted_draft
+        if self.failure:
+            raise RuntimeError(CANARY)
+        session = _HandoffScheduleSession(
+            scope=scope,
+            accepted_draft=accepted_draft,
+            cancel_failure=self.cancel_failure,
+        )
+        delegate = PostDraftScheduleController(
+            session=session,
+            port=self.port,
+            public_id_factory=self.factory,
+        )
+        controller = _ScheduleConfirmController(delegate)
+        self.sessions.append(session)
+        self.controllers.append(controller)
+        return controller
+
+
+class _HandoffResponse:
+    def __init__(self, *, defer_failure: bool = False) -> None:
+        self.defer_failure = defer_failure
+        self.defer_attempts = 0
+        self.defer_successes = 0
+        self.message_attempts = 0
+        self.legacy_edit_attempts = 0
+        self.modal_attempts = 0
+        self._done = False
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def defer(self, **_kwargs: object) -> None:
+        self.defer_attempts += 1
+        self._done = True
+        if self.defer_failure:
+            raise RuntimeError(CANARY)
+        self.defer_successes += 1
+
+    async def send_message(self, _content: object = None, **_kwargs: object) -> None:
+        self.message_attempts += 1
+        self._done = True
+
+    async def edit_message(self, **_kwargs: object) -> None:
+        self.legacy_edit_attempts += 1
+        self._done = True
+
+    async def send_modal(self, _modal: object) -> None:
+        self.modal_attempts += 1
+        self._done = True
+
+
+class _HandoffFollowup:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def send(self, *_args: object, **_kwargs: object) -> None:
+        self.attempts += 1
+
+
+class _HandoffInteraction:
+    def __init__(
+        self,
+        *,
+        response: _HandoffResponse | None = None,
+        response_failure: str | None = None,
+    ) -> None:
+        self.user = SimpleNamespace(id=OWNER)
+        self.guild_id = GUILD
+        self.channel_id = 300
+        self.channel = SimpleNamespace(
+            id=300, guild=SimpleNamespace(id=GUILD), type=discord.ChannelType.text
+        )
+        self.response = response or _HandoffResponse()
+        self.response_failure = response_failure
+        self.update_attempts = 0
+        self.update_successes = 0
+        self.delivered_update = False
+        self.update_kwargs: dict[str, object] = {}
+        self.followup = _HandoffFollowup()
+
+    async def edit_original_response(self, **kwargs: object) -> None:
+        self.update_attempts += 1
+        self.update_kwargs = kwargs
+        if self.response_failure == "before":
+            raise RuntimeError(CANARY)
+        self.delivered_update = True
+        if self.response_failure == "after":
+            raise RuntimeError(CANARY)
+        self.update_successes += 1
+
+
+async def _handoff_case(
+    *,
+    raw: str = "本文",
+    accept_failure: bool = False,
+    accepted_draft_failure: bool = False,
+    composition_failure: bool = False,
+    schedule_cancel_failure: bool = False,
+) -> tuple[
+    PostDraftDiscordUI,
+    _HandoffController,
+    object,
+    _HandoffComposition,
+    FakeGenerationService,
+]:
+    service = FakeGenerationService()
+    session = PostDraftUISession.create(
+        owner_user_id=OWNER,
+        guild_id=GUILD,
+        created_at=NOW,
+        expires_at=NOW + timedelta(minutes=15),
+    )
+    controller_value = _HandoffController(
+        session=session,
+        service=service,
+        accept_failure=accept_failure,
+        accepted_draft_failure=accepted_draft_failure,
+    )
+    await controller_value.choose_manual(owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    await controller_value.submit_manual(text=raw, owner_user_id=OWNER, guild_id=GUILD, now=NOW)
+    composition = _HandoffComposition(
+        failure=composition_failure, cancel_failure=schedule_cancel_failure
+    )
+    scope = PostDraftScheduleScope(OWNER, GUILD, 300)
+    adapter = PostDraftDiscordUI(
+        controller=controller_value,
+        now=lambda: NOW,
+        reservation_factory=lambda _now: cast(PostDraftUsageReservation, object()),
+        timeout_seconds=60,
+        schedule_scope=scope,
+        schedule_composition=composition,
+    )
+    preview = PostDraftPreviewView(ui=adapter, timeout=60)
+    adapter.activate_initial(preview)
+    return adapter, controller_value, preview, composition, service
+
+
+def _handoff_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "discord_ai_reminder_bot.bot.post_draft_ui"
+    ]
+
+
+def _assert_handoff_did_not_create_schedule(composition: _HandoffComposition) -> None:
+    assert composition.factory.calls == 0
+    assert composition.port.calls == composition.port.db_calls == 0
+    assert all(controller.calls == 0 for controller in composition.controllers)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_hands_raw_draft_to_schedule_session() -> None:
+    raw = f"raw {USER_MENTION} *本文*"
+    adapter, controller_value, preview, composition, service = await _handoff_case(raw=raw)
+    attempted = _HandoffInteraction()
+    await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == 1 and len(composition.sessions) == 1
+    assert composition.accepted_draft is not None and composition.accepted_draft.value == raw
+    assert composition.sessions[0].accepted_draft.value == raw
+    assert attempted.update_kwargs["embed"].description == _escape_preview_text(raw)
+    assert raw not in attempted.update_kwargs["embed"].description
+    assert service.calls == 0
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_renders_schedule_type_selection() -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction()
+    await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    rendered = attempted.update_kwargs
+    assert attempted.response.defer_attempts == attempted.response.defer_successes == 1
+    assert attempted.update_attempts == attempted.update_successes == 1
+    assert rendered["content"] == "本文を採用しました。まだ予約・投稿はされていません。"
+    assert rendered["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert [child.label for child in rendered["view"].children] == [
+        "単発",
+        "毎日",
+        "毎週",
+        "キャンセル",
+    ]
+    assert {child.custom_id for child in rendered["view"].children}.isdisjoint(
+        {EDIT_CUSTOM_ID, REGENERATE_CUSTOM_ID, ACCEPT_CUSTOM_ID}
+    )
+    assert preview.is_finished() and preview._consumed
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert composition.sessions[0].snapshot().state.value == "schedule_type_selection"
+    assert controller_value.accept_calls == composition.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_handoff_uses_captured_scope() -> None:
+    adapter, _controller, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction()
+    await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert composition.scope is adapter.schedule_scope
+    schedule_scope = composition.sessions[0].scope
+    assert schedule_scope is adapter.schedule_scope
+    assert (
+        schedule_scope.owner_user_id,
+        schedule_scope.guild_id,
+        schedule_scope.channel_id,
+    ) == (OWNER, GUILD, 300)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_handoff_creates_no_schedule() -> None:
+    _adapter, controller_value, preview, composition, service = await _handoff_case()
+    attempted = _HandoffInteraction()
+    await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert composition.calls == len(composition.sessions) == len(composition.controllers) == 1
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert attempted.update_attempts == 1
+    assert service.calls == 0
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+class _HandoffBarrierResponse(_HandoffResponse):
+    def __init__(self, entered: list[int], release: asyncio.Event) -> None:
+        super().__init__()
+        self.entered = entered
+        self.release = release
+
+    async def defer(self, **_kwargs: object) -> None:
+        self.defer_attempts += 1
+        self._done = True
+        self.entered.append(1)
+        if len(self.entered) == 2:
+            self.release.set()
+        await self.release.wait()
+        self.defer_successes += 1
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_handoff_is_single_under_double_click() -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    entered: list[int] = []
+    release = asyncio.Event()
+    attempted = [
+        _HandoffInteraction(response=_HandoffBarrierResponse(entered, release)),
+        _HandoffInteraction(response=_HandoffBarrierResponse(entered, release)),
+    ]
+    await asyncio.gather(*(item(preview, ACCEPT_CUSTOM_ID).callback(value) for value in attempted))
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == len(composition.sessions) == 1
+    assert sum(value.response.defer_attempts for value in attempted) == 2
+    assert sum(value.update_attempts for value in attempted) == 1
+    assert all(value.followup.attempts == 0 for value in attempted)
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["owner", "guild", "channel_id", "channel_object", "channel_guild", "channel_type"],
+)
+@pytest.mark.asyncio
+async def test_post_draft_accept_handoff_rejects_scope_mismatch(mismatch: str) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction()
+    if mismatch == "owner":
+        attempted.user.id = OWNER + 1
+    elif mismatch == "guild":
+        attempted.guild_id = GUILD + 1
+    elif mismatch == "channel_id":
+        attempted.channel_id = 301
+    elif mismatch == "channel_object":
+        attempted.channel.id = 301
+    elif mismatch == "channel_guild":
+        attempted.channel.guild.id = GUILD + 1
+    else:
+        attempted.channel.type = discord.ChannelType.voice
+
+    await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 0
+    assert composition.calls == 0 and not composition.sessions
+    assert attempted.response.defer_attempts == attempted.update_attempts == 0
+    assert attempted.response.message_attempts <= 1
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_defer_failure_is_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction(response=_HandoffResponse(defer_failure=True))
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.CANCELLED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 0
+    assert controller_value.cancel_calls == 1 and composition.calls == 0
+    assert preview.is_finished() and preview._consumed
+    assert attempted.response.defer_attempts == 1 and attempted.response.defer_successes == 0
+    assert attempted.update_attempts == attempted.response.message_attempts == 0
+    assert attempted.followup.attempts == 0
+    assert _handoff_events(caplog) == ["schedule_handoff_defer_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accept_failure_skips_schedule_composition(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case(
+        accept_failure=True
+    )
+    attempted = _HandoffInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.PREVIEW
+    assert controller_value.accept_calls == 1 and controller_value.accepted_draft_calls == 0
+    assert composition.calls == 0 and not composition.sessions
+    assert preview.is_finished() and preview._consumed
+    assert attempted.response.defer_attempts == 1 and attempted.update_attempts == 1
+    assert attempted.followup.attempts == 0
+    assert _handoff_events(caplog) == ["schedule_handoff_accept_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_accepted_draft_failure_is_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case(
+        accepted_draft_failure=True
+    )
+    attempted = _HandoffInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == 0 and not composition.sessions
+    assert preview.is_finished() and preview._consumed
+    assert attempted.response.defer_attempts == attempted.update_attempts == 1
+    assert _handoff_events(caplog) == ["schedule_handoff_accept_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_schedule_composition_failure_is_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case(
+        composition_failure=True
+    )
+    attempted = _HandoffInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == 1 and not composition.sessions
+    assert preview.is_finished() and preview._consumed
+    assert attempted.response.defer_attempts == attempted.update_attempts == 1
+    assert _handoff_events(caplog) == ["schedule_handoff_composition_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.parametrize("stage", ["view", "embed"])
+@pytest.mark.asyncio
+async def test_post_draft_schedule_handoff_render_failure_aborts_schedule_session(
+    stage: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import discord_ai_reminder_bot.bot.post_draft_ui as module
+
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    candidates: list[object] = []
+    type_view = module.PostDraftScheduleTypeView
+
+    def capture_view(**kwargs: object) -> object:
+        if stage == "view":
+            raise RuntimeError(CANARY)
+        candidate = type_view(**kwargs)
+        candidates.append(candidate)
+        return candidate
+
+    def fail_embed(_draft: object) -> object:
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(module, "PostDraftScheduleTypeView", capture_view)
+    if stage == "embed":
+        monkeypatch.setattr(module, "_schedule_type_handoff_embed", fail_embed, raising=False)
+    attempted = _HandoffInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == 1 and composition.sessions[0].snapshot().state.value == "cancelled"
+    assert composition.sessions[0].cancel_attempts == 1
+    assert preview.is_finished() and preview._consumed
+    assert not candidates or candidates[0].is_finished()
+    assert attempted.response.defer_attempts == 1 and attempted.update_attempts == 0
+    assert _handoff_events(caplog) == ["schedule_handoff_render_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_schedule_handoff_response_failure_has_no_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction(response_failure="before")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    candidate = attempted.update_kwargs["view"]
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert composition.sessions[0].snapshot().state.value == "cancelled"
+    assert preview.is_finished() and candidate.is_finished()
+    assert attempted.update_attempts == 1 and not attempted.delivered_update
+    assert attempted.response.legacy_edit_attempts == attempted.response.message_attempts == 0
+    assert attempted.followup.attempts == 0
+    assert controller_value.accept_calls == composition.calls == 1
+    assert _handoff_events(caplog) == ["schedule_handoff_response_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_schedule_handoff_post_response_failure_has_no_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, _service = await _handoff_case()
+    attempted = _HandoffInteraction(response_failure="after")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    candidate = attempted.update_kwargs["view"]
+    assert attempted.delivered_update
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert composition.sessions[0].snapshot().state.value == "cancelled"
+    assert preview.is_finished() and candidate.is_finished()
+    assert attempted.update_attempts == 1 and attempted.update_successes == 0
+    assert attempted.response.legacy_edit_attempts == attempted.response.message_attempts == 0
+    assert attempted.followup.attempts == 0
+    assert controller_value.accept_calls == composition.calls == 1
+    assert _handoff_events(caplog) == ["schedule_handoff_response_failed"]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_schedule_handoff_abort_failure_stops_all_views(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, _controller, preview, composition, _service = await _handoff_case(
+        schedule_cancel_failure=True
+    )
+    attempted = _HandoffInteraction(response_failure="before")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(attempted)
+
+    candidate = attempted.update_kwargs["view"]
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert composition.sessions[0].snapshot().state.value == "schedule_type_selection"
+    assert composition.sessions[0].cancel_attempts == 1
+    assert preview.is_finished() and candidate.is_finished()
+    assert attempted.update_attempts == 1
+    assert attempted.response.message_attempts == attempted.followup.attempts == 0
+    assert _handoff_events(caplog) == [
+        "schedule_handoff_response_failed",
+        "schedule_handoff_abort_failed",
+    ]
+    assert CANARY not in caplog.text
+    _assert_handoff_did_not_create_schedule(composition)
+
+
+@pytest.mark.asyncio
+async def test_post_draft_schedule_handoff_rejects_delayed_preview_actions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, controller_value, preview, composition, service = await _handoff_case()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await item(preview, ACCEPT_CUSTOM_ID).callback(
+            _HandoffInteraction(response_failure="before")
+        )
+
+    delayed = [_HandoffInteraction() for _ in preview.children]
+    for child, attempted in zip(preview.children, delayed, strict=True):
+        await child.callback(attempted)
+
+    assert adapter.controller.session.state is PostDraftUISessionState.ACCEPTED
+    assert composition.sessions[0].snapshot().state.value == "cancelled"
+    assert controller_value.accept_calls == controller_value.accepted_draft_calls == 1
+    assert composition.calls == len(composition.sessions) == 1
+    assert service.calls == 0
+    assert sum(value.update_attempts for value in delayed) <= 1
+    assert all(value.followup.attempts == 0 for value in delayed)
+    _assert_handoff_did_not_create_schedule(composition)
