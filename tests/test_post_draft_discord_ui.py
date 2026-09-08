@@ -2734,3 +2734,499 @@ async def test_schedule_edit_validation_failure_remains_recoverable() -> None:
     reopened, second = await _open_schedule_edit_modal(view)
     assert reopened is not None and second.response.send_modal_attempts == 1
     _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+class _ScheduleConfirmFactory:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls = 0
+        self.fail = fail
+
+    def __call__(self) -> object:
+        from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+            ScheduleCreationPublicId,
+        )
+
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError(CANARY)
+        return ScheduleCreationPublicId.generate()
+
+
+class _ScheduleConfirmPort:
+    def __init__(self, code: object) -> None:
+        self.code = code
+        self.calls = 0
+        self.db_calls = 0
+
+    async def create_once(self, **_kwargs: object) -> object:
+        from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+            IdempotentScheduleCreationResult,
+        )
+
+        self.calls += 1
+        self.db_calls += 1
+        return IdempotentScheduleCreationResult(self.code)
+
+    async def create_recurring(self, **_kwargs: object) -> object:
+        self.calls += 1
+        self.db_calls += 1
+        raise AssertionError("once confirmation must not create a recurring schedule")
+
+
+class _ScheduleConfirmRenderFailureCode:
+    @property
+    def value(self) -> str:
+        raise RuntimeError(CANARY)
+
+
+class _ScheduleConfirmRenderFailureResult:
+    code = _ScheduleConfirmRenderFailureCode()
+
+
+class _ScheduleConfirmController:
+    def __init__(self, delegate: object, *, fail_render: bool = False) -> None:
+        self.delegate = delegate
+        self.session = delegate.session
+        self.calls = 0
+        self.fail_render = fail_render
+
+    def snapshot(self) -> object:
+        return self.delegate.snapshot()
+
+    async def confirm(self, *, now: datetime) -> object:
+        self.calls += 1
+        result = await self.delegate.confirm(now=now)
+        if self.fail_render:
+            return _ScheduleConfirmRenderFailureResult()
+        return result
+
+
+class _UnexpectedScheduleConfirmController:
+    def __init__(self, delegate: object, *, begin_saving: bool) -> None:
+        self.delegate = delegate
+        self.session = delegate.session
+        self.calls = 0
+        self.begin_saving = begin_saving
+
+    def snapshot(self) -> object:
+        return self.delegate.snapshot()
+
+    async def confirm(self, *, now: datetime) -> object:
+        del now
+        self.calls += 1
+        if self.begin_saving:
+            self.session.begin_saving()
+        raise RuntimeError(CANARY)
+
+
+class _ScheduleConfirmResponse:
+    def __init__(self, *, defer_failure: bool = False) -> None:
+        self.defer_failure = defer_failure
+        self.defer_attempts = 0
+        self.other_attempts = 0
+        self._done = False
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def defer(self, **_kwargs: object) -> None:
+        self.defer_attempts += 1
+        self._done = True
+        if self.defer_failure:
+            raise RuntimeError(CANARY)
+
+    async def send_message(self, *_args: object, **_kwargs: object) -> None:
+        self.other_attempts += 1
+
+    async def send_modal(self, _modal: object) -> None:
+        self.other_attempts += 1
+
+    async def edit_message(self, **_kwargs: object) -> None:
+        self.other_attempts += 1
+
+
+class _ScheduleConfirmInteraction:
+    def __init__(self, *, defer_failure: bool = False, update_failure: str | None = None) -> None:
+        self.user = SimpleNamespace(id=1)
+        self.guild_id = 2
+        self.channel_id = 3
+        self.channel = SimpleNamespace(
+            id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text
+        )
+        self.response = _ScheduleConfirmResponse(defer_failure=defer_failure)
+        self.followup = _ScheduleEditFollowup()
+        self.update_failure = update_failure
+        self.update_attempts = 0
+        self.update_successes = 0
+        self.delivered_update = False
+        self.update_kwargs: dict[str, object] = {}
+
+    async def edit_original_response(self, **kwargs: object) -> None:
+        self.update_attempts += 1
+        self.update_kwargs = kwargs
+        if self.update_failure == "before" and self.update_attempts == 1:
+            raise RuntimeError(CANARY)
+        self.delivered_update = True
+        if self.update_failure == "after" and self.update_attempts == 1:
+            raise RuntimeError(CANARY)
+        self.update_successes += 1
+
+
+def _schedule_confirm_case(
+    code: object, *, factory_failure: bool = False, render_failure: bool = False
+) -> tuple[object, object, object, _ScheduleConfirmPort, _ScheduleConfirmFactory]:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    session = PostDraftScheduleSession(
+        scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+    )
+    session.select_type(ScheduleType.ONCE)
+    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    port = _ScheduleConfirmPort(code)
+    factory = _ScheduleConfirmFactory(fail=factory_failure)
+    delegate = PostDraftScheduleController(session=session, port=port, public_id_factory=factory)
+    controller = _ScheduleConfirmController(delegate, fail_render=render_failure)
+    view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+    return session, controller, view, port, factory
+
+
+def _schedule_confirm_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "discord_ai_reminder_bot.bot.post_draft_ui"
+    ]
+
+
+def _assert_schedule_confirm_calls(
+    controller: object,
+    factory: _ScheduleConfirmFactory,
+    port: _ScheduleConfirmPort,
+    *,
+    controller_calls: int,
+    factory_calls: int,
+    port_calls: int,
+) -> None:
+    assert controller.calls == controller_calls
+    assert factory.calls == factory_calls
+    assert port.calls == port_calls
+    assert port.db_calls == port_calls
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_defer_failure_stops_without_creation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED
+    )
+    attempted = _ScheduleConfirmInteraction(defer_failure=True)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert session.snapshot().state.value == "cancelled"
+    assert view.is_finished() and view._claimed
+    assert attempted.response.defer_attempts == 1
+    assert attempted.response.other_attempts == attempted.update_attempts == 0
+    assert attempted.followup.attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=0, factory_calls=0, port_calls=0
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_defer_failed"]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_controller_error_is_terminal_and_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED, factory_failure=True
+    )
+    attempted = _ScheduleConfirmInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert session.snapshot().state.value == "unknown"
+    assert view.is_finished()
+    assert attempted.response.defer_attempts == 1
+    assert attempted.update_attempts == attempted.update_successes == 1
+    assert attempted.followup.attempts == attempted.response.other_attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=1, factory_calls=1, port_calls=0
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_controller_failed"]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_unexpected_controller_failure_is_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+
+    cases: list[tuple[object, object, str]] = []
+    for begin_saving, expected in ((False, "cancelled"), (True, "saving")):
+        session, base, _view, port, factory = _schedule_confirm_case(
+            IdempotentScheduleCreationCode.CREATED
+        )
+        controller = _UnexpectedScheduleConfirmController(base.delegate, begin_saving=begin_saving)
+        view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+        attempted = _ScheduleConfirmInteraction()
+        with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+            await view.children[0].callback(attempted)
+        assert session.snapshot().state.value == expected
+        assert view.is_finished()
+        assert attempted.update_attempts == attempted.update_successes == 1
+        assert attempted.followup.attempts == attempted.response.other_attempts == 0
+        assert controller.calls == 1 and factory.calls == port.calls == port.db_calls == 0
+        cases.append((session, view, expected))
+
+    assert len(cases) == 2
+    assert _schedule_confirm_events(caplog) == [
+        "schedule_confirm_controller_failed",
+        "schedule_confirm_controller_failed",
+    ]
+    assert CANARY not in caplog.text
+
+
+async def _assert_schedule_confirm_render_failure(
+    code: object, expected_state: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    session, controller, view, port, factory = _schedule_confirm_case(code, render_failure=True)
+    attempted = _ScheduleConfirmInteraction()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert session.snapshot().state.value == expected_state
+    assert view.is_finished()
+    assert attempted.response.defer_attempts == 1
+    assert attempted.update_attempts == attempted.response.other_attempts == 0
+    assert attempted.followup.attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=1, factory_calls=1, port_calls=1
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_render_failed"]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_created_render_failure_does_not_retry_creation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    await _assert_schedule_confirm_render_failure(
+        IdempotentScheduleCreationCode.CREATED, "completed", caplog
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_already_created_render_failure_does_not_retry_creation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    await _assert_schedule_confirm_render_failure(
+        IdempotentScheduleCreationCode.ALREADY_CREATED, "completed", caplog
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_conflict_render_failure_does_not_retry_creation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    await _assert_schedule_confirm_render_failure(
+        IdempotentScheduleCreationCode.CONFLICT, "conflict", caplog
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_unknown_render_failure_does_not_retry_creation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    await _assert_schedule_confirm_render_failure(
+        IdempotentScheduleCreationCode.UNKNOWN, "unknown", caplog
+    )
+
+
+@pytest.mark.parametrize(
+    ("code_name", "expected_state"),
+    [
+        ("CREATED", "completed"),
+        ("ALREADY_CREATED", "completed"),
+        ("CONFLICT", "conflict"),
+        ("UNKNOWN", "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_schedule_confirm_success_preserves_result_contract(
+    code_name: str, expected_state: str
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    code = IdempotentScheduleCreationCode[code_name]
+    session, controller, view, port, factory = _schedule_confirm_case(code)
+    attempted = _ScheduleConfirmInteraction()
+    await view.children[0].callback(attempted)
+    assert session.snapshot().state.value == expected_state
+    assert view.is_finished()
+    assert attempted.update_attempts == attempted.update_successes == 1
+    assert attempted.update_kwargs["view"] is None
+    assert attempted.update_kwargs["allowed_mentions"].to_dict() == (
+        discord.AllowedMentions.none().to_dict()
+    )
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=1, factory_calls=1, port_calls=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_response_failure_has_no_second_update(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED
+    )
+    attempted = _ScheduleConfirmInteraction(update_failure="before")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert session.snapshot().state.value == "completed"
+    assert view.is_finished()
+    assert attempted.update_attempts == 1 and attempted.update_successes == 0
+    assert not attempted.delivered_update
+    assert attempted.followup.attempts == attempted.response.other_attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=1, factory_calls=1, port_calls=1
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_response_failed"]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_post_response_local_failure_has_no_second_update(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED
+    )
+    attempted = _ScheduleConfirmInteraction(update_failure="after")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert attempted.delivered_update
+    assert session.snapshot().state.value == "completed"
+    assert view.is_finished()
+    assert attempted.update_attempts == 1 and attempted.update_successes == 0
+    assert attempted.followup.attempts == attempted.response.other_attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=1, factory_calls=1, port_calls=1
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_response_failed"]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_abort_failure_still_stops_view(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleSession
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED
+    )
+
+    def fail_cancel(_session: object) -> None:
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(PostDraftScheduleSession, "cancel", fail_cancel)
+    attempted = _ScheduleConfirmInteraction(defer_failure=True)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(attempted)
+
+    assert session.snapshot().state.value == "final_confirmation"
+    assert view.is_finished() and view._claimed
+    assert attempted.response.defer_attempts == 1 and attempted.update_attempts == 0
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=0, factory_calls=0, port_calls=0
+    )
+    assert _schedule_confirm_events(caplog) == [
+        "schedule_confirm_defer_failed",
+        "schedule_confirm_abort_failed",
+    ]
+    assert CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_confirm_failure_rejects_delayed_actions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+    )
+
+    session, controller, view, port, factory = _schedule_confirm_case(
+        IdempotentScheduleCreationCode.CREATED
+    )
+    failed = _ScheduleConfirmInteraction(defer_failure=True)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await view.children[0].callback(failed)
+
+    delayed = [_ScheduleConfirmInteraction() for _ in range(3)]
+    for child, attempted in zip(view.children, delayed, strict=True):
+        await child.callback(attempted)
+
+    assert session.snapshot().state.value == "cancelled"
+    assert view.is_finished()
+    assert all(value.response.other_attempts == 1 for value in delayed)
+    assert all(value.response.defer_attempts == value.update_attempts == 0 for value in delayed)
+    _assert_schedule_confirm_calls(
+        controller, factory, port, controller_calls=0, factory_calls=0, port_calls=0
+    )
+    assert _schedule_confirm_events(caplog) == ["schedule_confirm_defer_failed"]
