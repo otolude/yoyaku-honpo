@@ -1214,6 +1214,34 @@ async def _schedule_guard(
     return True
 
 
+def _abort_schedule_edit(
+    *,
+    controller: object,
+    source: object,
+    candidate: object | None,
+    event: str,
+) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    try:
+        controller.session.cancel()
+    except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+        abort_failed = True
+    seen: set[int] = set()
+    for component in (source, candidate):
+        if component is None or id(component) in seen:
+            continue
+        seen.add(id(component))
+        try:
+            if hasattr(component, "_claimed"):
+                component._claimed = True
+            component.stop()
+        except Exception:  # noqa: BLE001 - attempt every terminal cleanup step
+            abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_edit_abort_failed")
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1344,15 +1372,49 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
             ):
                 await _respond_stale(interaction)
                 return
-            self.controller.session.replace_validated_input(value, expected_revision=self.revision)
-            new_view = PostDraftScheduleConfirmationView(
-                controller=self.controller, now=source._now, timeout=source.timeout
-            )
-            await interaction.response.edit_message(
-                embed=_schedule_confirmation_embed(self.controller),
-                view=new_view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            try:
+                self.controller.session.replace_validated_input(
+                    value, expected_revision=self.revision
+                )
+            except TypeError, ValueError:
+                await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+                return
+            except Exception:  # noqa: BLE001 - never expose a schedule edit failure
+                _abort_schedule_edit(
+                    controller=self.controller,
+                    source=source,
+                    candidate=None,
+                    event="schedule_edit_replace_failed",
+                )
+                return
+            new_view: object | None = None
+            try:
+                new_view = PostDraftScheduleConfirmationView(
+                    controller=self.controller, now=source._now, timeout=source.timeout
+                )
+                embed = _schedule_confirmation_embed(self.controller)
+            except Exception:  # noqa: BLE001 - render details remain private
+                _abort_schedule_edit(
+                    controller=self.controller,
+                    source=source,
+                    candidate=new_view,
+                    event="schedule_edit_render_failed",
+                )
+                return
+            try:
+                await interaction.response.edit_message(
+                    embed=embed,
+                    view=new_view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:  # noqa: BLE001 - an ambiguous transport is never retried
+                _abort_schedule_edit(
+                    controller=self.controller,
+                    source=source,
+                    candidate=new_view,
+                    event="schedule_edit_response_failed",
+                )
+                return
             source.stop()
 
     def _parse(self) -> object:
@@ -1594,9 +1656,26 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     local_default=value.local_time.isoformat(),
                     end_default=value.end_date.isoformat() if value.end_date else "",
                 )
-            await interaction.response.send_modal(modal)
         except TypeError, ValueError:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+            return
+        except Exception:  # noqa: BLE001 - render details remain private
+            _abort_schedule_edit(
+                controller=self.controller,
+                source=self,
+                candidate=None,
+                event="schedule_edit_render_failed",
+            )
+            return
+        try:
+            await interaction.response.send_modal(modal)
+        except Exception:  # noqa: BLE001 - an ambiguous transport is never retried
+            _abort_schedule_edit(
+                controller=self.controller,
+                source=self,
+                candidate=modal,
+                event="schedule_edit_modal_transport_failed",
+            )
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         if not await _schedule_guard(interaction, self.controller, "final_confirmation"):
