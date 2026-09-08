@@ -2339,3 +2339,398 @@ async def test_schedule_edit_submit_rechecks_revision_after_lock() -> None:
     )
     await modal.on_submit(_race_interaction(submit))
     assert submit.edit_message.await_count == 0
+
+
+class _ScheduleEditFailureResponse:
+    def __init__(self, *, send_modal_failure: bool = False, edit_failure: str | None = None):
+        self.send_modal_failure = send_modal_failure
+        self.edit_failure = edit_failure
+        self.send_modal_attempts = 0
+        self.edit_attempts = 0
+        self.error_attempts = 0
+        self.delivered_modal: object | None = None
+        self.candidate_view: object | None = None
+        self.delivered_edit = False
+        self._done = False
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def send_modal(self, modal: object) -> None:
+        self.send_modal_attempts += 1
+        self.delivered_modal = modal
+        if self.send_modal_failure:
+            raise RuntimeError(CANARY)
+        self._done = True
+
+    async def edit_message(self, **kwargs: object) -> None:
+        self.edit_attempts += 1
+        self.candidate_view = kwargs.get("view")
+        if self.edit_failure == "before":
+            raise RuntimeError(CANARY)
+        self.delivered_edit = True
+        self._done = True
+        if self.edit_failure == "after":
+            raise RuntimeError(CANARY)
+
+    async def send_message(self, *_args: object, **_kwargs: object) -> None:
+        self.error_attempts += 1
+        self._done = True
+
+    async def defer(self, **_kwargs: object) -> None:
+        raise AssertionError("schedule edit must not defer")
+
+
+class _ScheduleEditFollowup:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def send(self, *_args: object, **_kwargs: object) -> None:
+        self.attempts += 1
+
+
+class _ScheduleEditFailureInteraction:
+    def __init__(self, response: _ScheduleEditFailureResponse) -> None:
+        self.user = SimpleNamespace(id=1)
+        self.guild_id = 2
+        self.channel_id = 3
+        self.channel = SimpleNamespace(
+            id=3, guild=SimpleNamespace(id=2), type=discord.ChannelType.text
+        )
+        self.response = response
+        self.followup = _ScheduleEditFollowup()
+        self.original_edit_attempts = 0
+
+    async def edit_original_response(self, **_kwargs: object) -> None:
+        self.original_edit_attempts += 1
+
+
+class _ScheduleEditFailurePort:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def create_once(self, **_kwargs: object) -> object:
+        self.calls += 1
+        raise AssertionError("schedule edit must not reach the port")
+
+    async def create_recurring(self, **_kwargs: object) -> object:
+        self.calls += 1
+        raise AssertionError("schedule edit must not reach the port")
+
+
+class _ScheduleEditPublicIdFactory:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> object:
+        self.calls += 1
+        raise AssertionError("schedule edit must not create a public ID")
+
+
+def _schedule_edit_failure_case() -> tuple[object, object, object, object, object]:
+    from datetime import datetime
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleScope,
+        PostDraftScheduleSession,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftScheduleConfirmationView
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    session = PostDraftScheduleSession(
+        scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
+    )
+    session.select_type(ScheduleType.ONCE)
+    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    port = _ScheduleEditFailurePort()
+    factory = _ScheduleEditPublicIdFactory()
+    controller = PostDraftScheduleController(session=session, port=port, public_id_factory=factory)
+    view = PostDraftScheduleConfirmationView(controller=controller, now=lambda: NOW, timeout=60)
+    return session, controller, view, port, factory
+
+
+async def _open_schedule_edit_modal(
+    view: object, *, fail: bool = False
+) -> tuple[object, _ScheduleEditFailureInteraction]:
+    response = _ScheduleEditFailureResponse(send_modal_failure=fail)
+    interaction_value = _ScheduleEditFailureInteraction(response)
+    await view.children[1].callback(interaction_value)
+    return response.delivered_modal, interaction_value
+
+
+def _set_schedule_edit_value(modal: object, value: str = "2030-01-02T00:00:00+00:00") -> None:
+    set_text(modal.scheduled_at, value)
+
+
+def _schedule_edit_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "discord_ai_reminder_bot.bot.post_draft_ui"
+    ]
+
+
+def _assert_schedule_edit_has_no_persistence(port: object, factory: object) -> None:
+    assert port.calls == 0
+    assert factory.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_send_modal_failure_aborts_safely(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    before = session.snapshot()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        modal, attempted = await _open_schedule_edit_modal(view, fail=True)
+
+    after = session.snapshot()
+    assert after.state.value == "cancelled"
+    assert after.validated_input == before.validated_input
+    assert after.confirmation_revision == before.confirmation_revision
+    assert view.is_finished() and modal.is_finished()
+    assert attempted.response.send_modal_attempts == 1
+    assert attempted.response.error_attempts == 0
+    assert attempted.followup.attempts == attempted.original_edit_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_modal_transport_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_replace_failure_before_mutation_aborts_safely(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleSession
+
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    before = session.snapshot()
+
+    def fail_replace(_session: object, _new_input: object, *, expected_revision: int) -> object:
+        del expected_revision
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(PostDraftScheduleSession, "replace_validated_input", fail_replace)
+    response = _ScheduleEditFailureResponse()
+    submitted = _ScheduleEditFailureInteraction(response)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(submitted)
+
+    after = session.snapshot()
+    assert after.state.value == "cancelled"
+    assert after.validated_input == before.validated_input
+    assert after.confirmation_revision == before.confirmation_revision
+    assert view.is_finished()
+    assert response.edit_attempts == response.error_attempts == 0
+    assert submitted.followup.attempts == submitted.original_edit_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_replace_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_replace_failure_after_mutation_aborts_safely(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleSession
+
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    before = session.snapshot()
+    original = PostDraftScheduleSession.replace_validated_input
+
+    def fail_after_replace(current: object, new_input: object, *, expected_revision: int) -> object:
+        original(current, new_input, expected_revision=expected_revision)
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(PostDraftScheduleSession, "replace_validated_input", fail_after_replace)
+    response = _ScheduleEditFailureResponse()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    after = session.snapshot()
+    assert after.state.value == "cancelled"
+    assert after.validated_input != before.validated_input
+    assert after.confirmation_revision == before.confirmation_revision + 1
+    assert view.is_finished()
+    assert response.edit_attempts == response.error_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_replace_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_view_construction_failure_aborts_safely(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import discord_ai_reminder_bot.bot.post_draft_ui as module
+
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    before = session.snapshot()
+
+    def fail_view(**_kwargs: object) -> object:
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(module, "PostDraftScheduleConfirmationView", fail_view)
+    response = _ScheduleEditFailureResponse()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    after = session.snapshot()
+    assert after.state.value == "cancelled"
+    assert after.confirmation_revision == before.confirmation_revision + 1
+    assert view.is_finished()
+    assert response.edit_attempts == response.error_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_render_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_embed_render_failure_aborts_safely(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import discord_ai_reminder_bot.bot.post_draft_ui as module
+
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    before = session.snapshot()
+    original_view = module.PostDraftScheduleConfirmationView
+    candidates: list[object] = []
+
+    class CandidateView(original_view):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            candidates.append(self)
+
+    def fail_embed(_controller: object) -> object:
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(module, "PostDraftScheduleConfirmationView", CandidateView)
+    monkeypatch.setattr(module, "_schedule_confirmation_embed", fail_embed)
+    response = _ScheduleEditFailureResponse()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    after = session.snapshot()
+    assert after.state.value == "cancelled"
+    assert after.confirmation_revision == before.confirmation_revision + 1
+    assert view.is_finished() and len(candidates) == 1 and candidates[0].is_finished()
+    assert response.edit_attempts == response.error_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_render_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_response_failure_aborts_without_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    response = _ScheduleEditFailureResponse(edit_failure="before")
+    submitted = _ScheduleEditFailureInteraction(response)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(submitted)
+
+    assert session.snapshot().state.value == "cancelled"
+    assert view.is_finished() and response.candidate_view.is_finished()
+    assert response.edit_attempts == 1 and response.error_attempts == 0
+    assert submitted.followup.attempts == submitted.original_edit_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_response_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_post_response_local_failure_aborts_without_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+    response = _ScheduleEditFailureResponse(edit_failure="after")
+    submitted = _ScheduleEditFailureInteraction(response)
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(submitted)
+
+    assert response.delivered_edit
+    assert session.snapshot().state.value == "cancelled"
+    assert view.is_finished() and response.candidate_view.is_finished()
+    assert response.edit_attempts == 1 and response.error_attempts == 0
+    assert submitted.followup.attempts == submitted.original_edit_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_response_failed"]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_abort_failure_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from discord_ai_reminder_bot.application.post_draft_schedule import PostDraftScheduleSession
+
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal)
+
+    def fail_cancel(_session: object) -> None:
+        raise RuntimeError(CANARY)
+
+    monkeypatch.setattr(PostDraftScheduleSession, "cancel", fail_cancel)
+    response = _ScheduleEditFailureResponse(edit_failure="before")
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    assert session.snapshot().state.value == "final_confirmation"
+    assert view.is_finished() and response.candidate_view.is_finished()
+    assert response.edit_attempts == 1 and response.error_attempts == 0
+    assert _schedule_edit_events(caplog) == [
+        "schedule_edit_response_failed",
+        "schedule_edit_abort_failed",
+    ]
+    assert CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_failure_makes_delayed_modal_stale(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        modal, _attempted = await _open_schedule_edit_modal(view, fail=True)
+    _set_schedule_edit_value(modal)
+    response = _ScheduleEditFailureResponse()
+    await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    assert session.snapshot().state.value == "cancelled"
+    assert response.error_attempts == 1 and response.edit_attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_edit_modal_transport_failed"]
+    _assert_schedule_edit_has_no_persistence(port, factory)
+
+
+@pytest.mark.asyncio
+async def test_schedule_edit_validation_failure_remains_recoverable() -> None:
+    session, _controller, view, port, factory = _schedule_edit_failure_case()
+    modal, _opened = await _open_schedule_edit_modal(view)
+    _set_schedule_edit_value(modal, "invalid")
+    before = session.snapshot()
+    response = _ScheduleEditFailureResponse()
+    await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    assert session.snapshot() == before
+    assert not view.is_finished() and not view._claimed
+    assert response.error_attempts == 1 and response.edit_attempts == 0
+    reopened, second = await _open_schedule_edit_modal(view)
+    assert reopened is not None and second.response.send_modal_attempts == 1
+    _assert_schedule_edit_has_no_persistence(port, factory)
