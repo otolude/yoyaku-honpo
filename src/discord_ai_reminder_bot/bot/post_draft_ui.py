@@ -1261,6 +1261,35 @@ def _abort_schedule_confirm(*, controller: object, source: object, event: str) -
         _LOGGER.warning("schedule_confirm_abort_failed")
 
 
+def _abort_schedule_cancel(
+    *, controller: object, source: object, event: str, cancel_session: bool
+) -> None:
+    _LOGGER.warning(event)
+    abort_failed = False
+    if cancel_session:
+        try:
+            controller.session.cancel()
+        except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+            abort_failed = True
+    try:
+        if hasattr(source, "_claimed"):
+            source._claimed = True
+        source.stop()
+    except Exception:  # noqa: BLE001 - cancellation failure remains bounded
+        abort_failed = True
+    if abort_failed:
+        _LOGGER.warning("schedule_cancel_abort_failed")
+
+
+def _render_schedule_cancel_response() -> dict[str, Any]:
+    return {
+        "content": "予約設定をキャンセルしました。予約は作成されていません。",
+        "embed": None,
+        "view": None,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+
+
 class PostDraftScheduleTypeView(discord.ui.View):
     """Unconnected schedule-type selection UI for the next post-draft slice."""
 
@@ -1735,18 +1764,47 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
         if getattr(interaction.response, "is_done", lambda: False)():
             await _respond_stale(interaction)
             return
-        await interaction.response.defer(thinking=False)
+        try:
+            await interaction.response.defer(thinking=False)
+        except Exception:  # noqa: BLE001 - an ambiguous defer is never retried
+            _abort_schedule_cancel(
+                controller=self.controller,
+                source=self,
+                event="schedule_cancel_defer_failed",
+                cancel_session=True,
+            )
+            return
         if not await self._claim():
             return
         try:
             self.controller.session.cancel()
-            await interaction.edit_original_response(
-                content="予約設定をキャンセルしました。予約は作成されていません。",
-                embed=None,
-                view=None,
-                allowed_mentions=discord.AllowedMentions.none(),
+        except Exception:  # noqa: BLE001 - cancellation is never retried
+            _abort_schedule_cancel(
+                controller=self.controller,
+                source=self,
+                event="schedule_cancel_controller_failed",
+                cancel_session=False,
             )
-        except Exception:  # noqa: BLE001
+            return
+        try:
+            response = _render_schedule_cancel_response()
+        except Exception:  # noqa: BLE001 - render details remain private
+            _abort_schedule_cancel(
+                controller=self.controller,
+                source=self,
+                event="schedule_cancel_render_failed",
+                cancel_session=False,
+            )
+            return
+        try:
+            await interaction.edit_original_response(**response)
+        except Exception:  # noqa: BLE001 - an ambiguous response is never retried
+            _abort_schedule_cancel(
+                controller=self.controller,
+                source=self,
+                event="schedule_cancel_response_failed",
+                cancel_session=False,
+            )
             return
         self.stop()
 
