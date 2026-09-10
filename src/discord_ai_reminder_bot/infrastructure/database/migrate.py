@@ -8,9 +8,9 @@ from collections.abc import Sequence
 from enum import StrEnum
 
 from alembic.config import Config
-from alembic.script.revision import RevisionError
+from alembic.script.revision import ResolutionError, RevisionError
 from alembic.util import CommandError
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import ArgumentError, DBAPIError, IntegrityError, NoSuchModuleError
 
 from alembic import command
 from discord_ai_reminder_bot.infrastructure.database.migration_safety import (
@@ -45,6 +45,34 @@ class MigrationFailureCategory(StrEnum):
     UNEXPECTED_MIGRATION_ERROR = "unexpected_migration_error"
 
 
+class AlembicEnvStage(StrEnum):
+    """Bounded progress markers inside the Alembic environment."""
+
+    ENTERED = "ALEMBIC_ENV_ENTERED"
+    URL_LOADED = "ALEMBIC_URL_LOADED"
+    ENGINE_CREATED = "ALEMBIC_ENGINE_CREATED"
+    CONNECTION_OPENED = "ALEMBIC_CONNECTION_OPENED"
+    DATABASE_IDENTITY_VERIFIED = "ALEMBIC_DATABASE_IDENTITY_VERIFIED"
+    CONTEXT_CONFIGURED = "ALEMBIC_CONTEXT_CONFIGURED"
+    TRANSACTION_ENTERED = "ALEMBIC_TRANSACTION_ENTERED"
+    MIGRATIONS_STARTED = "ALEMBIC_MIGRATIONS_STARTED"
+    MIGRATIONS_COMPLETED = "ALEMBIC_MIGRATIONS_COMPLETED"
+
+
+class MigrationCausalCategory(StrEnum):
+    """Safe categories for a bounded nested exception chain."""
+
+    NO_NESTED_CAUSE = "no_nested_cause"
+    CONFIGURATION_CAUSE = "configuration_cause"
+    URL_CAUSE = "url_cause"
+    DIALECT_CAUSE = "dialect_cause"
+    DATABASE_OPERATIONAL_CAUSE = "database_operational_cause"
+    DATABASE_INTEGRITY_CAUSE = "database_integrity_cause"
+    REVISION_RESOLUTION_CAUSE = "revision_resolution_cause"
+    FILESYSTEM_CAUSE = "filesystem_cause"
+    UNEXPECTED_NESTED_CAUSE = "unexpected_nested_cause"
+
+
 def classify_migration_failure(error: Exception) -> MigrationFailureCategory:
     """Classify a failure by public exception type without rendering it."""
     if isinstance(error, MigrationSafetyError):
@@ -62,12 +90,65 @@ def classify_migration_failure(error: Exception) -> MigrationFailureCategory:
     return MigrationFailureCategory.UNEXPECTED_MIGRATION_ERROR
 
 
+def _classify_nested_cause(error: BaseException) -> MigrationCausalCategory | None:
+    if isinstance(error, configparser.Error):
+        return MigrationCausalCategory.CONFIGURATION_CAUSE
+    if isinstance(error, NoSuchModuleError):
+        return MigrationCausalCategory.DIALECT_CAUSE
+    if isinstance(error, ArgumentError):
+        return MigrationCausalCategory.URL_CAUSE
+    if isinstance(error, IntegrityError):
+        return MigrationCausalCategory.DATABASE_INTEGRITY_CAUSE
+    if isinstance(error, DBAPIError):
+        return MigrationCausalCategory.DATABASE_OPERATIONAL_CAUSE
+    if isinstance(error, (ResolutionError, RevisionError)):
+        return MigrationCausalCategory.REVISION_RESOLUTION_CAUSE
+    if isinstance(error, OSError):
+        return MigrationCausalCategory.FILESYSTEM_CAUSE
+    return None
+
+
+def classify_migration_cause(error: Exception) -> MigrationCausalCategory:
+    """Classify at most three nested cause/context levels without rendering them."""
+    seen = {id(error)}
+    nested_found = False
+    current_level: list[BaseException] = [error]
+    for _ in range(3):
+        next_level: list[BaseException] = []
+        for current in current_level:
+            for nested in (current.__cause__, current.__context__):
+                if nested is None:
+                    continue
+                nested_found = True
+                if id(nested) in seen:
+                    continue
+                seen.add(id(nested))
+                category = _classify_nested_cause(nested)
+                if category is not None:
+                    return category
+                next_level.append(nested)
+        if not next_level:
+            break
+        current_level = next_level
+    if nested_found:
+        return MigrationCausalCategory.UNEXPECTED_NESTED_CAUSE
+    return MigrationCausalCategory.NO_NESTED_CAUSE
+
+
 def _emit_stage(stage: MigrationStage) -> None:
     print(f"MIGRATION_STAGE={stage.value}")
 
 
 def _emit_failure_category(category: MigrationFailureCategory) -> None:
     print(f"MIGRATION_FAILURE_CATEGORY={category.value}")
+
+
+def _emit_alembic_env_stage(stage: AlembicEnvStage) -> None:
+    print(stage.value)
+
+
+def _emit_causal_category(category: MigrationCausalCategory) -> None:
+    print(f"MIGRATION_CAUSAL_CATEGORY={category.value}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -149,6 +230,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise
     except Exception as error:  # noqa: BLE001 -- classify without rendering the exception.
         _emit_failure_category(classify_migration_failure(error))
+        _emit_causal_category(classify_migration_cause(error))
         operation = getattr(locals().get("arguments"), "command", "unknown")
         target = getattr(locals().get("arguments"), "target", None)
         expected = getattr(locals().get("arguments"), "expected_database", None)

@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from discord_ai_reminder_bot.infrastructure.database import models as database_models
 from discord_ai_reminder_bot.infrastructure.database.base import Base
+from discord_ai_reminder_bot.infrastructure.database.migrate import (
+    AlembicEnvStage,
+    _emit_alembic_env_stage,
+)
 from discord_ai_reminder_bot.infrastructure.database.migration_safety import (
     MigrationInvocation,
     MigrationOperation,
@@ -82,17 +86,23 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations using the synchronous facade of an async connection."""
     context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    _emit_alembic_env_stage(AlembicEnvStage.CONTEXT_CONFIGURED)
 
     with context.begin_transaction():
+        _emit_alembic_env_stage(AlembicEnvStage.TRANSACTION_ENTERED)
+        _emit_alembic_env_stage(AlembicEnvStage.MIGRATIONS_STARTED)
         context.run_migrations()
+        _emit_alembic_env_stage(AlembicEnvStage.MIGRATIONS_COMPLETED)
 
 
 async def run_async_migrations() -> None:
     """Verify the connected database before creating a migration context."""
+    _emit_alembic_env_stage(AlembicEnvStage.ENTERED)
     try:
         invocation, database_url = get_migration_context()
-    except MigrationSafetyError:
-        raise CommandError("migration safety verification failed") from None
+    except MigrationSafetyError as error:
+        raise CommandError("migration safety verification failed") from error
+    _emit_alembic_env_stage(AlembicEnvStage.URL_LOADED)
     escaped_url = database_url.get_secret_value().replace("%", "%%")
     config.set_main_option("sqlalchemy.url", escaped_url)
     try:
@@ -103,22 +113,25 @@ async def run_async_migrations() -> None:
             echo=False,
             hide_parameters=True,
         )
-    except Exception:  # noqa: BLE001 -- configuration errors may contain credentials.
-        raise CommandError("migration database configuration failed safely") from None
+    except Exception as error:
+        raise CommandError("migration database configuration failed safely") from error
+    _emit_alembic_env_stage(AlembicEnvStage.ENGINE_CREATED)
 
     try:
         try:
             async with connectable.connect() as connection:
+                _emit_alembic_env_stage(AlembicEnvStage.CONNECTION_OPENED)
                 await verify_connected_database(connection, invocation.expected_database)
+                _emit_alembic_env_stage(AlembicEnvStage.DATABASE_IDENTITY_VERIFIED)
                 # End the read-only identity query before Alembic owns its DDL transaction.
                 await connection.commit()
                 await connection.run_sync(do_run_migrations)
         except CommandError:
             raise
-        except MigrationSafetyError:
-            raise CommandError("migration database identity verification failed") from None
-        except Exception:  # noqa: BLE001 -- driver details may contain credentials.
-            raise CommandError("migration database operation failed safely") from None
+        except MigrationSafetyError as error:
+            raise CommandError("migration database identity verification failed") from error
+        except Exception as error:
+            raise CommandError("migration database operation failed safely") from error
     finally:
         await connectable.dispose()
 

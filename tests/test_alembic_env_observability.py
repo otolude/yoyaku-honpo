@@ -87,10 +87,28 @@ def test_nested_cause_search_is_limited_to_three_levels() -> None:
     assert classifier(error).value == "unexpected_nested_cause"
 
 
+@pytest.mark.parametrize("depth", [1, 2, 3])
+def test_allowlisted_cause_is_found_at_each_supported_depth(depth: int) -> None:
+    classifier = getattr(migrate, "classify_migration_cause", None)
+    assert classifier is not None
+    causes = [RuntimeError("private") for _ in range(depth - 1)]
+    causes.append(OSError("private"))
+    assert classifier(_nested(CommandError("bounded"), *causes)).value == "filesystem_cause"
+
+
 def test_nested_context_is_used_when_explicit_cause_is_absent() -> None:
     classifier = getattr(migrate, "classify_migration_cause", None)
     assert classifier is not None
     error = CommandError("bounded")
+    error.__context__ = OSError("private")
+    assert classifier(error).value == "filesystem_cause"
+
+
+def test_explicit_cause_and_implicit_context_are_both_inspected() -> None:
+    classifier = getattr(migrate, "classify_migration_cause", None)
+    assert classifier is not None
+    error = CommandError("bounded")
+    error.__cause__ = RuntimeError("private")
     error.__context__ = OSError("private")
     assert classifier(error).value == "filesystem_cause"
 
@@ -318,7 +336,7 @@ def test_environment_failure_preserves_last_completed_marker(
 def test_failure_immediately_before_stage_does_not_emit_that_stage(
     stage: str, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    with pytest.raises(RuntimeError):
+    with pytest.raises((RuntimeError, CommandError)):
         _run_environment(monkeypatch, fail_before_marker=stage)
 
     markers = [line for line in capsys.readouterr().out.splitlines() if line in ENV_STAGES]
