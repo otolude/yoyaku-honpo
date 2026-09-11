@@ -73,6 +73,13 @@ class StartupRecoveryIncompleteError(RuntimeError):
         self.recovered_count = recovered_count
 
 
+class GuildCommandSyncError(RuntimeError):
+    """Fixed startup failure that never reflects a Discord response."""
+
+    def __init__(self) -> None:
+        super().__init__("guild command sync failed")
+
+
 def minimal_intents() -> discord.Intents:
     intents = discord.Intents.none()
     intents.guilds = True
@@ -181,6 +188,8 @@ class ReminderBot(commands.Bot):
         self._closed_once = False
         self._command_sync_lock = asyncio.Lock()
         self._maintenance_lock = asyncio.Lock()
+        self._command_sync_attempted = False
+        self._command_sync_skipped = False
         self._commands_synced = False
         self.post_commands = PostCommands(
             queries=ScheduleQueryService(session_factory),
@@ -226,11 +235,25 @@ class ReminderBot(commands.Bot):
         )
 
     async def sync_guild_commands(self) -> int:
-        """Synchronize the configured guild at most once per process."""
+        """Synchronize the configured guild once only when explicitly enabled."""
         async with self._command_sync_lock:
             if self._commands_synced:
                 return 0
-            synced = await self.tree.sync(guild=discord.Object(id=self.settings.discord_guild_id))
+            if not self.settings.discord_guild_command_sync_enabled:
+                if not self._command_sync_skipped:
+                    self._command_sync_skipped = True
+                    self.logger.info("command_sync_skipped")
+                return 0
+            if self._command_sync_attempted:
+                raise GuildCommandSyncError
+            self._command_sync_attempted = True
+            try:
+                synced = await self.tree.sync(
+                    guild=discord.Object(id=self.settings.discord_guild_id)
+                )
+            except Exception:  # noqa: BLE001 - Discord responses may contain sensitive values
+                self.logger.error("application_command_sync_failed")
+                raise GuildCommandSyncError from None
             self._commands_synced = True
             self.logger.info(
                 "application_commands_synced",

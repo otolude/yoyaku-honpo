@@ -54,6 +54,9 @@ class Settings(DatabaseSettings):
     discord_allowed_role_ids: AllowedRoleIds = Field(validation_alias="DISCORD_ALLOWED_ROLE_IDS")
     discord_operator_user_id: DiscordId = Field(validation_alias="DISCORD_OPERATOR_USER_ID")
     discord_operator_channel_id: DiscordId = Field(validation_alias="DISCORD_OPERATOR_CHANNEL_ID")
+    discord_guild_command_sync_enabled: bool = Field(
+        default=False, validation_alias="DISCORD_GUILD_COMMAND_SYNC_ENABLED"
+    )
 
     scheduler_poll_interval_seconds: int = Field(
         default=10, gt=0, validation_alias="SCHEDULER_POLL_INTERVAL_SECONDS"
@@ -155,6 +158,15 @@ class Settings(DatabaseSettings):
     ai_name_generation_budget_retention_days: int = Field(
         default=90, validation_alias="AI_NAME_GENERATION_BUDGET_RETENTION_DAYS"
     )
+
+    @field_validator("discord_guild_command_sync_enabled", mode="before")
+    @classmethod
+    def validate_guild_command_sync_enabled(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            return value.lower() == "true"
+        raise ValueError("Discord guild command syncの有効値はtrueまたはfalseにしてください")
 
     @field_validator("ai_name_generation_enabled", mode="before")
     @classmethod

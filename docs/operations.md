@@ -113,6 +113,7 @@ Sessionとtransactionはorchestration boundaryが所有する。Botコマンド�
 任意または既定値あり:
 
 - `LOG_LEVEL`
+- `DISCORD_GUILD_COMMAND_SYNC_ENABLED`（既定値`false`）
 - `SCHEDULER_POLL_INTERVAL_SECONDS`
 - `SCHEDULER_BATCH_SIZE`
 - `SCHEDULER_MAX_CONCURRENCY`
@@ -123,6 +124,8 @@ Sessionとtransactionはorchestration boundaryが所有する。Botコマンド�
 - `NOTIFICATION_PROCESSING_TIMEOUT_SECONDS`
 
 起動時検証に失敗した場合はDiscordへ接続しない。tokenとDB URLはSecretStrで保持し、通常ログへ出さない。
+
+`DISCORD_GUILD_COMMAND_SYNC_ENABLED`は未設定時も`false`であり、通常起動と本番デプロイでは原則`false`を維持する。command定義と設定Guildのremote定義を事前に比較し、差分が確定して同期が承認された作業中だけ`true`にする。差分が不明な場合は`true`にしない。同期作業後は必ず`false`へ戻し、通常起動へ同期権限を持ち越さない。不正なboolean値は設定検証でDiscord接続前に拒否する。
 
 ## 4. Discord設定
 
@@ -169,7 +172,7 @@ python -m discord_ai_reminder_bot
 2. Engine／Session factoryとBotオブジェクト作成
 3. Discord Client起動過程の`setup_hook`
 4. DBのAlembic revisionと単一headを読み取り専用確認
-5. configured guildへのコマンド同期
+5. `DISCORD_GUILD_COMMAND_SYNC_ENABLED=true`の場合だけconfigured guildへコマンドを1回同期し、通常の`false`では固定eventを記録してskip
 6. Discord ready
 7. Clockから固定UTC `recovery_cutoff`を1回取得
 8. Processing Recovery
@@ -196,7 +199,7 @@ python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
 python -m discord_ai_reminder_bot
 ```
 
-`database_schema_verified`、`application_commands_synced`、各Recovery完了、`startup_recovery_complete`を確認する。Recoveryが未完了なら3 loopは開始されない。
+`database_schema_verified`、`command_sync_skipped`、各Recovery完了、`startup_recovery_complete`を確認する。承認済みの同期作業中だけ`command_sync_skipped`に代えて`application_commands_synced`を確認する。同期失敗は固定event `application_command_sync_failed`で起動を失敗させ、Discordのresponseや例外詳細を出力せず、readyとしない。Recoveryが未完了なら3 loopは開始されない。
 
 ## 7. 正常停止
 
@@ -337,6 +340,7 @@ Discord経路は固定タイトル・説明、日本語状態、投稿先チャ�
 主なINFO:
 
 - `database_schema_verified`
+- `command_sync_skipped`
 - `application_commands_synced`
 - `startup_pending_recovery_complete`
 - `startup_notification_recovery_complete`
@@ -348,7 +352,7 @@ Discord経路は固定タイトル・説明、日本語状態、投稿先チャ�
 
 主なERROR:
 
-- 起動: `bot_run_failed`、`startup_recovery_failed`、`startup_recovery_incomplete`
+- 起動・command同期: `bot_run_failed`、`application_command_sync_failed`、`startup_recovery_failed`、`startup_recovery_incomplete`
 - Recovery上限: `startup_pending_recovery_incomplete`、`startup_notification_recovery_incomplete`、`startup_draft_notification_bootstrap_incomplete`
 - 投稿poll: `poll_cycle_failed`、`poll_claim_failed`、`poll_task_unexpected_failure`、`poll_item_internal_error`、`delivery_success_persist_failed`
 - 通知: `notification_poll_cycle_failed`、`notification_claim_failed`、`notification_task_unexpected_failure`、`notification_item_internal_error`、`notification_success_persist_failed`、`notification_log_route_terminal`

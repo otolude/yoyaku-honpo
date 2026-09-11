@@ -272,9 +272,11 @@ async def test_setup_hook_sync_failure_is_fixed_non_reflective_and_prevents_read
     monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
     monkeypatch.setattr(bot.tree, "sync", sync)
 
-    with caplog.at_level(logging.ERROR, logger="test.bot"):
-        with pytest.raises(RuntimeError) as captured:
-            await bot.setup_hook()
+    with (
+        caplog.at_level(logging.ERROR, logger="test.bot"),
+        pytest.raises(RuntimeError) as captured,
+    ):
+        await bot.setup_hook()
 
     assert str(captured.value) == "guild command sync failed"
     assert captured.value.__cause__ is None
