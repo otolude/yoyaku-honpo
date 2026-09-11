@@ -39,6 +39,15 @@ ACCEPT_CUSTOM_ID = "post_draft_accept"
 
 _LOGGER = logging.getLogger(__name__)
 
+_SCHEDULE_TYPE_CANCEL_SUCCEEDED = "schedule_type_cancel_succeeded"
+_SCHEDULE_TYPE_CANCEL_DEFER_FAILED = "schedule_type_cancel_defer_failed"
+_SCHEDULE_TYPE_CANCEL_CLAIM_FAILED = "schedule_type_cancel_claim_failed"
+_SCHEDULE_TYPE_CANCEL_CONTROLLER_FAILED = "schedule_type_cancel_controller_failed"
+_SCHEDULE_TYPE_CANCEL_RENDER_FAILED = "schedule_type_cancel_render_failed"
+_SCHEDULE_TYPE_CANCEL_RESPONSE_FAILED = "schedule_type_cancel_response_failed"
+_SCHEDULE_TYPE_CANCEL_AUTHORIZATION_REJECTED = "schedule_type_cancel_authorization_rejected"
+_SCHEDULE_TYPE_CANCEL_ABORT_FAILED = "schedule_type_cancel_abort_failed"
+
 
 class _CancelDeferFailed(Exception):
     """Detail-free dispatch signal: the failed transport must not be retried."""
@@ -1456,6 +1465,39 @@ def _render_schedule_cancel_response() -> dict[str, Any]:
     }
 
 
+def _record_schedule_type_cancel_event(event: str, *, success: bool = False) -> None:
+    try:
+        if success:
+            _LOGGER.info(event)
+        else:
+            _LOGGER.warning(event)
+    except Exception:  # noqa: BLE001 - fixed fallback must not leak logging failures
+        try:
+            _LOGGER.error(_SCHEDULE_TYPE_CANCEL_ABORT_FAILED)
+        except Exception:  # noqa: BLE001, S110 - logging is the failed boundary
+            pass
+
+
+def _abort_schedule_type_cancel(
+    *, controller: object, source: object, event: str, cancel_session: bool = False
+) -> None:
+    abort_failed = False
+    if cancel_session:
+        try:
+            controller.session.cancel()
+        except Exception:  # noqa: BLE001 - the fixed event is the complete failure record
+            abort_failed = True
+    try:
+        if hasattr(source, "_claimed"):
+            source._claimed = True
+        source.stop()
+    except Exception:  # noqa: BLE001 - no local cleanup exception may cross dispatch
+        abort_failed = True
+    _record_schedule_type_cancel_event(event)
+    if abort_failed:
+        _record_schedule_type_cancel_event(_SCHEDULE_TYPE_CANCEL_ABORT_FAILED)
+
+
 def _abort_schedule_type(
     *, controller: object, source: object, candidate: object | None, event: str
 ) -> None:
@@ -1591,14 +1633,74 @@ class PostDraftScheduleTypeView(discord.ui.View):
         return callback
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
-        if not await _schedule_guard(interaction, self.controller, "schedule_type_selection"):
+        try:
+            allowed = await _schedule_guard(interaction, self.controller, "schedule_type_selection")
+        except Exception:  # noqa: BLE001 - authorization details remain private
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_AUTHORIZATION_REJECTED,
+            )
             return
-        if getattr(interaction.response, "is_done", lambda: False)():
-            await _respond_stale(interaction)
+        if not allowed:
+            _record_schedule_type_cancel_event(_SCHEDULE_TYPE_CANCEL_AUTHORIZATION_REJECTED)
             return
-        self.controller.session.cancel()
-        await interaction.response.defer(thinking=False)
-        self.stop()
+        try:
+            await interaction.response.defer(thinking=False)
+        except Exception:  # noqa: BLE001 - an ambiguous defer is never retried
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_DEFER_FAILED,
+                cancel_session=True,
+            )
+            return
+        try:
+            claimed = await self._claim()
+        except Exception:  # noqa: BLE001 - claim failure is terminal for this view
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_CLAIM_FAILED,
+                cancel_session=True,
+            )
+            return
+        if not claimed:
+            _record_schedule_type_cancel_event(_SCHEDULE_TYPE_CANCEL_CLAIM_FAILED)
+            return
+        try:
+            self.controller.session.cancel()
+        except Exception:  # noqa: BLE001 - mutation details remain private
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_CONTROLLER_FAILED,
+            )
+            return
+        try:
+            response = _render_schedule_cancel_response()
+        except Exception:  # noqa: BLE001 - render details remain private
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_RENDER_FAILED,
+            )
+            return
+        try:
+            await interaction.edit_original_response(**response)
+        except Exception:  # noqa: BLE001 - an ambiguous response is never retried
+            _abort_schedule_type_cancel(
+                controller=self.controller,
+                source=self,
+                event=_SCHEDULE_TYPE_CANCEL_RESPONSE_FAILED,
+            )
+            return
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001 - the Discord view is already removed
+            _record_schedule_type_cancel_event(_SCHEDULE_TYPE_CANCEL_ABORT_FAILED)
+            return
+        _record_schedule_type_cancel_event(_SCHEDULE_TYPE_CANCEL_SUCCEEDED, success=True)
 
     async def _claim(self) -> bool:
         async with self._claim_lock:

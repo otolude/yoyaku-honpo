@@ -3780,7 +3780,9 @@ async def test_schedule_type_cancel_dispatch_renders_terminal_success_once(
     assert attempted.update_kwargs["allowed_mentions"].to_dict() == (
         discord.AllowedMentions.none().to_dict()
     )
-    assert isinstance(attempted.update_kwargs["content"], str)
+    assert attempted.update_kwargs["content"] == (
+        "予約設定をキャンセルしました。予約は作成されていません。"
+    )
     assert view.is_finished()
     assert attempted.followup.attempts == attempted.response.other_attempts == 0
     assert _schedule_type_cancel_events(caplog) == ["schedule_type_cancel_succeeded"]
@@ -3796,6 +3798,7 @@ async def test_schedule_type_cancel_duplicate_dispatch_has_one_winner(
     session, controller, view, port, factory = _schedule_type_cancel_case()
     barrier = _ScheduleCancelBarrier()
     attempted = [_ScheduleConfirmInteraction(), _ScheduleConfirmInteraction()]
+    baseline = {task for task in asyncio.all_tasks() if task is not asyncio.current_task()}
     for interaction_value in attempted:
         interaction_value.response = _ScheduleCancelBarrierResponse(barrier)
 
@@ -3817,6 +3820,7 @@ async def test_schedule_type_cancel_duplicate_dispatch_has_one_winner(
     assert events.count("schedule_type_cancel_claim_failed") == 1
     assert CANARY not in caplog.text
     _assert_schedule_type_cancel_has_no_creation(controller, factory, port)
+    assert {task for task in asyncio.all_tasks() if task is not asyncio.current_task()} == baseline
 
 
 @pytest.mark.asyncio
@@ -3827,6 +3831,7 @@ async def test_schedule_type_cancel_and_selection_share_one_claim(
 
     session, controller, view, port, factory = _schedule_type_cancel_case()
     original_guard = module._schedule_guard
+    baseline = {task for task in asyncio.all_tasks() if task is not asyncio.current_task()}
     entered = 0
     release = asyncio.Event()
 
@@ -3858,6 +3863,7 @@ async def test_schedule_type_cancel_and_selection_share_one_claim(
     assert _schedule_type_cancel_events(caplog).count("schedule_type_cancel_succeeded") <= 1
     assert CANARY not in caplog.text
     _assert_schedule_type_cancel_has_no_creation(controller, factory, port)
+    assert {task for task in asyncio.all_tasks() if task is not asyncio.current_task()} == baseline
 
 
 @pytest.mark.parametrize(
@@ -4013,10 +4019,7 @@ async def test_schedule_type_cancel_stop_failure_is_bounded(
     assert attempted.response.defer_attempts == attempted.update_attempts == 1
     assert attempted.update_successes == 1 and attempted.update_kwargs["view"] is None
     assert attempted.followup.attempts == attempted.response.other_attempts == 0
-    assert _schedule_type_cancel_events(caplog) == [
-        "schedule_type_cancel_succeeded",
-        "schedule_type_cancel_abort_failed",
-    ]
+    assert _schedule_type_cancel_events(caplog) == ["schedule_type_cancel_abort_failed"]
     assert CANARY not in caplog.text
     _assert_schedule_type_cancel_has_no_creation(controller, factory, port)
 
@@ -4053,7 +4056,14 @@ async def test_schedule_type_cancel_after_timeout_is_stale(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     session, controller, view, port, factory = _schedule_type_cancel_case()
-    view.stop()
+    baseline = {task for task in asyncio.all_tasks() if task is not asyncio.current_task()}
+    view._dispatch_timeout()
+    timeout_tasks = {
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and task not in baseline
+    }
+    await asyncio.gather(*timeout_tasks)
     attempted = _ScheduleConfirmInteraction()
 
     with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
@@ -4065,6 +4075,7 @@ async def test_schedule_type_cancel_after_timeout_is_stale(
     assert _schedule_type_cancel_events(caplog) == ["schedule_type_cancel_claim_failed"]
     assert CANARY not in caplog.text
     _assert_schedule_type_cancel_has_no_creation(controller, factory, port)
+    assert {task for task in asyncio.all_tasks() if task is not asyncio.current_task()} == baseline
 
 
 @pytest.mark.parametrize("mismatch", ["owner", "guild", "channel"])
