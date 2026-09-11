@@ -12,15 +12,17 @@ Domainで用いるuser 3回／固定10分、guild 30回／JST日、global 50回�
 
 運営全体の安全Budget／rate limitと顧客プランQuotaは別Policyとして扱う。上位プランにも運営全体の安全上限を適用する。Plan／Entitlementとプラン別利用回数は未実装であり、将来は設定とDB上のPlan／Entitlementから変更可能にする。Free、Standard、Pro等の名称や回数は未決定であり、暫定値を販売上の約束へ転用しない。
 
-本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、限定したPreview表示escape、`@everyone`／`@here`拒否まで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿へは未接続である。実Provider、AI生成／再生成、2,000文字境界の実Discord確認、IPv6 literal URLの保持、公開投稿接続後のmention安全性、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
+本項はPhase 4全体の設計を示す。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、限定したPreview表示escape、`@everyone`／`@here`拒否まで実Discord確認済みである。Phase 4IではPost Draft Accept後も既存のaccepted terminal contractを維持し、独立Schedule Sessionから単発／毎日／毎週の予約条件と現在本文を既存予約作成境界へ渡す構成を実装・自動検証した。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterをproduction Compositionへ接続しない。Acceptから先の予約画面、予約保存、配信は実Discord未確認である。実Provider、AI生成／再生成、2,000文字境界の実Discord確認、Phase 4I画面と配信のmention／Markdown／URL、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、正式UI timeoutも未決定である。Phase 3のAI予約名生成とは別の機能境界とし、予約名専用のrequest／result、`name_generation_jobs`、Schedule version CAS、名前用prompt／schemaを本文生成へ流用しない。
 
 ### Discord状態遷移
 
 入口は新しい`/post compose`とし、既存予約コマンドを維持する。ephemeral画面で手入力またはAI作成を選び、AI作成前にProvider送信情報、秘密情報を入力しない注意、誤りの可能性、利用枠、悲観費用を表示する。Modalで目的1～200文字、要点1～1,000文字、文体「丁寧・親しみやすい・簡潔」、長さ「短め・標準・長め」を取得する。
 
-submitをdeferし、rate limitとBudgetを予約してからProviderをone-shotで呼ぶ。1～2,000文字へ再検証した下書きに編集、条件を変えて再生成、この本文を使用、キャンセルを提供する。その後に投稿先と単発／毎日／毎週の条件を取得し、投稿先・日時・本文・AI利用を確認表示する。同じ利用者の「予約する」buttonだけが既存の予約作成Application Serviceを1 transactionで呼ぶ。
+submitをdeferし、rate limitとBudgetを予約してからProviderをone-shotで呼ぶ。1～2,000文字へ再検証した下書きに編集、条件を変えて再生成、この本文を使用、キャンセルを提供する。Post Draft Acceptは既存どおりaccepted terminalで完了し、現在本文、owner、guild、channelのscopeだけを新しい独立Schedule Sessionへ渡す。Schedule Sessionは単発／毎日／毎週の選択と入力、予約条件編集、最終確認を管理し、同じ利用者の「予約を確定」だけが既存の冪等予約作成Application Serviceを呼ぶ。
 
-各View／Modalは非識別custom ID、instance registry、`asyncio.Lock`、generating／finished／closed状態、有限timeoutを持つ。操作ごとにguild、利用者、許可role、投稿先権限を再検証する。二重押下、期限切れ、応答失敗、Bot shutdown／restartでは重複生成・予約保存・投稿を行わず、古いViewを復元しない。
+各View／Modalは非識別custom ID、instance registry、`asyncio.Lock`、generating／finished／closed状態、有限timeoutを持つ。操作ごとにguild、利用者、許可role、投稿先権限を再検証する。Schedule Sessionは種別選択、入力、最終確認、保存中、完了、取消、競合、結果不明を分離し、確認内容のrevisionでEditとConfirmの競合を検出する。validation失敗では直前の有効な入力を置換しない。stale View、二重押下、競合するEdit／Confirm／Cancel、期限切れ、応答失敗、Bot shutdown／restartでは重複生成・予約保存・投稿を行わず、古いViewを復元しない。
+
+確定処理はpublic ID factoryと予約作成Portをそれぞれ最大1回だけ呼ぶ。Application結果は`created`、`already_created`、`conflict`、`unknown`の閉じた値へ写像し、結果不明時は再INSERTもretryも行わない。Discord transport、render、responseの失敗は固定eventだけを記録し、失敗した応答を再送しない。任意の例外message、本文、識別子をeventへ連結しない。
 
 ### Provider・保持・費用境界
 
@@ -53,6 +55,16 @@ Provider gateはfalseのままで、OpenAI client／通信／AI worker、generat
 開発・検証専用Application／Guildで、Manual PreviewとEdit後Previewに同じscannerが適用され、Edit Modalにはraw本文が表示されることを確認した。通常HTTP(S) URLでは確認対象の`_`、`*`、`~`、query、fragmentを保持し、Markdown link、bold、italic、strike、inline code、hyphen／numbered listはliteral表示となった。user／nickname user／role／channel mention形式は名前、role、channel linkへ変換されず、LF改行、日本語、Unicode、絵文字を保持した。これは確認した構文だけの受入であり、全Markdown、全URL、IPv6 literal URL、実在ID、公開投稿接続後のmention安全性を保証しない。
 
 `@everyone`／`@here`を含むManual本文はDomain validationで拒否され、Previewへ進まず、安全な固定案内へのinitial responseが正常終了した。別のPreview Cancelはdefer、claim、Controller cancel、`cancelled`遷移、original response更新、callback終了まで成功した。いずれもtimeout、mention通知、公開投稿はなく、固定失敗event 5種類は各0件だった。通常pytestは1,781 passed／375 skipped、warning 0で、2,000／2,001文字境界は自動テストだけの確認である。generation、Usage reserve、DB保存、予約保存、予約確定、投稿処理、OpenAI client／通信／AI workerは各0件で、隔離DBの11業務tableは各0件、想定外table 0件だった。終了時はsupervisor、Bot child、`postgres_test`がexit code 0、cleanup成功で全process、container、listenerが停止した。
+
+### Phase 4I 予約引渡し自動検証結果
+
+Post Draft Accept後のaccepted terminal contractと独立Schedule Sessionへのhandoff、単発／毎日／毎週の選択・入力・編集・最終確認、owner／guild／channel認可、validation失敗時の旧入力保持、stale View、二重押下、Edit／Confirm／Cancel競合を自動テストで確認した。public ID生成と予約作成Port呼出しは各最大1回で、`created`／`already_created`／`conflict`／`unknown`を固定結果へ写像し、`unknown`後に再INSERT・retryしない。Discord transport／render／response失敗は固定eventへ閉じた。
+
+DBなし通常pytestは2,048 passed／393 skipped、DB付き通常pytestは2,441 passed、PostgreSQL integrationは397 passed、冪等作成は22 passedだった。Migration revision `c72e91f4b6a3`のupgrade、current、single heads、check、Ruff check／format、通常差分・staged差分のcheckに成功した。終了時は11業務table各0行、想定外table 0、connection／transaction／lock／task leak 0、secret reflection 0で、隔離projectのcleanup、code commit、通常pushまで完了した。Phase 4受入集計は確認済み47件／未確認24件（合計71件）で、実装・自動隔離およびPostgreSQL・Migrationの上位gateは対応する詳細行へ統合し、独立した受入行として重ねて数えない。
+
+Migration safety wrapperとAlembic環境は、到達位置を値なしの固定stage marker、失敗原因を固定failure categoryとして出力する。cause／contextは公開例外型のallowlistから有限深度で分類し、任意のclass名、module名、message、repr、traceback、URL、credential、DB識別子、SQLを出力しない。`KeyboardInterrupt`／`SystemExit`を通常失敗へ変換せず、loggingのglobal state、engine／connection／transaction／Migration実行回数を変更しない。
+
+この結果は自動検証であり、Acceptから予約画面への実表示、単発／毎日／毎週の実Discord入力・編集・確定、実際の予約保存・配信、二重操作／stale／timeout／権限喪失／再起動、2,000文字境界、Phase 4I画面と配信のmention／Markdown／URL、実Provider、AI生成／再生成、実OpenAI通信、ARM64 Linux、本番Application／一般利用者環境を確認した証拠ではない。
 
 ### feature flagと受入gate
 

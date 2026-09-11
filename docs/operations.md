@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きの将来運用境界
 
-本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。ManualはUsage予約、DB保存、予約確定、channel投稿を行わない。実Provider、AI生成／再生成、予約接続、Usage cleanupのruntime wiring／定期実行、Plan／Entitlement、正式model／価格／UI timeoutは未実装・未確認または未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Acceptまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。現在はPost Draft Accept後に既存のaccepted terminal contractを維持した独立Schedule Sessionを開始し、単発／毎日／毎週の予約条件と最終確認から既存予約作成境界へ最終本文を渡せる。これは自動テストと専用PostgreSQLでは確認済みだが、Accept後の予約画面、予約保存、配信は実Discord未確認である。Usage cleanupのruntime wiring／定期実行、Plan／Entitlementは未実装で、実Provider、AI生成／再生成、ARM64 Linux、正式model／価格／UI timeoutは未確認または未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 - 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
 - AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
@@ -14,6 +14,9 @@
 - Provider disabled、rate limit、Budget超過、timeout、障害時は固定案内から手入力へ戻し、既存の予約作成・編集・配信を停止しない。
 - URLとMarkdownは許可するが、確認画面の`Embed.description`だけを表示用にescapeし、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。通常HTTP(S) URLはクリック可能表示を許可し、配信では別の境界として`AllowedMentions.none()`を維持する。`@everyone`、`@here`、危険な制御文字・bidi文字は入力・出力の両方で拒否する。
 - MVPではModeration API、自動retry、fallback modelを運用しない。
+- Accept後のSchedule Sessionは本文下書きSessionから独立させ、owner／guild／channelを操作ごとに再検証する。stale View、二重押下、競合するEdit／Confirm／Cancelから予約作成Portを複数回呼ばない。
+- public ID生成と予約作成Port呼出しは各最大1回とする。結果は`created`／`already_created`／`conflict`／`unknown`の固定値だけで扱い、`unknown`後は再INSERTも自動retryも行わず、予約一覧から状態確認を案内する。
+- Discord transport／render／response失敗は固定eventだけを記録し、Migration診断も固定stage markerと固定failure categoryだけを出力する。本文、URL、credential、DB識別子、SQL、例外messageは連結しない。
 
 価格表示は設定済み単価、最大token、為替、安全係数による悲観見積りと明記し、最終請求、税、為替、販売価格の保証としない。単価、モデル、保持、SDK、Provider dashboard条件は実Provider受入直前に再監査する。秘密値をcommand引数、文書、画面資料、通常logへ含めず、固定匿名合成ケースだけで受入する。
 
@@ -48,6 +51,27 @@ Cancelではdefer、Controller cancel、cancelled遷移、original response更�
 通常pytestは1,781 passed／375 skipped、warning 0だった。入力上限2,000文字に対するPreview scannerのPython `len`／UTF-16 code unitの理論最大は各4,000で、Embed上限4,096以内、truncate／欠落なし、時間・追加メモリともO(N)である。2,000／2,001文字境界は自動テストだけで確認し、実Discordでは実施していない。
 
 command定義が事前確認済みのremoteと同一であることを確かめ、Discord command更新HTTPを送らない起動経路を使用した。送信を伴わないsync代替呼出しは実syncへ数えず、今回の実Guild sync attempt／成功は0／0、確認済み成功累計は4回、過去の結果不明attemptは1回、global syncとcommand更新HTTPは各0回である。generation、Usage reserve、DB保存、予約保存、予約確定、投稿処理、OpenAI client／通信／AI workerも各0件だった。通常開発DBへ接続せず、隔離DBはrevision `c72e91f4b6a3`、11業務table各0件、想定外table 0件を保持した。終了時はsupervisor、Bot child、`postgres_test`がexit code 0で、正常停止とcleanup成功を確認し、全process、container、listenerが停止した。
+
+### Phase 4I 予約引渡し検証記録
+
+Phase 4IではPost Draft Accept後のaccepted terminal contractを変更せず、独立Schedule Sessionへ現在本文を引き渡す構成を追加した。単発／毎日／毎週の選択・入力・編集・最終確認、validation失敗時の旧入力保持、owner／guild／channel認可、stale View、二重押下、Edit／Confirm／Cancel競合を自動テストで確認した。public ID生成と予約作成Port呼出しは各最大1回であり、`created`／`already_created`／`conflict`／`unknown`を固定結果として扱い、`unknown`後の再INSERT・retryは行わない。Discordのtransport／render／response失敗は、値を伴わない固定eventへ閉じる。
+
+DBなし通常pytestは2,048 passed／393 skipped、DB付き通常pytestは2,441 passed、PostgreSQL integrationは397 passed、冪等作成は22 passedだった。Migration revision `c72e91f4b6a3`のupgrade、current、single heads、check、Ruff check／format、通常差分・staged差分のcheckに成功した。終了時は11業務table各0行、想定外table 0、connection／transaction／lock／task leak 0、secret reflection 0で、隔離projectをcleanupした。code commitと通常pushは完了している。この記録のMigration stage／failure categoryは固定値だけで、URL、credential、DB識別子、SQL、例外messageを出力しない。Phase 4受入集計は[専用受入表](manual-acceptance-ai-post-drafting.md)の確認済み47件／未確認24件（合計71件）を正本とし、2件の上位gateを対応する詳細行へ統合して二重計上しない。
+
+この自動検証ではDocker上の専用PostgreSQL以外に、Discord、OpenAI、guild sync、公開投稿を実行していない。Acceptから予約画面への実表示、単発／毎日／毎週の実入力・編集・確定、実際の保存・配信、二重操作／stale／timeout／権限喪失／再起動、2,000文字境界、Phase 4I画面と配信におけるmention／Markdown／URL、実Provider、ARM64 Linux、本番Application／一般利用者環境は未確認である。
+
+### Phase 4I 実Discord予約接続受入手順（未実施）
+
+実行時は開発・検証専用Application／Guild／channel、匿名合成本文、専用tmpfs PostgreSQLを使用し、Provider gateを無効のまま維持する。command定義を先に比較し、差分がない場合はguild syncを行わない。syncが必要な場合は受入本体から分けて明示承認を得る。通常開発DB、実利用者データ、実Provider、本番Applicationを混在させない。
+
+1. `/post compose`のManual経路でPreview／Edit／Acceptを行い、予約種別選択がephemeral表示されることを確認する。
+2. 単発／毎日／毎週の入力、validation失敗後の再入力、予約条件編集、最終確認を各1回確認する。「予約を確定」前はSchedule、Run、OperationLog、公開投稿の増加を0とする。
+3. 各種別を確定し、編集・確認済み最終本文だけが正確に1件保存され、予定時刻に正確に1回配信されることをread-only監査とDiscord表示の両方で確認する。
+4. Cancel、二重押下、stale View、競合するEdit／Confirm／Cancel、timeout、権限喪失、Bot再起動について、予約・投稿の重複または意図しない作成がないことを確認する。
+5. 2,000文字境界と、Phase 4I確認画面および実配信のmention／Markdown／URL境界を確認する。本文や実IDを通常log・受入文書へ転記しない。
+6. 成功ケースはcleanup前に期待する予約・実行行を保持したまま監査し、全業務table 0行を合格条件にしない。手動DELETEで状態を作らず、専用tmpfs projectの停止・cleanupによって隔離資材を破棄する。
+
+この手順が完了しても実Provider、AI生成／再生成、実OpenAI通信、ARM64 Linux、本番Application／一般利用者環境の受入とは扱わず、本文生成feature flagは有効化しない。
 
 ## 1. 文書の目的と対象環境
 
@@ -116,7 +140,7 @@ Botが投稿する各チャンネルとoperator channelで、閲覧・送信・E
 
 ## 5. 初回起動
 
-詳細は[READMEの初回セットアップ](../README.md#初回セットアップ)に従う。要点は次の順序である。
+詳細は[READMEの最短セットアップ入口](../README.md#最短セットアップ入口)に従う。要点は次の順序である。
 
 1. `.venv`を作成して依存関係を導入する。
 2. `.env.example`からGit管理対象外の`.env`を作る。
@@ -159,7 +183,7 @@ Schema確認はDiscord readyより前の`setup_hook`で行われる。Recovery�
 
 ## 6. 通常起動
 
-[READMEの日常の作業開始](../README.md#日常の作業開始)に従う。
+[README](../README.md)のセットアップ境界を維持し、次を確認する。
 
 ```bash
 git status --short --branch
@@ -386,7 +410,7 @@ psql "$RESTORE_DATABASE_URL" -c "SELECT contype, count(*) FROM pg_constraint WHE
 
 ## 18. テストDB
 
-[READMEのPostgreSQL統合テスト](../README.md#postgresql統合テスト)に従う。`postgres_test`は`127.0.0.1:55432`の一時DBで、開発用`postgres`と名前付きVolumeを共有しない。
+[README](../README.md)のテスト境界を維持する。`postgres_test`は`127.0.0.1:55432`の一時DBで、開発用`postgres`と名前付きVolumeを共有しない。
 
 起動・停止・削除は必ずサービス名を明示する。
 

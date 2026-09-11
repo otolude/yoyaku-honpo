@@ -8,17 +8,19 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
 - PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み
+- Phase 4I: Post Draft Accept後も既存のaccepted terminal contractを維持し、独立したSchedule Sessionへ引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、認可、競合抑止、冪等な予約作成境界まで実装・自動テスト・PostgreSQL統合済み
 - `/post compose`: 既存guild限定`/post` Groupへ登録し、開発・検証専用Application／Guildでguild限定command、AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、確認表示の限定したescape境界を実Discord確認済み。global command syncは行っていない
 - production Composition: Provider gateはfalseで`DisabledPostDraftGenerator`を使用し、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
-- Manualフロー: Preview／Edit／Acceptまで自動隔離・実Discord確認済み。Previewの`Embed.description`だけを表示用に変換し、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。Usage予約、DB保存、予約確定、channel投稿へは未接続で、採用後も「まだ予約・投稿されていない」と表示する
-- Usage cleanupのruntime wiring／定期実行、予約確定フローとの接続、Plan／Entitlementとプラン別利用枠: 未実装
+- Manualフロー: Preview／Edit／Acceptまでは自動隔離・実Discord確認済み。Previewの`Embed.description`だけを表示用に変換し、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。現在の実装ではAccept後に独立Schedule Sessionへ引き渡し、「予約を確定」までは予約保存・投稿を行わない。Acceptから先の予約画面、予約保存、配信は実Discord未確認
+- Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠: 未実装
 - 正式model、価格・費用承認、正式UI timeout: 未決定
-- 自動隔離テストとPostgreSQL統合テスト: commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`で下記の隔離runtime受入を完了
+- 自動隔離テストとPostgreSQL統合テスト: Phase 4Hの履歴に加え、Phase 4Iの最終code commitでDBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passedを確認し、通常push済み
 - 実OpenAI Provider受入: 未実施
-- 実Discord受入: AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、確認表示の限定したURL・Markdown・mention境界、`@everyone`／`@here`の入力拒否まで確認済み。実Provider、AI生成／再生成、2,000文字境界、予約保存／確定、投稿は未確認
+- 実Discord受入: AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、当時のPreviewにおける限定したURL・Markdown・mention境界、`@everyone`／`@here`の入力拒否まで確認済み。Acceptから予約画面への遷移、単発／毎日／毎週の入力・編集・確定、保存・配信、Phase 4I画面での競合・timeout・権限喪失・再起動、2,000文字境界、Phase 4I画面と実配信のmention／Markdown／URLは未確認
 - ARM64 Linux実機受入: 未実施
 - 本文生成feature flag: 初期無効を要件化、有効化不可
-- Phase 4受入集計: 確認済み40件／未確認23件（合計63件）
+- Phase 4受入集計: 確認済み47件／未確認24件（合計71件）
+- Phase 4I集計内訳: 変更前HEADは確認済み40件／未確認23件（合計63件）。new confirmed rows 4件、moved to confirmed 5件、merged duplicate confirmed rows 2件によりnet confirmed increaseは7件。new unconfirmed rows 6件、net unconfirmed increaseは1件、net total increaseは8件
 
 Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する。AI本文生成が利用可能、Providerが採用済み、費用・品質・保持が確認済み、または本番公開可能であることを意味しない。
 
@@ -72,6 +74,21 @@ r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推
 
 受入実行中にproduction code、test、Migration、設定の変更は行っていない。本項の運用上のsync累計は製品仕様ではない。
 
+## Phase 4I 予約引渡し自動受入
+
+Phase 4Hの実Discord受入記録は、その時点でAccept後の予約接続が存在しなかった履歴として変更しない。Phase 4Iでは、そのaccepted terminal contractを変更せずに独立Schedule Sessionを構成し、現在本文だけを既存予約作成境界へ引き渡す実装を追加した。本項の結果は自動テストと専用PostgreSQLによる確認であり、実Discordの画面、予約保存、配信を確認した証拠ではない。
+
+- DBなし通常pytest: 2,048 passed／393 skipped
+- DB付き通常pytest: 2,441 passed
+- PostgreSQL integration: 397 passed
+- 冪等な予約作成: 22 passed
+- Migration: revision `c72e91f4b6a3`のupgrade、current、single heads、checkおよび接続確認に成功
+- 品質検査: Ruff check、Ruff format check、通常差分・staged差分のcheckに成功
+- 終了時監査: 11業務table各0行、想定外table 0、connection／transaction／lock／task leak 0、secret reflection 0
+- 隔離project: 専用資材のcleanupに成功し、code commitと通常pushを完了
+
+Migration safety wrapperとAlembic環境は、秘密情報を連結しない固定stage markerと固定failure categoryだけを出力する。例外message、URL、credential、DB識別子、SQL本文を診断出力へ反射しない。
+
 ## 利用回数・費用上限の未決事項
 
 現在のuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、およびuser bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装と安全検証に用いる暫定値である。正式な商品仕様、サブスクリプション仕様、一般提供時の確定値または販売上の約束ではなく、正式承認を待つ。
@@ -101,14 +118,18 @@ r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推
 - [x] disabled境界、one-shot生成、timeout、cancel、typed error、retryなしを実装する。
 - [x] user／guild rate limitと永続的な運営Budgetを実装する。
 - [x] 目的、要点、条件、prompt、AI原文、履歴がDBと通常logへ保存されないことを確認する。
-- [ ] `/post compose`の注意、入力、生成、編集、再生成、本文採用、最終確認を実装する。
-- [ ] 二重押下、期限切れ、権限喪失、Bot shutdown／restartで重複生成・保存・投稿しないことを確認する。
+- [x] `/post compose`の注意、入力、生成、編集、再生成、本文採用、および本文採用後の予約最終確認を実装し、DBなし通常pytest 2,048 passed／393 skippedとDB付き通常pytest 2,441 passedの一部として確認する。
+- [x] owner／guild／channel認可と、stale View、二重押下、Edit／Confirm／Cancel競合による重複保存・投稿の抑止を自動テストで確認する。
 - [x] 「予約する」前のSchedule、Run、OperationLog増加が0件であることを確認する。
-- [ ] 利用者が編集・確認した最終本文だけが既存予約作成Serviceへ渡ることを確認する。
+- [x] 利用者が編集・確認した最終本文だけが、accepted terminal contractから独立Schedule Sessionを経て既存予約作成Serviceへ渡ることを確認する。
 - [x] 単発・毎日・毎週の予約と既存手入力コマンドが回帰していないことを確認する。
 - [x] AI disabled、Provider disabled、Budget超過、rate limit、timeout、障害時も通常予約が利用できることを確認する。
 - [x] API key、Discord token、DB URL、Provider payload／response、本文、例外全文のlog非露出をcanaryで確認する。
-- [x] revision `c72e91f4b6a3`について、専用tmpfs PostgreSQLでupgrade、current、heads、check、空DB downgrade、データ存在時のdowngrade拒否と既存schema非破壊を確認する。
+- [x] revision `c72e91f4b6a3`について、専用tmpfs PostgreSQLでupgrade、current、heads、check、空DB downgrade、データ存在時のdowngrade拒否と既存schema非破壊を確認し、PostgreSQL integration 397 passedと冪等作成22 passedを確認する。
+- [x] 予約入力validation失敗時に直前の有効な入力を保持し、利用者が再入力できることを自動テストで確認する。
+- [x] public ID生成と予約作成Port呼出しを各最大1回とし、`created`／`already_created`／`conflict`／`unknown`を固定結果へ写像し、`unknown`後に再INSERT・retryしないことを確認する。
+- [x] Discord transport／render／response失敗を固定eventへ閉じ、秘密情報、本文、任意の例外内容を反射しないことを確認する。
+- [x] Migrationの到達stageと失敗分類を固定marker／固定categoryだけで観測し、通常logと診断出力へ秘密情報を反射しないことを確認する。
 
 ## 実Provider受入
 
@@ -121,12 +142,18 @@ r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推
 
 ## 実Discord AI・予約接続受入
 
+- [ ] Manual本文のAccept後に予約種別選択画面が実Discordで表示される。
+- [ ] 単発／毎日／毎週について、実Discordで予約条件を入力・編集し、最終確認から確定できる。
+- [ ] 実Discordの確定操作に対応する予約が正確に保存され、予定時刻に正確に1回配信される。
+- [ ] 二重操作、stale View、競合するEdit／Confirm／Cancelが実Discordで重複保存・投稿を起こさない。
+- [ ] 2,000文字境界を実Discordの入力、確認、予約保存、配信まで確認する。
+- [ ] 本番Applicationまたは一般利用者環境での挙動を、開発・検証専用環境の結果と分離して確認する。
 - [ ] `/post compose`で手入力とAI作成を選べる。
 - [ ] Provider送信前にprivacy、誤り、利用枠、悲観費用がephemeral表示される。
 - [ ] AI下書きを編集・再生成でき、最終確認に投稿先・日時・本文・AI利用が表示される。
-- [ ] 「予約する」以外の操作、timeout、Bot再起動では予約も投稿も行われない。
+- [ ] 「予約する」以外の操作、timeout、権限喪失、Bot再起動では予約も投稿も行われない。
 - [ ] AI障害時に既存予約コマンドと手入力経路を利用できる。
-- [ ] 実際の配信でmentionが展開されず、確認表示のMarkdownが安全である。
+- [ ] 実際の配信でmentionが展開されず、Phase 4I確認表示のmention／Markdown／URLが定義済み境界どおりである。
 
 ## ARM64 Linux実機受入
 
@@ -137,8 +164,8 @@ r2の空DB probe失敗はsandboxのloopback socket制限によるものとの推
 
 次をすべて満たすまで本文生成feature flagを有効化しない。
 
-- [ ] 実装・自動隔離受入が完了している。
-- [ ] PostgreSQL統合とMigration受入が完了している。
+実装・自動隔離受入の完了、およびPostgreSQL統合とMigration受入の完了は、上記の対応する詳細行へ証跡件数とともに統合済みである。独立したcheckboxとして再計上しない。
+
 - [ ] 実Provider受入が完了している。
 - [ ] 実Discord受入が完了している。
 - [ ] ARM64 Linux実機受入が完了している。

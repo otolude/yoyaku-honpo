@@ -10,9 +10,13 @@ Phase 1とPhase 2は受入完了済みである。現在はローカル環境で
 
 Phase 3の受入結果（確認済み125件／未確認2件、合計127件、および第6項6Cの4件／4件）は変更せず、AI投稿本文下書きは別のPhase 4として管理する。Phase 4Aでは要件、Discord画面遷移、Provider情報境界、保持、費用、安全性、受入条件だけを文書化し、Python実装、Migration、DB操作、Bot操作、実Provider通信、実Discord受入、ARM64 Linux実機受入は行わない。
 
-Phase 4は、4A文書化、4B Provider非依存Domain／Application、4C rate limit／永続Budget、4D Provider Adapter、4E `/post compose` UI、4F自動隔離・PostgreSQL統合、4G実Provider受入、4H実Discord・ARM64受入の順で進める。
+Phase 4は、4A文書化、4B Provider非依存Domain／Application、4C rate limit／永続Budget、4D Provider Adapter、4E `/post compose` UI、4F自動隔離・PostgreSQL統合、4G実Provider受入、4H実Discord・ARM64受入、4I Accept後の予約引渡し実装・検証の単位で管理する。実装順の記録と受入順は分離し、4Iの自動検証完了を4G／4Hの完了として扱わない。
 
-現在はProvider非依存境界、本文専用Usage schema／Repository／cleanup／Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／ControllerとDiscord UI部品、`PostDraftRuntime`を実装し、既存guild限定`/post` Groupへ`/post compose`を登録した。commit `cf34dac4ca7d2f65ebfbcc2d1c16a7e36e777c90`の隔離runtime受入に加え、開発・検証専用Application／GuildでAI buttonの無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、Previewだけの限定したURL・Markdown・mention表示変換、`@everyone`／`@here`の入力拒否を実Discord確認済みである。Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持し、表示用文字を保存・採用しない。Provider gateはfalseのままで、OpenAI client／通信／AI worker、Manual経路のgeneration／Usage予約／DB保存、予約確定、投稿は各0件だった。実Provider、AI生成／再生成、2,000文字境界の実Discord確認、IPv6 literal URLの保持、公開投稿接続後のmention安全性、予約保存・投稿の接続、Usage cleanupのruntime定期実行、ARM64 Linux実機は未実施で、正式model、価格・費用承認、正式UI timeoutも未決定である。この確認は全Markdown／全URLの安全化、一般提供、本番受入またはAI有効end-to-endの完了を意味しない。
+現在はProvider非依存境界、本文専用Usage schema／Repository／cleanup／Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／ControllerとDiscord UI部品、`PostDraftRuntime`を実装し、既存guild限定`/post` Groupへ`/post compose`を登録した。Phase 4Hでは開発・検証専用Application／GuildでAI buttonの無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、Previewだけの限定したURL・Markdown・mention表示変換、`@everyone`／`@here`の入力拒否を実Discord確認した。当時の予約保存・確定・投稿0件という記録は維持する。
+
+Phase 4Iでは、Post Draft Accept後も既存のaccepted terminal contractを維持し、独立Schedule Sessionへ現在本文を引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、owner／guild／channel認可、validation失敗時の旧入力保持、stale View、二重押下、Edit／Confirm／Cancel競合を実装した。public ID生成と予約作成Port呼出しは各最大1回で、`created`／`already_created`／`conflict`／`unknown`を固定結果として扱い、`unknown`後に再INSERT・retryしない。Discord失敗は固定event、Migration診断は秘密情報を含まない固定stage／failure categoryへ閉じた。
+
+DBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passed、revision `c72e91f4b6a3`のMigration、Ruff、diff checks、終了時11業務table各0行、leak 0、secret reflection 0、隔離project cleanupを確認し、code commitと通常pushまで完了した。これらは自動検証であり、Accept後の予約画面、単発／毎日／毎週の実Discord入力・編集・確定、実際の保存・配信、二重操作／stale／timeout／権限喪失／再起動、2,000文字境界、Phase 4I画面と配信のmention／Markdown／URL、実Provider、AI生成／再生成、ARM64 Linux、本番Application／一般利用者環境は未確認である。Phase 4受入集計は確認済み47件／未確認24件（合計71件）で、実装・自動隔離およびPostgreSQL・Migrationの上位gate 2件は対応する詳細行へ統合している。
 
 本文生成feature flagは初期無効とし、実Provider・実Discord・ARM64 Linux実機受入がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
