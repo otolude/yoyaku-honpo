@@ -59,6 +59,7 @@ def core_settings() -> Settings:
         APP_ENV="test",
         TIMEZONE="Asia/Tokyo",
         DISCORD_BOT_TOKEN="fixed-test-token",
+        DISCORD_APPLICATION_ID=900000000000000001,
         DISCORD_GUILD_ID=100,
         DISCORD_ALLOWED_ROLE_IDS="200",
         DISCORD_OPERATOR_USER_ID=300,

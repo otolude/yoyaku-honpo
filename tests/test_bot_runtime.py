@@ -36,6 +36,7 @@ from discord_ai_reminder_bot.log_config import UtcEventFormatter
 NOW = datetime(2026, 8, 18, 3, 0, tzinfo=UTC)
 TOKEN = "test-token-never-connect"
 DATABASE_URL = "postgresql+psycopg://user:test-password@localhost/database_test"
+APPLICATION_ID = 900000000000000001
 
 
 def settings(*, sync_enabled: bool | None = None) -> Settings:
@@ -43,6 +44,7 @@ def settings(*, sync_enabled: bool | None = None) -> Settings:
         "APP_ENV": "test",
         "TIMEZONE": "Asia/Tokyo",
         "DISCORD_BOT_TOKEN": TOKEN,
+        "DISCORD_APPLICATION_ID": APPLICATION_ID,
         "DISCORD_GUILD_ID": 100,
         "DISCORD_ALLOWED_ROLE_IDS": "200",
         "DISCORD_OPERATOR_USER_ID": 300,
@@ -98,6 +100,25 @@ def test_bot_configuration_is_minimal_and_does_not_connect() -> None:
     assert bot.name_generation_worker.available is False
     assert isinstance(bot.gateway, MessageGateway)
     assert not bot.is_ready()
+
+
+def test_bot_passes_configured_application_id_to_discord_client_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    original_init = commands.Bot.__init__
+
+    def observe_init(self: commands.Bot, *args: object, **kwargs: object) -> None:
+        calls.append(dict(kwargs))
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(commands.Bot, "__init__", observe_init)
+
+    bot = make_bot()
+
+    assert len(calls) == 1
+    assert calls[0]["application_id"] == APPLICATION_ID
+    assert bot.application_id == APPLICATION_ID
 
 
 @pytest.mark.asyncio
