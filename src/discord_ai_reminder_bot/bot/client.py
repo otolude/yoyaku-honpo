@@ -105,6 +105,7 @@ class ReminderBot(commands.Bot):
     ) -> None:
         super().__init__(
             command_prefix=SLASH_ONLY_PREFIX,
+            application_id=settings.discord_application_id,
             help_command=None,
             tree_cls=Phase1CommandTree,
             intents=minimal_intents(),

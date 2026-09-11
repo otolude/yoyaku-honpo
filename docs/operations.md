@@ -104,6 +104,7 @@ Sessionとtransactionはorchestration boundaryが所有する。Botコマンド�
 - `APP_ENV`
 - `TIMEZONE=Asia/Tokyo`
 - `DISCORD_BOT_TOKEN`
+- `DISCORD_APPLICATION_ID`
 - `DISCORD_GUILD_ID`
 - `DISCORD_ALLOWED_ROLE_IDS`
 - `DISCORD_OPERATOR_USER_ID`
@@ -124,6 +125,10 @@ Sessionとtransactionはorchestration boundaryが所有する。Botコマンド�
 - `NOTIFICATION_PROCESSING_TIMEOUT_SECONDS`
 
 起動時検証に失敗した場合はDiscordへ接続しない。tokenとDB URLはSecretStrで保持し、通常ログへ出さない。
+
+`DISCORD_APPLICATION_ID`は正の整数を必須とし、tokenやGuild IDからdecode・推測しない。Application IDは秘密credentialではないが実値をprivate runtime metadataとして管理し、repr、通常log、文書へ出さない。Application IDとGuild IDは別identityとして保持し、同一値を設定検証で拒否する。development、test、productionではApplication ID、Guild ID、tokenの組を完全に分離し、`APP_ENV`のラベルだけで開発Applicationとは判断しない。
+
+将来のread-only command schema監査では、設定済みApplication ID、承認済みのApplication identity取得結果、guild schema取得結果のApplication identityがすべて一致した場合だけschema比較へ進む。一致が未確認または不一致ならDiscord接続とschema取得を行わない。この照合は値を出さない純粋比較境界で行い、token解析でidentityを補完しない。
 
 `DISCORD_GUILD_COMMAND_SYNC_ENABLED`は未設定時も`false`であり、通常起動と本番デプロイでは原則`false`を維持する。command定義と設定Guildのremote定義を事前に比較し、差分が確定して同期が承認された作業中だけ`true`にする。差分が不明な場合は`true`にしない。同期作業後は必ず`false`へ戻し、通常起動へ同期権限を持ち越さない。不正なboolean値は設定検証でDiscord接続前に拒否する。
 

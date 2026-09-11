@@ -23,6 +23,7 @@ class DatabaseSettings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=True,
+        hide_input_in_errors=True,
     )
 
     database_url: SecretStr = Field(validation_alias="DATABASE_URL")
@@ -50,6 +51,7 @@ class Settings(DatabaseSettings):
     timezone: Literal["Asia/Tokyo"] = Field(validation_alias="TIMEZONE")
 
     discord_bot_token: SecretStr = Field(validation_alias="DISCORD_BOT_TOKEN")
+    discord_application_id: DiscordId = Field(validation_alias="DISCORD_APPLICATION_ID", repr=False)
     discord_guild_id: DiscordId = Field(validation_alias="DISCORD_GUILD_ID")
     discord_allowed_role_ids: AllowedRoleIds = Field(validation_alias="DISCORD_ALLOWED_ROLE_IDS")
     discord_operator_user_id: DiscordId = Field(validation_alias="DISCORD_OPERATOR_USER_ID")
@@ -158,6 +160,21 @@ class Settings(DatabaseSettings):
     ai_name_generation_budget_retention_days: int = Field(
         default=90, validation_alias="AI_NAME_GENERATION_BUDGET_RETENTION_DAYS"
     )
+
+    @field_validator("discord_application_id", mode="before")
+    @classmethod
+    def validate_discord_application_id(cls, value: object) -> int:
+        if isinstance(value, bool):
+            raise ValueError("Discord Application IDは正の整数にしてください")  # noqa: TRY004
+        if type(value) is int:
+            parsed = value
+        elif isinstance(value, str) and value.isascii() and value.isdecimal():
+            parsed = int(value)
+        else:
+            raise ValueError("Discord Application IDは正の整数にしてください")
+        if not 1 <= parsed <= MAX_POSTGRES_BIGINT:
+            raise ValueError("Discord Application IDは正の整数にしてください")
+        return parsed
 
     @field_validator("discord_guild_command_sync_enabled", mode="before")
     @classmethod
@@ -290,6 +307,8 @@ class Settings(DatabaseSettings):
 
     @model_validator(mode="after")
     def validate_scheduler_limits(self) -> Self:
+        if self.discord_application_id == self.discord_guild_id:
+            raise ValueError("Discord Application IDとGuild IDを分離してください")
         if self.scheduler_max_concurrency > self.scheduler_batch_size:
             raise ValueError("最大並行数は1回の取得件数以下にしてください")
         if self.notification_max_concurrency > self.notification_batch_size:
@@ -326,6 +345,19 @@ class Settings(DatabaseSettings):
             monthly_cost_limit_microunits=self.ai_name_generation_monthly_cost_limit_microunits,
             cost_currency=self.ai_name_generation_cost_currency,
         )
+
+
+def discord_application_identity_matches(
+    *,
+    configured_application_id: int,
+    oauth_application_id: int,
+    schema_application_id: int,
+) -> bool:
+    """Return true only for three valid, identical Discord application identities."""
+    values = (configured_application_id, oauth_application_id, schema_application_id)
+    return all(type(value) is int and 1 <= value <= MAX_POSTGRES_BIGINT for value in values) and (
+        configured_application_id == oauth_application_id == schema_application_id
+    )
 
 
 def load_settings() -> Settings:
