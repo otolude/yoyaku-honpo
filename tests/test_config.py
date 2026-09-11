@@ -16,6 +16,7 @@ ENVIRONMENT_KEYS = (
     "DISCORD_ALLOWED_ROLE_IDS",
     "DISCORD_OPERATOR_USER_ID",
     "DISCORD_OPERATOR_CHANNEL_ID",
+    "DISCORD_GUILD_COMMAND_SYNC_ENABLED",
     "DATABASE_URL",
     "SCHEDULER_POLL_INTERVAL_SECONDS",
     "SCHEDULER_BATCH_SIZE",
@@ -79,7 +80,46 @@ def test_loads_valid_settings(valid_environment: dict[str, str]) -> None:
     assert settings.notification_max_concurrency == 5
     assert settings.notification_processing_timeout_seconds == 120
     assert settings.ai_name_generation_enabled is False
+    assert settings.discord_guild_command_sync_enabled is False
     assert settings.name_generation_budget_policy().monthly_cost_limit_microunits == 100_000_000
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("true", True),
+        ("TRUE", True),
+        ("True", True),
+        ("false", False),
+        ("FALSE", False),
+        ("False", False),
+    ],
+)
+def test_guild_command_sync_accepts_only_explicit_booleans(
+    valid_environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv("DISCORD_GUILD_COMMAND_SYNC_ENABLED", value)
+
+    assert load_without_env_file().discord_guild_command_sync_enabled is expected
+
+
+@pytest.mark.parametrize("value", ["", "0", "1", "yes", "no", "on", "off"])
+def test_rejects_invalid_guild_command_sync_values(
+    valid_environment: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("DISCORD_GUILD_COMMAND_SYNC_ENABLED", value)
+
+    with pytest.raises(ValidationError):
+        load_without_env_file()
+
+
+def test_env_example_disables_guild_command_sync() -> None:
+    lines = Path(".env.example").read_text(encoding="utf-8").splitlines()
+
+    assert lines.count("DISCORD_GUILD_COMMAND_SYNC_ENABLED=false") == 1
 
 
 @pytest.mark.parametrize(

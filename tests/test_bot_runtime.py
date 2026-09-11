@@ -38,29 +38,32 @@ TOKEN = "test-token-never-connect"
 DATABASE_URL = "postgresql+psycopg://user:test-password@localhost/database_test"
 
 
-def settings() -> Settings:
-    return Settings(
-        APP_ENV="test",
-        TIMEZONE="Asia/Tokyo",
-        DISCORD_BOT_TOKEN=TOKEN,
-        DISCORD_GUILD_ID=100,
-        DISCORD_ALLOWED_ROLE_IDS="200",
-        DISCORD_OPERATOR_USER_ID=300,
-        DISCORD_OPERATOR_CHANNEL_ID=400,
-        DATABASE_URL=DATABASE_URL,
-        SCHEDULER_POLL_INTERVAL_SECONDS=7,
-        SCHEDULER_BATCH_SIZE=2,
-        SCHEDULER_MAX_CONCURRENCY=1,
-        SCHEDULER_PROCESSING_TIMEOUT_SECONDS=120,
-    )
+def settings(*, sync_enabled: bool | None = None) -> Settings:
+    values: dict[str, object] = {
+        "APP_ENV": "test",
+        "TIMEZONE": "Asia/Tokyo",
+        "DISCORD_BOT_TOKEN": TOKEN,
+        "DISCORD_GUILD_ID": 100,
+        "DISCORD_ALLOWED_ROLE_IDS": "200",
+        "DISCORD_OPERATOR_USER_ID": 300,
+        "DISCORD_OPERATOR_CHANNEL_ID": 400,
+        "DATABASE_URL": DATABASE_URL,
+        "SCHEDULER_POLL_INTERVAL_SECONDS": 7,
+        "SCHEDULER_BATCH_SIZE": 2,
+        "SCHEDULER_MAX_CONCURRENCY": 1,
+        "SCHEDULER_PROCESSING_TIMEOUT_SECONDS": 120,
+    }
+    if sync_enabled is not None:
+        values["DISCORD_GUILD_COMMAND_SYNC_ENABLED"] = sync_enabled
+    return Settings(**values)
 
 
-def make_bot() -> ReminderBot:
+def make_bot(*, sync_enabled: bool | None = None) -> ReminderBot:
     engine = MagicMock()
     engine.dispose = AsyncMock()
     sessions = MagicMock()
     bot = ReminderBot(
-        settings=settings(),
+        settings=settings(sync_enabled=sync_enabled),
         engine=engine,
         session_factory=sessions,
         clock=FixedClock(NOW),
@@ -194,25 +197,91 @@ async def test_setup_hook_verifies_schema(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(bot.tree, "sync", sync)
     await bot.setup_hook()
     verify.assert_awaited_once_with(bot.engine)
-    sync.assert_awaited_once()
+    sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_skips_sync_by_default_with_fixed_event(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    bot = make_bot()
+    verify = AsyncMock(return_value="bf82b90bcd5e")
+    sync = AsyncMock()
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+
+    with caplog.at_level(logging.INFO, logger="test.bot"):
+        await bot.setup_hook()
+
+    verify.assert_awaited_once_with(bot.engine)
+    sync.assert_not_awaited()
+    assert caplog.messages.count("command_sync_skipped") == 1
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_skips_sync_when_explicitly_disabled_without_http(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    bot = make_bot(sync_enabled=False)
+    verify = AsyncMock(return_value="bf82b90bcd5e")
+    sync = AsyncMock()
+    http_request = MagicMock()
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+    monkeypatch.setattr(bot.http, "request", http_request)
+
+    with caplog.at_level(logging.INFO, logger="test.bot"):
+        await bot.setup_hook()
+
+    verify.assert_awaited_once_with(bot.engine)
+    sync.assert_not_awaited()
+    http_request.assert_not_called()
+    assert caplog.messages.count("command_sync_skipped") == 1
 
 
 @pytest.mark.asyncio
 async def test_setup_hook_syncs_configured_guild_only_once(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    bot = make_bot()
+    bot = make_bot(sync_enabled=True)
     verify = AsyncMock(return_value="bf82b90bcd5e")
     sync = AsyncMock(return_value=[object(), object()])
     monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
     monkeypatch.setattr(bot.tree, "sync", sync)
 
-    await bot.setup_hook()
-    await bot.setup_hook()
+    with caplog.at_level(logging.INFO, logger="test.bot"):
+        await bot.setup_hook()
+        await bot.setup_hook()
 
     assert sync.await_count == 1
     guild = sync.await_args.kwargs["guild"]
     assert guild.id == bot.settings.discord_guild_id
+    assert all(call.kwargs.get("guild") is not None for call in sync.await_args_list)
+    assert caplog.messages.count("application_commands_synced") == 1
+    assert "command_sync_skipped" not in caplog.messages
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_sync_failure_is_fixed_non_reflective_and_prevents_ready(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    bot = make_bot(sync_enabled=True)
+    verify = AsyncMock(return_value="bf82b90bcd5e")
+    canary = "credential://private\nMIGRATION_STAGE=fake guild=999999999999999999"
+    sync = AsyncMock(side_effect=RuntimeError(canary))
+    monkeypatch.setattr("discord_ai_reminder_bot.bot.client.verify_schema_revision", verify)
+    monkeypatch.setattr(bot.tree, "sync", sync)
+
+    with caplog.at_level(logging.ERROR, logger="test.bot"):
+        with pytest.raises(RuntimeError) as captured:
+            await bot.setup_hook()
+
+    assert str(captured.value) == "guild command sync failed"
+    assert captured.value.__cause__ is None
+    assert caplog.messages == ["application_command_sync_failed"]
+    assert canary not in caplog.text
+    assert "999999999999999999" not in caplog.text
+    assert not bot.is_ready()
 
 
 @pytest.mark.asyncio
