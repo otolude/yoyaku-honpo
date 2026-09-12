@@ -1,5 +1,6 @@
 import inspect
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -281,6 +282,115 @@ def test_controller_maps_once_and_result() -> None:
             "now": datetime(2030, 1, 1, tzinfo=UTC),
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "scheduled_at",
+    [
+        datetime(2030, 1, 2, 0, 5, 17, 123456, tzinfo=ZoneInfo("Asia/Tokyo")),
+        datetime(2030, 1, 1, 8, 5, 31, 654321, tzinfo=UTC),
+    ],
+)
+def test_controller_normalizes_once_schedule_handoff_to_utc(
+    scheduled_at: datetime,
+) -> None:
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        IdempotentScheduleCreationCode,
+        IdempotentScheduleCreationResult,
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleSession,
+        PostDraftScheduleState,
+    )
+
+    port_calls: list[dict[str, object]] = []
+
+    class Port:
+        async def create_once(self, **kwargs: object) -> IdempotentScheduleCreationResult:
+            port_calls.append(kwargs)
+            return IdempotentScheduleCreationResult(IdempotentScheduleCreationCode.CREATED)
+
+    public_id = ScheduleCreationPublicId.create(uuid7())
+    factory_calls = 0
+
+    def public_id_factory() -> ScheduleCreationPublicId:
+        nonlocal factory_calls
+        factory_calls += 1
+        return public_id
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(ScheduleType.ONCE)
+    validated_input = PostDraftOnceScheduleInput(scheduled_at)
+    session.set_validated_input(validated_input)
+    controller = PostDraftScheduleController(
+        session=session,
+        port=Port(),
+        public_id_factory=public_id_factory,
+    )
+
+    before = controller.snapshot()
+    assert before.state is PostDraftScheduleState.FINAL_CONFIRMATION
+    assert before.timezone == "Asia/Tokyo"
+    assert before.validated_input is validated_input
+
+    result = __import__("asyncio").run(
+        controller.confirm(now=datetime(2029, 12, 31, tzinfo=UTC))
+    )
+
+    assert result.code is IdempotentScheduleCreationCode.CREATED
+    assert controller.snapshot().state is PostDraftScheduleState.COMPLETED
+    assert controller.snapshot().timezone == "Asia/Tokyo"
+    assert controller.snapshot().validated_input is validated_input
+    assert factory_calls == 1
+    assert len(port_calls) == 1
+    handed_off = port_calls[0]["scheduled_for"]
+    assert isinstance(handed_off, datetime)
+    assert handed_off.utcoffset() == timedelta(0)
+    assert handed_off == scheduled_at.astimezone(UTC)
+    assert handed_off.timestamp() == scheduled_at.timestamp()
+    assert handed_off.second == scheduled_at.second
+    assert handed_off.microsecond == scheduled_at.microsecond
+    if scheduled_at.tzinfo == ZoneInfo("Asia/Tokyo"):
+        assert handed_off.date() < scheduled_at.date()
+
+
+def test_once_schedule_input_rejects_naive_datetime_before_port_handoff() -> None:
+    from uuid import uuid7
+
+    from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
+        ScheduleCreationPublicId,
+    )
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftOnceScheduleInput,
+        PostDraftScheduleController,
+        PostDraftScheduleSession,
+    )
+
+    port_calls = 0
+
+    class Port:
+        async def create_once(self, **_kwargs: object) -> IdempotentScheduleCreationResult:
+            nonlocal port_calls
+            port_calls += 1
+            raise AssertionError("invalid input must not reach the port")
+
+    session = PostDraftScheduleSession(scope=_scope(), accepted_draft=_draft())
+    session.select_type(ScheduleType.ONCE)
+    PostDraftScheduleController(
+        session=session,
+        port=Port(),
+        public_id_factory=lambda: ScheduleCreationPublicId.create(uuid7()),
+    )
+
+    with pytest.raises(ValueError):
+        session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, 9, 0)))
+
+    assert port_calls == 0
 
 
 @pytest.mark.parametrize(
