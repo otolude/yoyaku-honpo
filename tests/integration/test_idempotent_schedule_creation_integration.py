@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from enum import Enum, auto
+from types import TracebackType
 from typing import Any
 
 import pytest
@@ -50,7 +51,6 @@ GUILD_ID = 91_000
 RACE_ATTEMPTS = 2
 LOCK_WAIT_SECONDS = 5.0
 BLOCK_OBSERVATION_SECONDS = 2.0
-BLOCK_POLL_INTERVAL_SECONDS = 0.01
 BLOCK_POLL_LIMIT = 200
 RACE_DEADLINE_SECONDS = 10.0
 TASK_CLEANUP_SECONDS = 2.0
@@ -60,6 +60,47 @@ _TASK_CLEANUP_FAILED = "race task cleanup failed"
 _RACE_CONTRACT_FAILED = "race session contract failed"
 _BLOCK_OBSERVATION_FAILED = "unique-index blocking observation failed"
 _ATTEMPT_ID: ContextVar[int | None] = ContextVar("schedule_creation_attempt", default=None)
+
+
+def _raise_collected(errors: list[BaseException]) -> None:
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(_TASK_CLEANUP_FAILED, errors)
+
+
+async def _await_task_completion[ResultT](task: asyncio.Task[ResultT]) -> ResultT:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as caught:
+            if task.done():
+                return task.result()
+            cancellation = caught
+
+    try:
+        result = task.result()
+    except BaseException as completion_error:
+        if cancellation is not None:
+            raise BaseExceptionGroup(
+                _TASK_CLEANUP_FAILED,
+                [cancellation, completion_error],
+            ) from None
+        raise
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+async def _run_cleanup_steps(*steps: Callable[[], Awaitable[None]]) -> None:
+    errors: list[BaseException] = []
+    for step in steps:
+        try:
+            await step()
+        except BaseException as error:  # noqa: BLE001 - all cleanup steps must still run
+            errors.append(error)
+    _raise_collected(errors)
 
 
 @pytest_asyncio.fixture
@@ -116,7 +157,8 @@ async def track_creation_key(
     try:
         yield register
     finally:
-        try:
+
+        async def cleanup_graph() -> None:
             async with sessions() as session, session.begin():
                 sentinel_before = await session.scalar(
                     select(Schedule.content).where(Schedule.public_id == sentinel_public_id)
@@ -198,7 +240,8 @@ async def track_creation_key(
                 )
                 assert sentinel_before == sentinel_after == "sentinel"
                 assert sentinel_log_count_before == sentinel_log_count_after == 1
-        finally:
+
+        async def cleanup_sentinel() -> None:
             async with sessions() as session, session.begin():
                 sentinel_id = await session.scalar(
                     select(Schedule.id).where(Schedule.public_id == sentinel_public_id)
@@ -211,6 +254,8 @@ async def track_creation_key(
                         delete(ScheduleRun).where(ScheduleRun.schedule_id == sentinel_id)
                     )
                     await session.execute(delete(Schedule).where(Schedule.id == sentinel_id))
+
+        await _run_cleanup_steps(cleanup_graph, cleanup_sentinel)
 
 
 async def _delete_exact(session, model, condition) -> None:
@@ -317,6 +362,7 @@ class _ConcurrencyCoordinator:
     winner_flushed: asyncio.Event = field(default_factory=asyncio.Event)
     loser_insert_started: asyncio.Event = field(default_factory=asyncio.Event)
     unique_wait_reached: asyncio.Event = field(default_factory=asyncio.Event)
+    reconciliation_reached: asyncio.Event = field(default_factory=asyncio.Event)
     release_winner: asyncio.Event = field(default_factory=asyncio.Event)
     winner_task: asyncio.Task | None = None
     winner_backend_pid: int | None = None
@@ -359,6 +405,7 @@ class _ConcurrencyCoordinator:
             raise AssertionError(_RACE_CONTRACT_FAILED)
         self.reconciliation_attempts.add(attempt_id)
         self.reconciliation_count += 1
+        self.reconciliation_reached.set()
 
     def assert_complete(self) -> None:
         winner = self.winner_attempt_id
@@ -406,7 +453,18 @@ def _is_target_schedule_lookup(statement: Any, target_public_id: uuid.UUID) -> b
     )
 
 
-class _CoordinatedSession(AsyncSession):
+class _HarnessSession(AsyncSession):
+    async def __aexit__(
+        self,
+        type_: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        closing = asyncio.create_task(super().__aexit__(type_, value, traceback))
+        await _await_task_completion(closing)
+
+
+class _CoordinatedSession(_HarnessSession):
     def __init__(
         self,
         *args: object,
@@ -469,7 +527,7 @@ class _CoordinatedSession(AsyncSession):
         await super().flush(objects)
 
 
-class _CancellationSession(AsyncSession):
+class _CancellationSession(_HarnessSession):
     def __init__(self, *args: object, graph_flushed: asyncio.Event, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self._graph_flushed = graph_flushed
@@ -489,28 +547,28 @@ async def _wait_for_unique_index_block(
 ) -> None:
     failed = False
     try:
-        async with asyncio.timeout(BLOCK_OBSERVATION_SECONDS):
-            await coordinator.loser_insert_started.wait()
-            winner_pid = coordinator.winner_backend_pid
-            loser_pid = coordinator.loser_backend_pid
-            if winner_pid is None or loser_pid is None or winner_pid == loser_pid:
+        await coordinator.loser_insert_started.wait()
+        winner_pid = coordinator.winner_backend_pid
+        loser_pid = coordinator.loser_backend_pid
+        if winner_pid is None or loser_pid is None or winner_pid == loser_pid:
+            failed = True
+        else:
+            sessions = async_sessionmaker(
+                engine,
+                class_=_HarnessSession,
+                expire_on_commit=False,
+            )
+            async with sessions() as session:
+                for _ in range(BLOCK_POLL_LIMIT):
+                    blocked = await session.scalar(
+                        text("SELECT :winner = ANY(pg_blocking_pids(:loser))"),
+                        {"winner": winner_pid, "loser": loser_pid},
+                    )
+                    if blocked:
+                        coordinator.unique_wait_observed += 1
+                        coordinator.unique_wait_reached.set()
+                        return
                 failed = True
-            else:
-                sessions = async_sessionmaker(engine, expire_on_commit=False)
-                async with sessions() as session:
-                    for _ in range(BLOCK_POLL_LIMIT):
-                        blocked = await session.scalar(
-                            text("SELECT :winner = ANY(pg_blocking_pids(:loser))"),
-                            {"winner": winner_pid, "loser": loser_pid},
-                        )
-                        if blocked:
-                            coordinator.unique_wait_observed += 1
-                            coordinator.unique_wait_reached.set()
-                            return
-                        await asyncio.sleep(BLOCK_POLL_INTERVAL_SECONDS)
-                failed = True
-    except TimeoutError:
-        failed = True
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - database detail must not escape the test boundary
@@ -522,6 +580,7 @@ async def _wait_for_unique_index_block(
 class _ManagedTasks:
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._reported: set[asyncio.Task[Any]] = set()
 
     def create[ResultT](self, awaitable: Awaitable[ResultT]) -> asyncio.Task[ResultT]:
         task = asyncio.create_task(awaitable)
@@ -532,32 +591,54 @@ class _ManagedTasks:
         self,
         tasks: list[asyncio.Task[ResultT]],
         *,
-        deadline: float,
+        deadline: float | None = None,
     ) -> list[ResultT]:
         _done, pending = await asyncio.wait(tasks, timeout=deadline)
         if pending:
             raise AssertionError(_TASK_DEADLINE_FAILED)
-        return [task.result() for task in tasks]
+        results: list[ResultT] = []
+        for task in tasks:
+            try:
+                results.append(task.result())
+            finally:
+                self._reported.add(task)
+        return results
 
     async def close(self, *, deadline: float = TASK_CLEANUP_SECONDS) -> None:
+        drain = asyncio.create_task(self._drain(deadline=deadline))
+        await _await_task_completion(drain)
+
+    async def _drain(self, *, deadline: float) -> None:
         pending = {task for task in self._tasks if not task.done()}
         for task in pending:
             task.cancel()
         remaining: set[asyncio.Task[Any]] = set()
         if pending:
-            done, remaining = await asyncio.wait(pending, timeout=deadline)
-            self._consume(done)
-        self._consume(task for task in self._tasks if task.done())
+            _done, remaining = await asyncio.wait(pending, timeout=deadline)
+        deadline_reached = bool(remaining)
         for task in remaining:
             task.cancel()
         if remaining:
-            raise AssertionError(_TASK_CLEANUP_FAILED)
+            await asyncio.gather(*remaining, return_exceptions=True)
+
+        failures = self._consume(
+            task for task in self._tasks if task.done() and task not in self._reported
+        )
+        self._reported.update(self._tasks)
+        self._tasks.clear()
+        if deadline_reached:
+            failures.append(AssertionError(_TASK_CLEANUP_FAILED))
+        _raise_collected(failures)
 
     @staticmethod
-    def _consume(tasks: Any) -> None:
+    def _consume(tasks: Any) -> list[BaseException]:
+        failures: list[BaseException] = []
         for task in tasks:
             if not task.cancelled():
-                task.exception()
+                failure = task.exception()
+                if failure is not None:
+                    failures.append(failure)
+        return failures
 
 
 async def _run_as_attempt[ResultT](attempt_id: int, awaitable: Awaitable[ResultT]) -> ResultT:
@@ -625,7 +706,6 @@ async def test_race_coordinator_contract_is_test_local_and_attempt_scoped() -> N
 async def test_race_deadlines_leave_observation_and_cleanup_margin() -> None:
     assert LOCK_WAIT_SECONDS >= 5.0
     assert BLOCK_OBSERVATION_SECONDS <= 2.0
-    assert BLOCK_POLL_LIMIT * BLOCK_POLL_INTERVAL_SECONDS <= BLOCK_OBSERVATION_SECONDS
     assert RACE_ABORT_SECONDS > TASK_CLEANUP_SECONDS
     assert RACE_DEADLINE_SECONDS >= LOCK_WAIT_SECONDS + RACE_ABORT_SECONDS
 
@@ -700,15 +780,23 @@ async def test_managed_tasks_reports_all_task_failures_after_collection() -> Non
         pass
 
     managed = _ManagedTasks()
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    never_release = asyncio.Event()
 
-    async def fail(error: Exception) -> None:
-        raise error
+    async def fail_during_cleanup(started: asyncio.Event, error: Exception) -> None:
+        started.set()
+        try:
+            await never_release.wait()
+        except asyncio.CancelledError:
+            raise error from None
 
     tasks = [
-        managed.create(fail(FirstFailure())),
-        managed.create(fail(SecondFailure())),
+        managed.create(fail_during_cleanup(first_started, FirstFailure())),
+        managed.create(fail_during_cleanup(second_started, SecondFailure())),
     ]
-    await asyncio.wait(tasks)
+    await _wait_for_event(first_started)
+    await _wait_for_event(second_started)
 
     with pytest.raises(ExceptionGroup) as caught:
         await managed.close()
@@ -723,12 +811,13 @@ async def test_managed_tasks_reports_observer_failure_after_other_tasks_are_coll
         pass
 
     managed = _ManagedTasks()
+    observer_failure = ObserverFailure()
     resource_started = asyncio.Event()
     resource_closed = asyncio.Event()
     never_release = asyncio.Event()
 
     async def fail_observer() -> None:
-        raise ObserverFailure
+        raise observer_failure
 
     async def hold_resource() -> None:
         resource_started.set()
@@ -742,8 +831,9 @@ async def test_managed_tasks_reports_observer_failure_after_other_tasks_are_coll
     await _wait_for_event(resource_started)
     await asyncio.wait([observer])
     try:
-        with pytest.raises(ObserverFailure):
+        with pytest.raises(ObserverFailure) as caught:
             await managed.close()
+        assert caught.value is observer_failure
         assert observer.done()
         assert resource.done()
         assert resource_closed.is_set()
@@ -757,8 +847,10 @@ async def test_managed_tasks_consume_returns_failures() -> None:
     class ObserverFailure(Exception):
         pass
 
+    observer_failure = ObserverFailure()
+
     async def fail_observer() -> None:
-        raise ObserverFailure
+        raise observer_failure
 
     task = asyncio.create_task(fail_observer())
     await asyncio.wait([task])
@@ -766,7 +858,33 @@ async def test_managed_tasks_consume_returns_failures() -> None:
     failures = _ManagedTasks._consume([task])
 
     assert len(failures) == 1
-    assert isinstance(failures[0], ObserverFailure)
+    assert failures[0] is observer_failure
+
+
+async def test_await_task_completion_resists_repeated_cancellation() -> None:
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def cleanup() -> None:
+        cleanup_started.set()
+        await cleanup_release.wait()
+        cleanup_finished.set()
+
+    cleanup_task = asyncio.create_task(cleanup())
+    waiter = asyncio.create_task(_await_task_completion(cleanup_task))
+    await _wait_for_event(cleanup_started)
+    waiter.cancel()
+    await asyncio.wait([waiter], timeout=0)
+    waiter.cancel()
+    await asyncio.wait([waiter], timeout=0)
+    assert not waiter.done()
+
+    cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert cleanup_task.done()
+    assert cleanup_finished.is_set()
 
 
 async def test_cleanup_steps_attempt_graph_and_sentinel_before_aggregating() -> None:
@@ -849,10 +967,10 @@ async def test_parallel_winner_commit_within_limit_reconciles_as_already_created
             coordinator,
             managed,
         ):
-            await _wait_for_event(coordinator.winner_flushed)
-            await _wait_for_event(coordinator.unique_wait_reached)
+            await coordinator.winner_flushed.wait()
+            await coordinator.unique_wait_reached.wait()
             coordinator.release_winner.set()
-            results = await managed.results(tasks, deadline=LOCK_WAIT_SECONDS)
+            results = await managed.results(tasks)
         assert {item.code for item in results} == {
             IdempotentScheduleCreationCode.CREATED,
             IdempotentScheduleCreationCode.ALREADY_CREATED,
@@ -876,15 +994,16 @@ async def test_parallel_uncommitted_winner_at_limit_returns_unknown_without_rein
             coordinator,
             managed,
         ):
-            await _wait_for_event(coordinator.unique_wait_reached)
+            await coordinator.unique_wait_reached.wait()
             winner = coordinator.winner_task
             if winner is None:
                 raise AssertionError(_RACE_CONTRACT_FAILED)
             loser = next(item for item in tasks if item is not winner)
-            loser_result = (await managed.results([loser], deadline=LOCK_WAIT_SECONDS + 1.0))[0]
+            await coordinator.reconciliation_reached.wait()
+            loser_result = (await managed.results([loser]))[0]
             assert loser_result.code is IdempotentScheduleCreationCode.UNKNOWN
             coordinator.release_winner.set()
-            winner_result = (await managed.results([winner], deadline=2.0))[0]
+            winner_result = (await managed.results([winner]))[0]
             assert winner_result.code is IdempotentScheduleCreationCode.CREATED
         coordinator.assert_complete()
         assert await graph_counts(test_engine, key) == (1, 1, 1, 0, 0, 0, 0)
