@@ -659,6 +659,151 @@ async def test_managed_race_tasks_are_collected_after_assertion_failure(
     assert resource_closed.is_set()
 
 
+async def test_managed_tasks_drains_recancelled_tasks_before_reporting_deadline() -> None:
+    managed = _ManagedTasks()
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def require_second_cancellation() -> None:
+        started.set()
+        try:
+            await never_release.wait()
+        finally:
+            cleanup_started.set()
+            try:
+                await never_release.wait()
+            except asyncio.CancelledError:
+                cleanup_finished.set()
+
+    task = managed.create(require_second_cancellation())
+    await _wait_for_event(started)
+    try:
+        with pytest.raises(AssertionError, match=_TASK_CLEANUP_FAILED):
+            await managed.close(deadline=0.01)
+        assert task.done()
+        assert cleanup_started.is_set()
+        assert cleanup_finished.is_set()
+        assert not {item for item in managed._tasks if not item.done()}
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_managed_tasks_reports_all_task_failures_after_collection() -> None:
+    class FirstFailure(Exception):
+        pass
+
+    class SecondFailure(Exception):
+        pass
+
+    managed = _ManagedTasks()
+
+    async def fail(error: Exception) -> None:
+        raise error
+
+    tasks = [
+        managed.create(fail(FirstFailure())),
+        managed.create(fail(SecondFailure())),
+    ]
+    await asyncio.wait(tasks)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        await managed.close()
+
+    assert {type(item) for item in caught.value.exceptions} == {FirstFailure, SecondFailure}
+    assert all(task.done() for task in tasks)
+    assert not {item for item in managed._tasks if not item.done()}
+
+
+async def test_managed_tasks_reports_observer_failure_after_other_tasks_are_collected() -> None:
+    class ObserverFailure(Exception):
+        pass
+
+    managed = _ManagedTasks()
+    resource_started = asyncio.Event()
+    resource_closed = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def fail_observer() -> None:
+        raise ObserverFailure
+
+    async def hold_resource() -> None:
+        resource_started.set()
+        try:
+            await never_release.wait()
+        finally:
+            resource_closed.set()
+
+    observer = managed.create(fail_observer())
+    resource = managed.create(hold_resource())
+    await _wait_for_event(resource_started)
+    await asyncio.wait([observer])
+    try:
+        with pytest.raises(ObserverFailure):
+            await managed.close()
+        assert observer.done()
+        assert resource.done()
+        assert resource_closed.is_set()
+    finally:
+        if not resource.done():
+            resource.cancel()
+        await asyncio.gather(observer, resource, return_exceptions=True)
+
+
+async def test_managed_tasks_consume_returns_failures() -> None:
+    class ObserverFailure(Exception):
+        pass
+
+    async def fail_observer() -> None:
+        raise ObserverFailure
+
+    task = asyncio.create_task(fail_observer())
+    await asyncio.wait([task])
+
+    failures = _ManagedTasks._consume([task])
+
+    assert len(failures) == 1
+    assert isinstance(failures[0], ObserverFailure)
+
+
+async def test_cleanup_steps_attempt_graph_and_sentinel_before_aggregating() -> None:
+    class GraphCleanupFailure(Exception):
+        pass
+
+    class SentinelCleanupFailure(Exception):
+        pass
+
+    attempted: list[str] = []
+
+    async def cleanup_graph() -> None:
+        attempted.append("graph")
+        raise GraphCleanupFailure
+
+    async def cleanup_sentinel() -> None:
+        attempted.append("sentinel")
+        raise SentinelCleanupFailure
+
+    with pytest.raises(ExceptionGroup) as caught:
+        await _run_cleanup_steps(cleanup_graph, cleanup_sentinel)
+
+    assert attempted == ["graph", "sentinel"]
+    assert {type(item) for item in caught.value.exceptions} == {
+        GraphCleanupFailure,
+        SentinelCleanupFailure,
+    }
+
+
+async def test_race_coordinator_exposes_reconciliation_completion() -> None:
+    coordinator = _ConcurrencyCoordinator()
+
+    coordinator.reconciliation(1)
+
+    assert coordinator.reconciliation_reached.is_set()
+
+
 @asynccontextmanager
 async def _conflicting_attempts(
     engine: AsyncEngine,
