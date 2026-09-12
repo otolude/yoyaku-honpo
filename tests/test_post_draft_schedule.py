@@ -338,9 +338,7 @@ def test_controller_normalizes_once_schedule_handoff_to_utc(
     assert before.timezone == "Asia/Tokyo"
     assert before.validated_input is validated_input
 
-    result = __import__("asyncio").run(
-        controller.confirm(now=datetime(2029, 12, 31, tzinfo=UTC))
-    )
+    result = __import__("asyncio").run(controller.confirm(now=datetime(2029, 12, 31, tzinfo=UTC)))
 
     assert result.code is IdempotentScheduleCreationCode.CREATED
     assert controller.snapshot().state is PostDraftScheduleState.COMPLETED
@@ -388,7 +386,11 @@ def test_once_schedule_input_rejects_naive_datetime_before_port_handoff() -> Non
     )
 
     with pytest.raises(ValueError):
-        session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, 9, 0)))
+        session.set_validated_input(
+            PostDraftOnceScheduleInput(
+                datetime(2030, 1, 1, 9, 0)  # noqa: DTZ001 -- naive rejection contract
+            )
+        )
 
     assert port_calls == 0
 

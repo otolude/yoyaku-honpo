@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from enum import StrEnum
 from typing import Protocol
 
@@ -348,7 +348,7 @@ class PostDraftScheduleController:
                 raise TypeError("invalid once schedule input")
             return await self._port.create_once(
                 **common,
-                scheduled_for=value.scheduled_at,
+                scheduled_for=value.scheduled_at.astimezone(UTC),
             )
         value = snapshot.validated_input
         if snapshot.schedule_type is ScheduleType.DAILY and isinstance(
