@@ -17,7 +17,6 @@ from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUISessionError,
 )
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
-from discord_ai_reminder_bot.bot.post_presenter import WEEKDAY_LABELS
 from discord_ai_reminder_bot.domain.post_draft_generation import (
     MAX_GENERATED_POST_CHARACTERS,
     MAX_KEY_POINTS_CHARACTERS,
@@ -2054,11 +2053,14 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
             "discord_ai_reminder_bot.application.post_draft_schedule",
             fromlist=["PostDraftWeeklyScheduleInput"],
         ).PostDraftWeeklyScheduleInput
+        weekday_labels = __import__(
+            "discord_ai_reminder_bot.bot.post_presenter", fromlist=["WEEKDAY_LABELS"]
+        ).WEEKDAY_LABELS
         weekday_value = str(self.weekday.value)
         if "\t" in weekday_value:
             raise _InvalidWeeklyWeekdayError
         try:
-            weekday = WEEKDAY_LABELS.index(weekday_value.strip())
+            weekday = weekday_labels.index(weekday_value.strip())
         except ValueError:
             raise _InvalidWeeklyWeekdayError from None
         end = str(self.end_date.value).strip()
@@ -2270,13 +2272,16 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     now=self._now,
                 )
             else:
+                weekday_labels = __import__(
+                    "discord_ai_reminder_bot.bot.post_presenter", fromlist=["WEEKDAY_LABELS"]
+                ).WEEKDAY_LABELS
                 modal = PostDraftWeeklyScheduleEditModal(
                     controller=self.controller,
                     source=self,
                     generation=generation,
                     revision=snapshot.confirmation_revision,
                     timeout=900,
-                    weekday_default=WEEKDAY_LABELS[value.weekday],
+                    weekday_default=weekday_labels[value.weekday],
                     local_default=value.local_time.isoformat(),
                     end_default=value.end_date.isoformat() if value.end_date else "",
                     now=self._now,
