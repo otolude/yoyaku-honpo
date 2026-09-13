@@ -1909,14 +1909,20 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
 
 
 class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
-    scheduled_at = discord.ui.TextInput(
-        label="投稿日時（日本時間）",
-        placeholder="数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30",
-        required=True,
-        min_length=7,
-        max_length=16,
-        custom_id="post_draft_schedule_at",
+    scheduled_at_label = discord.ui.Label(
+        text="投稿日時（日本時間）",
+        description="数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30",
+        component=discord.ui.TextInput(
+            required=True,
+            min_length=7,
+            max_length=16,
+            custom_id="post_draft_schedule_at",
+        ),
     )
+
+    @property
+    def scheduled_at(self) -> discord.ui.TextInput[object]:
+        return cast(discord.ui.TextInput[object], self.scheduled_at_label.component)
 
     def __init__(
         self,
