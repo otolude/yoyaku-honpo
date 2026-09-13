@@ -17,6 +17,7 @@ from discord_ai_reminder_bot.application.post_draft_ui_session import (
     PostDraftUISessionError,
 )
 from discord_ai_reminder_bot.application.post_draft_usage import PostDraftUsageReservation
+from discord_ai_reminder_bot.bot.post_presenter import WEEKDAY_LABELS
 from discord_ai_reminder_bot.domain.post_draft_generation import (
     MAX_GENERATED_POST_CHARACTERS,
     MAX_KEY_POINTS_CHARACTERS,
@@ -2008,10 +2009,21 @@ class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
         )
 
 
+class _InvalidWeeklyWeekdayError(ValueError):
+    """The weekly UI value is not a canonical Japanese weekday name."""
+
+
 class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
-    weekday = discord.ui.TextInput(
-        label="曜日（0=月曜）", required=True, custom_id="post_draft_weekday"
+    weekday_label = discord.ui.Label(
+        text="曜日",
+        description="月曜日、火曜日、…、日曜日のいずれかを入力",
+        component=discord.ui.TextInput(required=True, custom_id="post_draft_weekday"),
     )
+
+    @property
+    def weekday(self) -> discord.ui.TextInput[object]:
+        return cast(discord.ui.TextInput[object], self.weekday_label.component)
+
     local_time = discord.ui.TextInput(
         label="時刻", required=True, custom_id="post_draft_weekly_time"
     )
@@ -2042,12 +2054,24 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
             "discord_ai_reminder_bot.application.post_draft_schedule",
             fromlist=["PostDraftWeeklyScheduleInput"],
         ).PostDraftWeeklyScheduleInput
+        weekday_value = str(self.weekday.value)
+        if "\t" in weekday_value:
+            raise _InvalidWeeklyWeekdayError
+        try:
+            weekday = WEEKDAY_LABELS.index(weekday_value.strip())
+        except ValueError:
+            raise _InvalidWeeklyWeekdayError from None
         end = str(self.end_date.value).strip()
         return input_type(
             local_time=time.fromisoformat(str(self.local_time.value)),
-            weekday=int(str(self.weekday.value)),
+            weekday=weekday,
             end_date=date.fromisoformat(end) if end else None,
         )
+
+    def _validation_error_message(self, error: BaseException) -> str | None:
+        if isinstance(error, _InvalidWeeklyWeekdayError):
+            return "曜日を確認してください。例：月曜日、火曜日、…、日曜日"
+        return None
 
 
 class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
@@ -2252,7 +2276,7 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     generation=generation,
                     revision=snapshot.confirmation_revision,
                     timeout=900,
-                    weekday_default=str(value.weekday),
+                    weekday_default=WEEKDAY_LABELS[value.weekday],
                     local_default=value.local_time.isoformat(),
                     end_default=value.end_date.isoformat() if value.end_date else "",
                     now=self._now,
