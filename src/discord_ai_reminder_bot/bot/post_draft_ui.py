@@ -1610,7 +1610,10 @@ class PostDraftScheduleTypeView(discord.ui.View):
                     "weekly": PostDraftWeeklyScheduleModal,
                 }[value]
                 modal = modal_type(
-                    controller=self.controller, source_type=self, timeout=self.timeout
+                    controller=self.controller,
+                    source_type=self,
+                    now=self._now,
+                    timeout=self.timeout,
                 )
             except Exception:  # noqa: BLE001 - modal construction details remain private
                 _abort_schedule_type(
@@ -1712,11 +1715,18 @@ class PostDraftScheduleTypeView(discord.ui.View):
 
 class _PostDraftScheduleInputModal(discord.ui.Modal):
     def __init__(
-        self, *, controller: object, title: str, timeout: float, source_type: object | None = None
+        self,
+        *,
+        controller: object,
+        title: str,
+        timeout: float,
+        source_type: object | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__(title=title, timeout=_validated_timeout(timeout))
         self.controller = controller
         self.source_type = source_type
+        self._now = now or (lambda: datetime.now(UTC))
         self._claim_lock = asyncio.Lock()
         self._claimed = False
 
@@ -1740,14 +1750,27 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
         if hasattr(self, "source"):
             try:
                 value = self._parse()
-            except TypeError, ValueError:
-                await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+            except (TypeError, ValueError) as error:
+                message = self._validation_error_message(error)
+                if message is None:
+                    await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)
+                else:
+                    _LOGGER.warning("schedule_edit_validation_failed")
+                    await _send_initial(interaction, content=message)
                 return
             await self._submit_edit(interaction, value)
             return
         try:
             value = self._parse()
-        except Exception:  # noqa: BLE001 - validation details remain private
+        except Exception as error:  # noqa: BLE001 - validation details remain private
+            message = self._validation_error_message(error)
+            if message is not None:
+                _LOGGER.warning("schedule_input_validation_failed")
+                try:
+                    await _send_initial(interaction, content=message)
+                except Exception:  # noqa: BLE001, S110 - never retry validation transport
+                    pass
+                return
             _abort_schedule_input(
                 controller=self.controller,
                 source=self.source_type,
@@ -1790,7 +1813,7 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
         candidate: object | None = None
         try:
             candidate = PostDraftScheduleConfirmationView(
-                controller=self.controller, now=lambda: datetime.now(UTC), timeout=900
+                controller=self.controller, now=self._now, timeout=900
             )
             embed = _schedule_confirmation_embed(self.controller)
         except Exception:  # noqa: BLE001 - render details remain private
@@ -1880,27 +1903,63 @@ class _PostDraftScheduleInputModal(discord.ui.Modal):
     def _parse(self) -> object:
         raise NotImplementedError
 
+    def _validation_error_message(self, error: BaseException) -> str | None:
+        del error
+        return None
+
 
 class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
     scheduled_at = discord.ui.TextInput(
-        label="日時", required=True, custom_id="post_draft_schedule_at"
+        label="投稿日時（日本時間）",
+        placeholder="数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30",
+        required=True,
+        custom_id="post_draft_schedule_at",
     )
 
     def __init__(
-        self, *, controller: object, timeout: float, source_type: object | None = None
+        self,
+        *,
+        controller: object,
+        timeout: float,
+        source_type: object | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__(
-            controller=controller, title="単発予約", timeout=timeout, source_type=source_type
+            controller=controller,
+            title="単発予約",
+            timeout=timeout,
+            source_type=source_type,
+            now=now,
         )
 
     def _parse(self) -> object:
-        from datetime import datetime
-
+        schedule_creation = __import__(
+            "discord_ai_reminder_bot.domain.schedule_creation",
+            fromlist=["parse_once_create_input", "validate_once_scheduled_for"],
+        )
         input_type = __import__(
             "discord_ai_reminder_bot.application.post_draft_schedule",
             fromlist=["PostDraftOnceScheduleInput"],
         ).PostDraftOnceScheduleInput
-        return input_type(datetime.fromisoformat(str(self.scheduled_at.value)))
+        now = self._now()
+        parsed = schedule_creation.parse_once_create_input(str(self.scheduled_at.value), now=now)
+        scheduled_for = schedule_creation.validate_once_scheduled_for(parsed.scheduled_for, now=now)
+        return input_type(scheduled_for)
+
+    def _validation_error_message(self, error: BaseException) -> str | None:
+        schedule_creation = __import__(
+            "discord_ai_reminder_bot.domain.schedule_creation",
+            fromlist=["FullwidthCreateDateTimeError", "InvalidDateTimeError"],
+        )
+        if not isinstance(error, schedule_creation.InvalidDateTimeError):
+            return None
+        messages = __import__(
+            "discord_ai_reminder_bot.bot.posts",
+            fromlist=["DATETIME_INPUT_MESSAGE", "FULLWIDTH_DATETIME_INPUT_MESSAGE"],
+        )
+        if isinstance(error, schedule_creation.FullwidthCreateDateTimeError):
+            return messages.FULLWIDTH_DATETIME_INPUT_MESSAGE
+        return messages.DATETIME_INPUT_MESSAGE
 
 
 class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
@@ -1912,10 +1971,19 @@ class PostDraftDailyScheduleModal(_PostDraftScheduleInputModal):
     )
 
     def __init__(
-        self, *, controller: object, timeout: float, source_type: object | None = None
+        self,
+        *,
+        controller: object,
+        timeout: float,
+        source_type: object | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__(
-            controller=controller, title="毎日予約", timeout=timeout, source_type=source_type
+            controller=controller,
+            title="毎日予約",
+            timeout=timeout,
+            source_type=source_type,
+            now=now,
         )
 
     def _parse(self) -> object:
@@ -1944,10 +2012,19 @@ class PostDraftWeeklyScheduleModal(_PostDraftScheduleInputModal):
     )
 
     def __init__(
-        self, *, controller: object, timeout: float, source_type: object | None = None
+        self,
+        *,
+        controller: object,
+        timeout: float,
+        source_type: object | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__(
-            controller=controller, title="毎週予約", timeout=timeout, source_type=source_type
+            controller=controller,
+            title="毎週予約",
+            timeout=timeout,
+            source_type=source_type,
+            now=now,
         )
 
     def _parse(self) -> object:
@@ -1975,8 +2052,9 @@ class PostDraftOnceScheduleEditModal(PostDraftOnceScheduleModal):
         revision: int,
         timeout: float,
         default: str,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
-        super().__init__(controller=controller, timeout=timeout)
+        super().__init__(controller=controller, timeout=timeout, now=now)
         self.source, self.generation, self.revision = source, generation, revision
         self.schedule_type = __import__(
             "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
@@ -1995,8 +2073,9 @@ class PostDraftDailyScheduleEditModal(PostDraftDailyScheduleModal):
         timeout: float,
         local_default: str,
         end_default: str,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
-        super().__init__(controller=controller, timeout=timeout)
+        super().__init__(controller=controller, timeout=timeout, now=now)
         self.source, self.generation, self.revision = source, generation, revision
         self.schedule_type = __import__(
             "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
@@ -2016,8 +2095,9 @@ class PostDraftWeeklyScheduleEditModal(PostDraftWeeklyScheduleModal):
         weekday_default: str,
         local_default: str,
         end_default: str,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
-        super().__init__(controller=controller, timeout=timeout)
+        super().__init__(controller=controller, timeout=timeout, now=now)
         self.source, self.generation, self.revision = source, generation, revision
         self.schedule_type = __import__(
             "discord_ai_reminder_bot.domain.enums", fromlist=["ScheduleType"]
@@ -2138,7 +2218,13 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     generation=generation,
                     revision=snapshot.confirmation_revision,
                     timeout=900,
-                    default=value.scheduled_at.isoformat(),
+                    default=value.scheduled_at.astimezone(
+                        __import__(
+                            "discord_ai_reminder_bot.domain.schedule_creation",
+                            fromlist=["TOKYO"],
+                        ).TOKYO
+                    ).strftime("%Y-%m-%d %H:%M"),
+                    now=self._now,
                 )
             elif snapshot.schedule_type.value == "daily":
                 modal = PostDraftDailyScheduleEditModal(
@@ -2149,6 +2235,7 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     timeout=900,
                     local_default=value.local_time.isoformat(),
                     end_default=value.end_date.isoformat() if value.end_date else "",
+                    now=self._now,
                 )
             else:
                 modal = PostDraftWeeklyScheduleEditModal(
@@ -2160,6 +2247,7 @@ class PostDraftScheduleConfirmationView(discord.ui.View):
                     weekday_default=str(value.weekday),
                     local_default=value.local_time.isoformat(),
                     end_default=value.end_date.isoformat() if value.end_date else "",
+                    now=self._now,
                 )
         except TypeError, ValueError:
             await _respond_error(interaction, PostDraftUIErrorCode.INVALID_TRANSITION)

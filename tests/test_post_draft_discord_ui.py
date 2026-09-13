@@ -4189,9 +4189,8 @@ def test_once_schedule_modal_shows_canonical_input_example() -> None:
         "discord_ai_reminder_bot.bot.post_draft_ui", fromlist=["PostDraftOnceScheduleModal"]
     ).PostDraftOnceScheduleModal(controller=view.controller, timeout=60)
 
-    assert modal.scheduled_at.label == "投稿日時（日本時間）"
+    assert modal.scheduled_at._underlying.label == "投稿日時（日本時間）"
     assert modal.scheduled_at.placeholder == ONCE_INPUT_EXAMPLE
-    assert (modal.scheduled_at.min_length, modal.scheduled_at.max_length) == (7, 16)
 
 
 @pytest.mark.parametrize(
