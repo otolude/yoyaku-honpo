@@ -1913,6 +1913,8 @@ class PostDraftOnceScheduleModal(_PostDraftScheduleInputModal):
         label="投稿日時（日本時間）",
         placeholder="数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30",
         required=True,
+        min_length=7,
+        max_length=16,
         custom_id="post_draft_schedule_at",
     )
 
