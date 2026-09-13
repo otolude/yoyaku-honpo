@@ -2525,6 +2525,24 @@ def _schedule_edit_events(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+def _assert_schedule_log_payload_does_not_reflect(
+    caplog: pytest.LogCaptureFixture, *, rejected_value: str, expected_event: str
+) -> None:
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "discord_ai_reminder_bot.bot.post_draft_ui"
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert record.msg == record.getMessage() == expected_event
+    assert record.args == () and record.exc_info is None
+    assert rejected_value not in record.msg
+    assert rejected_value not in record.getMessage()
+    assert CANARY not in record.msg and CANARY not in record.getMessage()
+
+
 def _assert_schedule_edit_has_no_persistence(port: object, factory: object) -> None:
     assert port.calls == port.db_calls == 0
     assert factory.calls == 0
@@ -4278,7 +4296,11 @@ async def test_weekly_schedule_rejects_noncanonical_weekday_without_side_effects
     assert submitted.response.message_kwargs["ephemeral"] is True
     assert submitted.response.edit_attempts == submitted.followup.attempts == 0
     assert _schedule_edit_events(caplog) == ["schedule_input_validation_failed"]
-    assert input_value not in caplog.text and CANARY not in caplog.text
+    _assert_schedule_log_payload_does_not_reflect(
+        caplog,
+        rejected_value=input_value,
+        expected_event="schedule_input_validation_failed",
+    )
     _assert_schedule_input_has_no_creation(controller, factory, port)
 
 
@@ -4326,7 +4348,11 @@ async def test_weekly_schedule_edit_rejects_noncanonical_weekday_without_side_ef
     assert response.error_content == WEEKDAY_INPUT_ERROR
     assert response.error_kwargs["ephemeral"] is True
     assert _schedule_edit_events(caplog) == ["schedule_edit_validation_failed"]
-    assert rejected_value not in caplog.text and CANARY not in caplog.text
+    _assert_schedule_log_payload_does_not_reflect(
+        caplog,
+        rejected_value=rejected_value,
+        expected_event="schedule_edit_validation_failed",
+    )
     _assert_schedule_edit_has_no_persistence(port, factory)
 
 
