@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from discord_ai_reminder_bot.application.delivery import RESULT_SUCCEEDED
 from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
     IdempotentScheduleCreationCode,
     ScheduleCreationPublicId,
@@ -285,7 +286,7 @@ async def test_weekly_sunday_delivery_creates_next_pending_run(
     assert next_run.scheduled_for > first_run.scheduled_for
     assert next_run.attempt_count == 0
     assert next_run.next_attempt_at == next_run.scheduled_for
-    assert first_run.result_code == "succeeded"
+    assert first_run.result_code == RESULT_SUCCEEDED
     assert test_engine.pool.checkedout() == 0
     assert {
         task for task in asyncio.all_tasks() if task is not asyncio.current_task()
