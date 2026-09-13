@@ -709,11 +709,12 @@ async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected
     before = session.snapshot()
     await view.children[1].callback(interaction)
     modal = response.send_modal.await_args.args[0]
-    values = [getattr(item, "default", "") for item in modal.children]
+    values = [getattr(item, "default", "") for item in modal.walk_children()]
     assert expected in values
     assert "本文" not in values and "1" not in values
-    for field in modal.children:
-        set_text(field, str(getattr(field, "default", "")))
+    for field in modal.walk_children():
+        if isinstance(field, discord.ui.TextInput):
+            set_text(field, str(getattr(field, "default", "")))
     submit_response = SimpleNamespace(
         is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
     )
@@ -793,7 +794,11 @@ def test_schedule_modal_children_are_registered_once(
         ),
     )
     for modal in (normal, edited):
-        ids = [item.custom_id for item in modal.children]
+        ids = [
+            item.custom_id
+            for item in modal.walk_children()
+            if isinstance(item, discord.ui.TextInput)
+        ]
         assert ids == expected_ids
         assert len(ids) == len(set(ids))
 
@@ -4183,14 +4188,31 @@ def _set_schedule_input_values(modal: object, kind: str = "once") -> None:
         set_text(modal.end_date, "")
 
 
-def test_once_schedule_modal_shows_canonical_input_example() -> None:
+@pytest.mark.parametrize("editing", [False, True])
+def test_once_schedule_modal_shows_persistent_canonical_input_example(editing: bool) -> None:
     _session, _controller, view, _port, _factory = _schedule_input_case()
-    modal = __import__(
-        "discord_ai_reminder_bot.bot.post_draft_ui", fromlist=["PostDraftOnceScheduleModal"]
-    ).PostDraftOnceScheduleModal(controller=view.controller, timeout=60)
+    module = __import__(
+        "discord_ai_reminder_bot.bot.post_draft_ui",
+        fromlist=["PostDraftOnceScheduleEditModal", "PostDraftOnceScheduleModal"],
+    )
+    if editing:
+        modal = module.PostDraftOnceScheduleEditModal(
+            controller=view.controller,
+            source=object(),
+            generation=1,
+            revision=1,
+            timeout=60,
+            default="2030-01-02 00:30",
+        )
+    else:
+        modal = module.PostDraftOnceScheduleModal(controller=view.controller, timeout=60)
 
-    assert modal.scheduled_at._underlying.label == "投稿日時（日本時間）"
-    assert modal.scheduled_at.placeholder == ONCE_INPUT_EXAMPLE
+    label = modal.children[0]
+    assert isinstance(label, discord.ui.Label)
+    assert label.text == "投稿日時（日本時間）"
+    assert label.description == ONCE_INPUT_EXAMPLE
+    assert label.component is modal.scheduled_at
+    assert modal.scheduled_at.placeholder is None
     assert (modal.scheduled_at.min_length, modal.scheduled_at.max_length) == (7, 16)
 
 
