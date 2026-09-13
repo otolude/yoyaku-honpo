@@ -271,12 +271,17 @@ async def test_each_primary_failure_has_a_fixed_stage_and_category(
     expected_stage: AuditStage,
     expected_category: HarnessErrorCategory,
 ) -> None:
-    connection_failure = failure if failure in {
-        "options",
-        "begin",
-        "read_only_verify",
-        "identity_verify",
-    } else None
+    connection_failure = (
+        failure
+        if failure
+        in {
+            "options",
+            "begin",
+            "read_only_verify",
+            "identity_verify",
+        }
+        else None
+    )
     connection = FakeConnection(failure=connection_failure)
     engine = FakeEngine(connection, fail_connect=failure == "connect")
 
@@ -453,8 +458,7 @@ async def test_result_never_retains_raw_exception_or_private_values() -> None:
     async def private_failure(fake_connection: FakeConnection, recorder: Any) -> None:
         fake_connection.calls.append("query")
         raise CanaryError(
-            f"{SECRET_MESSAGE_CANARY} {SECRET_URL_CANARY} "
-            f"{CONTENT_CANARY} {IDENTIFIER_CANARY}"
+            f"{SECRET_MESSAGE_CANARY} {SECRET_URL_CANARY} {CONTENT_CANARY} {IDENTIFIER_CANARY}"
         )
 
     result = await run_read_only_database_audit(
@@ -488,9 +492,5 @@ async def test_boundary_leaves_no_pending_async_tasks() -> None:
     )
 
     current = asyncio.current_task()
-    pending = [
-        task
-        for task in asyncio.all_tasks()
-        if task is not current and not task.done()
-    ]
+    pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
     assert pending == []
