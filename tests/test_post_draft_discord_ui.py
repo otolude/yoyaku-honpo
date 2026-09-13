@@ -64,6 +64,9 @@ CHANNEL_MENTION = f"<#{'3' * 15}>"
 PLAIN_URL = "https://example.invalid/plain"
 MARKDOWN_LINK = "[表示名](https://example.invalid/destination)"
 MARKDOWN_CHARACTERS = "\\*_~`|><#[]-."
+ONCE_INPUT_EXAMPLE = "数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30"
+ONCE_INPUT_ERROR = "投稿日時を確認してください。例：今日21:00、8/25 19:30、2027-08-25 19:30"
+ONCE_FULLWIDTH_ERROR = "投稿日時の数字と記号は半角で入力してください。例：今日21:00、8/25 19:30"
 
 
 class FakeGenerationService:
@@ -500,7 +503,7 @@ async def test_schedule_edit_modal_submit_replaces_input_through_callback() -> N
     )
     await view.children[1].callback(click)
     modal = click_response.send_modal.await_args.args[0]
-    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+    set_text(modal.scheduled_at, "2030-01-02 09:00")
     submit_response = SimpleNamespace(
         is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
     )
@@ -641,7 +644,7 @@ async def test_schedule_edit_invalid_input_preserves_confirmation() -> None:
 @pytest.mark.parametrize(
     ("kind", "expected"),
     [
-        ("once", "2030-01-01T00:00:00+00:00"),
+        ("once", "2030-01-01 09:00"),
         ("daily", "09:30:00"),
         ("daily_none", "09:30:00"),
         ("weekly", "2"),
@@ -782,7 +785,7 @@ def test_schedule_modal_children_are_registered_once(
         revision=1,
         timeout=60,
         **(
-            {"default": "2030-01-01T00:00:00+00:00"}
+            {"default": "2030-01-01 09:00"}
             if modal_name == "once"
             else {"local_default": "09:30:00", "end_default": ""}
             if modal_name == "daily"
@@ -2309,7 +2312,7 @@ async def test_schedule_edit_submit_wins_against_old_view_actions() -> None:
     opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
     await view.children[1].callback(_race_interaction(opened))
     modal = opened.send_modal.await_args.args[0]
-    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+    set_text(modal.scheduled_at, "2030-01-02 09:00")
     submit = SimpleNamespace(
         is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock()
     )
@@ -2324,7 +2327,7 @@ async def test_schedule_edit_modal_duplicate_submit_is_bounded() -> None:
     opened = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
     await view.children[1].callback(_race_interaction(opened))
     modal = opened.send_modal.await_args.args[0]
-    set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+    set_text(modal.scheduled_at, "2030-01-02 09:00")
     responses = [
         SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
         for _ in range(2)
@@ -2342,8 +2345,8 @@ async def test_schedule_old_and_new_edit_modals_compete_safely() -> None:
     second = SimpleNamespace(is_done=lambda: False, send_modal=AsyncMock())
     await view.children[1].callback(_race_interaction(second))
     new = second.send_modal.await_args.args[0]
-    set_text(old.scheduled_at, "2030-01-02T00:00:00+00:00")
-    set_text(new.scheduled_at, "2030-01-03T00:00:00+00:00")
+    set_text(old.scheduled_at, "2030-01-02 09:00")
+    set_text(new.scheduled_at, "2030-01-03 09:00")
     responses = [
         SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock(), send_message=AsyncMock())
         for _ in range(2)
@@ -2458,9 +2461,9 @@ class _ScheduleEditPublicIdFactory:
         raise AssertionError("schedule edit must not create a public ID")
 
 
-def _schedule_edit_failure_case() -> tuple[object, object, object, object, object]:
-    from datetime import datetime
-
+def _schedule_edit_failure_case(
+    *, scheduled_at: datetime = datetime(2030, 1, 1, tzinfo=UTC)
+) -> tuple[object, object, object, object, object]:
     from discord_ai_reminder_bot.application.post_draft_schedule import (
         PostDraftOnceScheduleInput,
         PostDraftScheduleController,
@@ -2474,7 +2477,7 @@ def _schedule_edit_failure_case() -> tuple[object, object, object, object, objec
         scope=PostDraftScheduleScope(1, 2, 3), accepted_draft=GeneratedPostDraft("本文")
     )
     session.select_type(ScheduleType.ONCE)
-    session.set_validated_input(PostDraftOnceScheduleInput(datetime(2030, 1, 1, tzinfo=UTC)))
+    session.set_validated_input(PostDraftOnceScheduleInput(scheduled_at))
     port = _ScheduleEditFailurePort()
     factory = _ScheduleEditPublicIdFactory()
     controller = PostDraftScheduleController(session=session, port=port, public_id_factory=factory)
@@ -2491,7 +2494,7 @@ async def _open_schedule_edit_modal(
     return response.delivered_modal, interaction_value
 
 
-def _set_schedule_edit_value(modal: object, value: str = "2030-01-02T00:00:00+00:00") -> None:
+def _set_schedule_edit_value(modal: object, value: str = "2030-01-02 09:00") -> None:
     set_text(modal.scheduled_at, value)
 
 
@@ -2506,6 +2509,21 @@ def _schedule_edit_events(caplog: pytest.LogCaptureFixture) -> list[str]:
 def _assert_schedule_edit_has_no_persistence(port: object, factory: object) -> None:
     assert port.calls == 0
     assert factory.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_once_schedule_edit_default_is_tokyo_minute_without_offset() -> None:
+    stored_utc = datetime(2030, 1, 1, 15, 30, 59, 123456, tzinfo=UTC)
+    session, _controller, view, port, factory = _schedule_edit_failure_case(scheduled_at=stored_utc)
+    before = session.snapshot()
+
+    modal, _opened = await _open_schedule_edit_modal(view)
+
+    assert modal.scheduled_at.default == "2030-01-02 00:30"
+    assert "T" not in modal.scheduled_at.default
+    assert "+" not in modal.scheduled_at.default
+    assert session.snapshot() == before
+    _assert_schedule_edit_has_no_persistence(port, factory)
 
 
 @pytest.mark.asyncio
@@ -2788,14 +2806,16 @@ class _ScheduleConfirmPort:
         self.code = code
         self.calls = 0
         self.db_calls = 0
+        self.last_once_kwargs: dict[str, object] | None = None
 
-    async def create_once(self, **_kwargs: object) -> object:
+    async def create_once(self, **kwargs: object) -> object:
         from discord_ai_reminder_bot.application.idempotent_schedule_creation import (
             IdempotentScheduleCreationResult,
         )
 
         self.calls += 1
         self.db_calls += 1
+        self.last_once_kwargs = kwargs
         return IdempotentScheduleCreationResult(self.code)
 
     async def create_recurring(self, **_kwargs: object) -> object:
@@ -3611,6 +3631,7 @@ class _ScheduleInputResponse:
         self.edit_attempts = 0
         self.edit_successes = 0
         self.message_attempts = 0
+        self.message_content: object = None
         self.delivered_modal = False
         self.delivered_edit = False
         self.modal: object | None = None
@@ -3642,8 +3663,9 @@ class _ScheduleInputResponse:
             raise RuntimeError(CANARY)
         self.edit_successes += 1
 
-    async def send_message(self, _content: object = None, **kwargs: object) -> None:
+    async def send_message(self, content: object = None, **kwargs: object) -> None:
         self.message_attempts += 1
+        self.message_content = content
         self.message_kwargs = kwargs
         self._done = True
 
@@ -4151,7 +4173,7 @@ async def _open_schedule_input_modal(
 
 def _set_schedule_input_values(modal: object, kind: str = "once") -> None:
     if kind == "once":
-        set_text(modal.scheduled_at, "2030-01-02T00:00:00+00:00")
+        set_text(modal.scheduled_at, "2030-01-02 09:00")
     elif kind == "daily":
         set_text(modal.local_time, "09:30")
         set_text(modal.end_date, "")
@@ -4159,6 +4181,95 @@ def _set_schedule_input_values(modal: object, kind: str = "once") -> None:
         set_text(modal.weekday, "2")
         set_text(modal.local_time, "09:30")
         set_text(modal.end_date, "")
+
+
+def test_once_schedule_modal_shows_canonical_input_example() -> None:
+    _session, _controller, view, _port, _factory = _schedule_input_case()
+    modal = __import__(
+        "discord_ai_reminder_bot.bot.post_draft_ui", fromlist=["PostDraftOnceScheduleModal"]
+    ).PostDraftOnceScheduleModal(controller=view.controller, timeout=60)
+
+    assert modal.scheduled_at.label == "投稿日時（日本時間）"
+    assert modal.scheduled_at.placeholder == ONCE_INPUT_EXAMPLE
+    assert (modal.scheduled_at.min_length, modal.scheduled_at.max_length) == (7, 16)
+
+
+@pytest.mark.parametrize(
+    ("input_value", "expected_utc"),
+    [
+        ("2026-09-05 00:30", datetime(2026, 9, 4, 15, 30, tzinfo=UTC)),
+        ("2026/9/5 00:30", datetime(2026, 9, 4, 15, 30, tzinfo=UTC)),
+        ("9/5 00:30", datetime(2026, 9, 4, 15, 30, tzinfo=UTC)),
+        ("今日12:05", datetime(2026, 9, 4, 3, 5, tzinfo=UTC)),
+        ("今日 12:05", datetime(2026, 9, 4, 3, 5, tzinfo=UTC)),
+        ("明日09:00", datetime(2026, 9, 5, 0, 0, tzinfo=UTC)),
+        ("明日 09:00", datetime(2026, 9, 5, 0, 0, tzinfo=UTC)),
+        ("\u3000今日\u00a012:05\u3000", datetime(2026, 9, 4, 3, 5, tzinfo=UTC)),
+    ],
+)
+@pytest.mark.asyncio
+async def test_once_schedule_uses_existing_contract_and_hands_off_utc(
+    input_value: str, expected_utc: datetime
+) -> None:
+    session, controller, source, port, factory = _schedule_input_case()
+    modal, _opened = await _open_schedule_input_modal(source)
+    set_text(modal.scheduled_at, input_value)
+    submitted = _ScheduleInputInteraction()
+
+    await modal.on_submit(submitted)
+
+    snapshot = session.snapshot()
+    assert snapshot.state.value == "final_confirmation"
+    assert snapshot.validated_input.scheduled_at == expected_utc
+    assert snapshot.validated_input.scheduled_at.tzinfo is UTC
+    assert submitted.response.edit_attempts == 1
+    assert submitted.response.message_attempts == 0
+    assert factory.calls == port.calls == port.db_calls == 0
+
+    confirmation = submitted.response.edit_kwargs["view"]
+    await confirmation.children[0].callback(_ScheduleConfirmInteraction())
+    assert factory.calls == port.calls == port.db_calls == 1
+    assert port.last_once_kwargs is not None
+    assert port.last_once_kwargs["scheduled_for"] == expected_utc
+    assert port.last_once_kwargs["scheduled_for"].tzinfo is UTC
+    assert controller.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("input_value", "expected_message"),
+    [
+        ("今日12:04", ONCE_INPUT_ERROR),
+        ("2026-09-04 11:59", ONCE_INPUT_ERROR),
+        ("2026-02-30 12:30", ONCE_INPUT_ERROR),
+        ("今日２１:００", ONCE_FULLWIDTH_ERROR),
+        ("8/2519:30", ONCE_INPUT_ERROR),
+        ("2026-09-05T00:30:00+09:00", ONCE_INPUT_ERROR),
+    ],
+)
+@pytest.mark.asyncio
+async def test_once_schedule_rejection_has_no_creation_or_state_change(
+    input_value: str,
+    expected_message: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, controller, source, port, factory = _schedule_input_case()
+    modal, _opened = await _open_schedule_input_modal(source)
+    before = session.snapshot()
+    set_text(modal.scheduled_at, input_value)
+    submitted = _ScheduleInputInteraction()
+
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(submitted)
+
+    assert session.snapshot() == before
+    assert session.set_attempts == session.cancel_attempts == 0
+    assert submitted.response.message_attempts == 1
+    assert submitted.response.message_content == expected_message
+    assert submitted.response.message_kwargs["ephemeral"] is True
+    assert submitted.response.edit_attempts == submitted.followup.attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_input_validation_failed"]
+    assert input_value not in caplog.text
+    _assert_schedule_input_has_no_creation(controller, factory, port)
 
 
 @pytest.mark.parametrize("failure", ["before", "after"])
@@ -4284,20 +4395,22 @@ async def test_schedule_type_abort_failure_still_stops_view(
 
 
 @pytest.mark.asyncio
-async def test_schedule_input_validation_failure_is_terminal(
+async def test_schedule_input_validation_failure_preserves_session(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     session, controller, source, port, factory = _schedule_input_case()
     modal, _opened = await _open_schedule_input_modal(source)
+    before = session.snapshot()
     set_text(modal.scheduled_at, "invalid")
     attempted = _ScheduleInputInteraction()
     with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
         await modal.on_submit(attempted)
 
-    assert session.snapshot().state.value == "cancelled"
-    assert session.set_attempts == 0 and session.cancel_attempts == 1
-    assert source.is_finished() and modal.is_finished()
+    assert session.snapshot() == before
+    assert session.set_attempts == session.cancel_attempts == 0
+    assert not source.is_finished() and not modal.is_finished()
     assert attempted.response.message_attempts == 1
+    assert attempted.response.message_content == ONCE_INPUT_ERROR
     assert attempted.response.message_kwargs["ephemeral"] is True
     assert attempted.response.message_kwargs["allowed_mentions"].to_dict() == (
         discord.AllowedMentions.none().to_dict()
@@ -4305,10 +4418,6 @@ async def test_schedule_input_validation_failure_is_terminal(
     assert attempted.response.edit_attempts == attempted.followup.attempts == 0
     assert _schedule_edit_events(caplog) == ["schedule_input_validation_failed"]
     assert CANARY not in caplog.text
-    repeated = _ScheduleInputInteraction()
-    await modal.on_submit(repeated)
-    assert repeated.response.message_attempts == 1
-    assert session.set_attempts == 0
     _assert_schedule_input_has_no_creation(controller, factory, port)
 
 
