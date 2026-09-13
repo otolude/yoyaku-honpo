@@ -67,6 +67,9 @@ MARKDOWN_CHARACTERS = "\\*_~`|><#[]-."
 ONCE_INPUT_EXAMPLE = "数字・記号は半角｜例：今日21:00、8/25 19:30、2027-08-25 19:30"
 ONCE_INPUT_ERROR = "投稿日時を確認してください。例：今日21:00、8/25 19:30、2027-08-25 19:30"
 ONCE_FULLWIDTH_ERROR = "投稿日時の数字と記号は半角で入力してください。例：今日21:00、8/25 19:30"
+WEEKDAY_LABELS = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
+WEEKDAY_INPUT_DESCRIPTION = "月曜日、火曜日、…、日曜日のいずれかを入力"
+WEEKDAY_INPUT_ERROR = "曜日を確認してください。例：月曜日、火曜日、…、日曜日"
 
 
 class FakeGenerationService:
@@ -647,8 +650,8 @@ async def test_schedule_edit_invalid_input_preserves_confirmation() -> None:
         ("once", "2030-01-01 09:00"),
         ("daily", "09:30:00"),
         ("daily_none", "09:30:00"),
-        ("weekly", "2"),
-        ("weekly_none", "2"),
+        ("weekly", "水曜日"),
+        ("weekly_none", "水曜日"),
     ],
 )
 async def test_schedule_edit_modal_initial_values_round_trip(kind: str, expected: str) -> None:
@@ -790,7 +793,11 @@ def test_schedule_modal_children_are_registered_once(
             if modal_name == "once"
             else {"local_default": "09:30:00", "end_default": ""}
             if modal_name == "daily"
-            else {"weekday_default": "2", "local_default": "09:30:00", "end_default": ""}
+            else {
+                "weekday_default": "水曜日",
+                "local_default": "09:30:00",
+                "end_default": "",
+            }
         ),
     )
     for modal in (normal, edited):
@@ -2387,6 +2394,8 @@ class _ScheduleEditFailureResponse:
         self.send_modal_attempts = 0
         self.edit_attempts = 0
         self.error_attempts = 0
+        self.error_content: object = None
+        self.error_kwargs: dict[str, object] = {}
         self.delivered_modal: object | None = None
         self.candidate_view: object | None = None
         self.delivered_edit = False
@@ -2412,8 +2421,10 @@ class _ScheduleEditFailureResponse:
         if self.edit_failure == "after":
             raise RuntimeError(CANARY)
 
-    async def send_message(self, *_args: object, **_kwargs: object) -> None:
+    async def send_message(self, content: object = None, **kwargs: object) -> None:
         self.error_attempts += 1
+        self.error_content = content
+        self.error_kwargs = kwargs
         self._done = True
 
     async def defer(self, **_kwargs: object) -> None:
@@ -2447,13 +2458,16 @@ class _ScheduleEditFailureInteraction:
 class _ScheduleEditFailurePort:
     def __init__(self) -> None:
         self.calls = 0
+        self.db_calls = 0
 
     async def create_once(self, **_kwargs: object) -> object:
         self.calls += 1
+        self.db_calls += 1
         raise AssertionError("schedule edit must not reach the port")
 
     async def create_recurring(self, **_kwargs: object) -> object:
         self.calls += 1
+        self.db_calls += 1
         raise AssertionError("schedule edit must not reach the port")
 
 
@@ -2512,7 +2526,7 @@ def _schedule_edit_events(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 def _assert_schedule_edit_has_no_persistence(port: object, factory: object) -> None:
-    assert port.calls == 0
+    assert port.calls == port.db_calls == 0
     assert factory.calls == 0
 
 
@@ -4183,9 +4197,137 @@ def _set_schedule_input_values(modal: object, kind: str = "once") -> None:
         set_text(modal.local_time, "09:30")
         set_text(modal.end_date, "")
     else:
-        set_text(modal.weekday, "2")
+        set_text(modal.weekday, "水曜日")
         set_text(modal.local_time, "09:30")
         set_text(modal.end_date, "")
+
+
+@pytest.mark.parametrize("editing", [False, True])
+def test_weekly_schedule_modal_shows_persistent_japanese_weekday_guidance(
+    editing: bool,
+) -> None:
+    _session, _controller, view, _port, _factory = _schedule_input_case()
+    module = __import__(
+        "discord_ai_reminder_bot.bot.post_draft_ui",
+        fromlist=["PostDraftWeeklyScheduleEditModal", "PostDraftWeeklyScheduleModal"],
+    )
+    if editing:
+        modal = module.PostDraftWeeklyScheduleEditModal(
+            controller=view.controller,
+            source=object(),
+            generation=1,
+            revision=1,
+            timeout=60,
+            weekday_default="水曜日",
+            local_default="09:30:00",
+            end_default="",
+        )
+    else:
+        modal = module.PostDraftWeeklyScheduleModal(controller=view.controller, timeout=60)
+
+    label = modal.children[0]
+    assert isinstance(label, discord.ui.Label)
+    assert label.text == "曜日"
+    assert label.description == WEEKDAY_INPUT_DESCRIPTION
+    assert label.component is modal.weekday
+    assert modal.weekday.placeholder is None
+    assert (modal.weekday.min_length, modal.weekday.max_length) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("input_value", "expected_weekday"),
+    [(label, weekday) for weekday, label in enumerate(WEEKDAY_LABELS)]
+    + [("\u3000水曜日\u00a0", 2)],
+)
+def test_weekly_schedule_maps_japanese_weekday_names(
+    input_value: str, expected_weekday: int
+) -> None:
+    _session, _controller, view, _port, _factory = _schedule_input_case()
+    module = __import__(
+        "discord_ai_reminder_bot.bot.post_draft_ui", fromlist=["PostDraftWeeklyScheduleModal"]
+    )
+    modal = module.PostDraftWeeklyScheduleModal(controller=view.controller, timeout=60)
+    set_text(modal.weekday, input_value)
+    set_text(modal.local_time, "09:30")
+    set_text(modal.end_date, "")
+
+    assert modal._parse().weekday == expected_weekday
+
+
+@pytest.mark.parametrize("input_value", [*"0123456", *"０１２３４５６", "月", "月曜", "不正曜日"])
+@pytest.mark.asyncio
+async def test_weekly_schedule_rejects_noncanonical_weekday_without_side_effects(
+    input_value: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, controller, source, port, factory = _schedule_input_case()
+    modal, _opened = await _open_schedule_input_modal(source, kind="weekly")
+    before = session.snapshot()
+    set_text(modal.weekday, input_value)
+    set_text(modal.local_time, "09:30")
+    set_text(modal.end_date, "")
+    submitted = _ScheduleInputInteraction()
+
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(submitted)
+
+    assert session.snapshot() == before
+    assert session.set_attempts == session.cancel_attempts == 0
+    assert submitted.response.message_attempts == 1
+    assert submitted.response.message_content == WEEKDAY_INPUT_ERROR
+    assert submitted.response.message_kwargs["ephemeral"] is True
+    assert submitted.response.edit_attempts == submitted.followup.attempts == 0
+    assert _schedule_edit_events(caplog) == ["schedule_input_validation_failed"]
+    assert input_value not in caplog.text and CANARY not in caplog.text
+    _assert_schedule_input_has_no_creation(controller, factory, port)
+
+
+@pytest.mark.asyncio
+async def test_weekly_schedule_edit_rejects_noncanonical_weekday_without_side_effects(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from datetime import time
+
+    from discord_ai_reminder_bot.application.post_draft_schedule import (
+        PostDraftScheduleController,
+        PostDraftWeeklyScheduleInput,
+    )
+    from discord_ai_reminder_bot.bot.post_draft_ui import PostDraftWeeklyScheduleEditModal
+    from discord_ai_reminder_bot.domain.enums import ScheduleType
+
+    session = _ScheduleInputSession()
+    session.select_type(ScheduleType.WEEKLY)
+    session.set_validated_input(PostDraftWeeklyScheduleInput(time(9, 30), 2, None))
+    port = _ScheduleEditFailurePort()
+    factory = _ScheduleEditPublicIdFactory()
+    delegate = PostDraftScheduleController(session=session, port=port, public_id_factory=factory)
+    controller = _ScheduleConfirmController(delegate)
+    before = session.snapshot()
+    modal = PostDraftWeeklyScheduleEditModal(
+        controller=controller,
+        source=object(),
+        generation=1,
+        revision=before.confirmation_revision,
+        timeout=60,
+        weekday_default="水曜日",
+        local_default="09:30:00",
+        end_default="",
+    )
+    rejected_value = "2"
+    set_text(modal.weekday, rejected_value)
+    response = _ScheduleEditFailureResponse()
+
+    with caplog.at_level(logging.WARNING, logger="discord_ai_reminder_bot.bot.post_draft_ui"):
+        await modal.on_submit(_ScheduleEditFailureInteraction(response))
+
+    assert session.snapshot() == before
+    assert session.set_attempts == 1 and session.cancel_attempts == 0
+    assert response.error_attempts == 1 and response.edit_attempts == 0
+    assert response.error_content == WEEKDAY_INPUT_ERROR
+    assert response.error_kwargs["ephemeral"] is True
+    assert _schedule_edit_events(caplog) == ["schedule_edit_validation_failed"]
+    assert rejected_value not in caplog.text and CANARY not in caplog.text
+    _assert_schedule_edit_has_no_persistence(port, factory)
 
 
 @pytest.mark.parametrize("editing", [False, True])
