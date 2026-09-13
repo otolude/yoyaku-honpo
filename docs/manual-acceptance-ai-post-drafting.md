@@ -8,19 +8,19 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
 - PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み
-- Phase 4I: Post Draft Accept後も既存のaccepted terminal contractを維持し、独立したSchedule Sessionへ引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、認可、競合抑止、冪等な予約作成境界まで実装・自動テスト・PostgreSQL統合済み
+- Phase 4I: Post Draft Accept後も既存のaccepted terminal contractを維持し、独立したSchedule Sessionへ引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、認可、競合抑止、冪等な予約作成境界まで実装・自動テスト・PostgreSQL統合済み。採用済みの作業区分「Stage C」ではType Cancelと単発／毎日／毎週の作成・初回配信・recurrence lifecycleまで確認済み。Stage Cは正式計画上の独立Stage名ではなく、Phase 4I内の受入範囲を追跡する呼称である
 - `/post compose`: 既存guild限定`/post` Groupへ登録し、開発・検証専用Application／Guildでguild限定command、AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、確認表示の限定したescape境界を実Discord確認済み。global command syncは行っていない
 - production Composition: Provider gateはfalseで`DisabledPostDraftGenerator`を使用し、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
-- Manualフロー: Preview／Edit／Acceptまでは自動隔離・実Discord確認済み。Previewの`Embed.description`だけを表示用に変換し、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。現在の実装ではAccept後に独立Schedule Sessionへ引き渡し、「予約を確定」までは予約保存・投稿を行わない。Acceptから先の予約画面、予約保存、配信は実Discord未確認
+- Manualフロー: Preview／Edit／Acceptと、Accept後の予約種別選択、Type Cancel、単発／毎日／毎週の条件入力・最終確認・予約作成・初回配信を開発・検証専用の実Discordで確認済み。Previewの`Embed.description`だけを表示用に変換し、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。「予約を確定」までは予約保存・投稿を行わない
 - Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠: 未実装
 - 正式model、価格・費用承認、正式UI timeout: 未決定
-- 自動隔離テストとPostgreSQL統合テスト: Phase 4Hの履歴に加え、Phase 4Iの最終code commitでDBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passedを確認し、通常push済み
+- 自動隔離テストとPostgreSQL統合テスト: read-only DB audit supportのfake boundary validationと実PostgreSQL integrationに成功した。最新の採用済みfull DB gateは2,567 collected／2,567 passedで、failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0。関連commitは通常push済み
 - 実OpenAI Provider受入: 未実施
-- 実Discord受入: AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、当時のPreviewにおける限定したURL・Markdown・mention境界、`@everyone`／`@here`の入力拒否まで確認済み。Acceptから予約画面への遷移、単発／毎日／毎週の入力・編集・確定、保存・配信、Phase 4I画面での競合・timeout・権限喪失・再起動、2,000文字境界、Phase 4I画面と実配信のmention／Markdown／URLは未確認
+- 実Discord受入: AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、Accept後のType Cancel、単発／毎日／毎週の予約作成と初回配信、当時のPreviewにおける限定したURL・Markdown・mention境界、`@everyone`／`@here`の入力拒否まで確認済み。stale操作、Edit／Confirm／Cancel競合、timeout、権限喪失、Bot再起動／recovery、2,000文字境界、Phase 4I確認画面と実配信のmention／Markdown／URL境界は未確認
 - ARM64 Linux実機受入: 未実施
 - 本文生成feature flag: 初期無効を要件化、有効化不可
-- Phase 4受入集計: 確認済み47件／未確認24件（合計71件）
-- Phase 4I集計内訳: 変更前HEADは確認済み40件／未確認23件（合計63件）。new confirmed rows 4件、moved to confirmed 5件、merged duplicate confirmed rows 2件によりnet confirmed increaseは7件。new unconfirmed rows 6件、net unconfirmed increaseは1件、net total increaseは8件
+- Phase 4受入集計: 確認済み50件／未確認21件（合計71件）
+- Stage C反映: 実Discord AI・予約接続受入の3行を採用済み証跡に基づいて確認済みへ移した。Phase 4I全体、実Provider、AI有効時の実Discord、ARM64 Linux、運用承認の完了を意味しない
 
 Phase 4Aは要件・設計・運用・受入条件の確定だけを意味する。AI本文生成が利用可能、Providerが採用済み、費用・品質・保持が確認済み、または本番公開可能であることを意味しない。
 
@@ -89,6 +89,19 @@ Phase 4Hの実Discord受入記録は、その時点でAccept後の予約接続�
 
 Migration safety wrapperとAlembic環境は、秘密情報を連結しない固定stage markerと固定failure categoryだけを出力する。例外message、URL、credential、DB識別子、SQL本文を診断出力へ反射しない。
 
+## Phase 4I Stage C 採用済み受入
+
+Stage CはPhase 4Iの受入作業で用いた区分であり、正式計画に独立したStage DまたはPhase 4Jを追加するものではない。次の証拠は、手動観測と自動integrationを分離したうえで採用する。
+
+- 実Discord手動観測: Type Cancelが意図しない予約・投稿を作らないことを確認した。単発は既存形式の日本時間入力から予約作成と初回配信1件まで、毎日は予約作成と初回配信1件まで、毎週は完全な日本語曜日名の入力受理、予約作成、初回配信1件まで確認した。
+- PostgreSQL integration: 単発は日本時間入力からUTC保存／本文handoff、作成、初回配信、DB lifecycleを確認した。毎日はScheduleがactiveのまま初回Runがsucceededとなり、翌日同時刻のRunがpendingとなることを確認した。毎週は同一Scheduleについてactive、初回Run succeeded、翌週同曜日・同時刻のRun pendingを含む必須22条件を確認した。
+- 監査境界: `tests/support/read_only_database_audit.py`のfake boundary validationと実PostgreSQL integrationに成功した。手動観測をDB結果へ推測で置換せず、DB lifecycleとDiscord上の公開投稿を別の証拠として扱う。
+- 最終gate: 2,567 collected／2,567 passed。failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0で、関連commitの通常push、Gitのlocal／origin同期、隔離資材のcleanupまで完了した。
+
+残るPhase 4I実Discord受入は、stale操作、Edit／Confirm／Cancel競合、timeout、権限喪失、Bot再起動／recovery、2,000文字境界、mention安全性、Markdown／URL境界である。次の最小受入項目はstale操作と競合操作が重複保存・投稿を起こさないことの確認とする。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認は本文生成feature flag有効化前の別gateとして残す。
+
+`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持する。上記の残存受入と別gateが完了し、運用者が明示承認するまで変更しない。release／merge前には、その時点の新しいtipでCIを通す。
+
 ## 利用回数・費用上限の未決事項
 
 現在のuser 3回／固定10分、guild 30回／JST日、global 50回／JST日・500回／JST月、月次悲観費用500円相当、およびuser bucket 7日、guild bucket 30日、operator Budget 90日、receipt 7日の保持期間は、実装と安全検証に用いる暫定値である。正式な商品仕様、サブスクリプション仕様、一般提供時の確定値または販売上の約束ではなく、正式承認を待つ。
@@ -142,9 +155,9 @@ Migration safety wrapperとAlembic環境は、秘密情報を連結しない固�
 
 ## 実Discord AI・予約接続受入
 
-- [ ] Manual本文のAccept後に予約種別選択画面が実Discordで表示される。
-- [ ] 単発／毎日／毎週について、実Discordで予約条件を入力・編集し、最終確認から確定できる。
-- [ ] 実Discordの確定操作に対応する予約が正確に保存され、予定時刻に正確に1回配信される。
+- [x] Manual本文のAccept後に予約種別選択画面が実Discordで表示される。
+- [x] 単発／毎日／毎週について、実Discordで予約条件を入力・編集し、最終確認から確定できる。
+- [x] 実Discordの確定操作に対応する予約が正確に保存され、予定時刻に正確に1回配信される。
 - [ ] 二重操作、stale View、競合するEdit／Confirm／Cancelが実Discordで重複保存・投稿を起こさない。
 - [ ] 2,000文字境界を実Discordの入力、確認、予約保存、配信まで確認する。
 - [ ] 本番Applicationまたは一般利用者環境での挙動を、開発・検証専用環境の結果と分離して確認する。

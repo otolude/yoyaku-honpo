@@ -16,9 +16,11 @@ Phase 4は、4A文書化、4B Provider非依存Domain／Application、4C rate li
 
 Phase 4Iでは、Post Draft Accept後も既存のaccepted terminal contractを維持し、独立Schedule Sessionへ現在本文を引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、owner／guild／channel認可、validation失敗時の旧入力保持、stale View、二重押下、Edit／Confirm／Cancel競合を実装した。public ID生成と予約作成Port呼出しは各最大1回で、`created`／`already_created`／`conflict`／`unknown`を固定結果として扱い、`unknown`後に再INSERT・retryしない。Discord失敗は固定event、Migration診断は秘密情報を含まない固定stage／failure categoryへ閉じた。
 
-DBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passed、revision `c72e91f4b6a3`のMigration、Ruff、diff checks、終了時11業務table各0行、leak 0、secret reflection 0、隔離project cleanupを確認し、code commitと通常pushまで完了した。これらは自動検証であり、Accept後の予約画面、単発／毎日／毎週の実Discord入力・編集・確定、実際の保存・配信、二重操作／stale／timeout／権限喪失／再起動、2,000文字境界、Phase 4I画面と配信のmention／Markdown／URL、実Provider、AI生成／再生成、ARM64 Linux、本番Application／一般利用者環境は未確認である。Phase 4受入集計は確認済み47件／未確認24件（合計71件）で、実装・自動隔離およびPostgreSQL・Migrationの上位gate 2件は対応する詳細行へ統合している。
+Phase 4I内の採用済み作業区分「Stage C」では、Type Cancel、単発／毎日／毎週の予約作成と初回配信を開発・検証専用の実Discordで確認した。単発のUTC保存／handoff／lifecycle、毎日の翌日Run、毎週の翌週Runは実PostgreSQL integrationで別に確認し、weekly lifecycleの必須22条件も同一Scheduleで確認した。read-only DB audit supportはfake boundaryと実PostgreSQL integrationで検証済みである。最新のfull DB gateは2,567 collected／2,567 passedで、failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0だった。関連commitの通常push、Gitのlocal／origin同期、隔離資材のcleanupまで完了した。Stage Cは正式計画上の独立Stageではなく、Phase 4I全体の完了も意味しない。
 
-本文生成feature flagは初期無効とし、実Provider・実Discord・ARM64 Linux実機受入がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+残るPhase 4I実Discord受入は、stale操作、Edit／Confirm／Cancel競合、timeout、権限喪失、Bot再起動／recovery、2,000文字境界、mention安全性、Markdown／URL境界である。次の最小受入はstale操作と競合操作の重複抑止確認とする。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み50件／未確認21件（合計71件）である。
+
+本文生成feature flagは初期無効とし、`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持する。実Provider、AI有効時の実Discord、ARM64 Linux実機受入、運用承認がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理し、release／merge前には新しいtipでCIを通す。
 
 ## 2. Phase 3ロードマップ
 
