@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -131,7 +130,7 @@ def _discord_gateway() -> tuple[DiscordMessageGateway, MagicMock]:
 
 
 def _same_body(actual: object) -> bool:
-    return isinstance(actual, str) and secrets.compare_digest(actual, BODY)
+    return isinstance(actual, str) and actual == BODY
 
 
 async def test_two_thousand_character_body_is_stored_and_delivered_once(
