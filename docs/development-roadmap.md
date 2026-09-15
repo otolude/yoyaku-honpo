@@ -18,9 +18,9 @@ Phase 4Iでは、Post Draft Accept後も既存のaccepted terminal contractを�
 
 Phase 4I内の採用済み作業区分「Stage C」では、Type Cancel、単発／毎日／毎週の予約作成と初回配信を開発・検証専用の実Discordで確認した。単発のUTC保存／handoff／lifecycle、毎日の翌日Run、毎週の翌週Runは実PostgreSQL integrationで別に確認し、weekly lifecycleの必須22条件も同一Scheduleで確認した。read-only DB audit supportはfake boundaryと実PostgreSQL integrationで検証済みである。Stage C時点のfull DB gateは2,567 collected／2,567 passedで、failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0だった。関連commitの通常push、Gitのlocal／origin同期、隔離資材のcleanupまで完了した。Stage Cは正式計画上の独立Stageではなく、Phase 4I全体の完了も意味しない。
 
-Stage C後の残存非AI受入では、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、mention安全性とMarkdown／URLのPreview・公開表示を、手動観測、自動テスト、実PostgreSQL証拠の適用範囲を分離して確認した。2,000文字lifecycle characterizationを含む最新full DB gateは2,568／2,568に成功した。mention／Markdown／URLの個別DB監査はharness callback構築不備でUNKNOWNのままとし、既存raw handoff、gateway、2,000文字実DB lifecycleを採用している。
+Stage C後の残存非AI受入では、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、mention安全性とMarkdown／URLのPreview・公開表示、予約種別選択ViewのOption A timeoutを、手動観測、自動テスト、実PostgreSQL証拠の適用範囲を分離して確認した。Option Aではproduction設定の900秒以上待機後にCancelを1回だけ操作してDiscord標準のgeneric interaction failure表示、公開投稿0、二重操作0を手動確認した。別のread-only DB監査では有効な状態遷移、予約graph、利用枠関連rowが各0で、sync／OpenAI request／retry各0は設定と操作の証跡として採用した。Bot独自のtimeout表示とcomponent disableは要求せず、DB lock／Discord network／provider timeoutは別責務とする。2,000文字lifecycle characterizationを含む最新full DB gateは2,568／2,568に成功した。mention／Markdown／URLの個別DB監査はharness callback構築不備でUNKNOWNのままとし、既存raw handoff、gateway、2,000文字実DB lifecycleを採用している。
 
-残るPhase 4I非AI受入は、対象と期待結果が未確定のtimeout、要求確定と自動coverage確認が先行する権限喪失、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み53件／未確認18件（合計71件）である。
+残るPhase 4I非AI受入は、要求確定と自動coverage確認が先行する権限喪失、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み54件／未確認18件（合計72件）である。
 
 本文生成feature flagは初期無効とし、`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持する。実Provider、AI有効時の実Discord、ARM64 Linux実機受入、運用承認がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理し、release／merge前には新しいtipでCIを通す。
 
