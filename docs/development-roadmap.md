@@ -20,7 +20,9 @@ Phase 4I内の採用済み作業区分「Stage C」では、Type Cancel、単発
 
 Stage C後の残存非AI受入では、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、mention安全性とMarkdown／URLのPreview・公開表示、予約種別選択ViewのOption A timeoutを、手動観測、自動テスト、実PostgreSQL証拠の適用範囲を分離して確認した。Option Aではproduction設定の900秒以上待機後にCancelを1回だけ操作してDiscord標準のgeneric interaction failure表示、公開投稿0、二重操作0を手動確認した。別のread-only DB監査では有効な状態遷移、予約graph、利用枠関連rowが各0で、sync／OpenAI request／retry各0は設定と操作の証跡として採用した。Bot独自のtimeout表示とcomponent disableは要求せず、DB lock／Discord network／provider timeoutは別責務とする。2,000文字lifecycle characterizationを含む最新full DB gateは2,568／2,568に成功した。mention／Markdown／URLの個別DB監査はharness callback構築不備でUNKNOWNのままとし、既存raw handoff、gateway、2,000文字実DB lifecycleを採用している。
 
-残るPhase 4I非AI受入は、要求確定と自動coverage確認が先行する権限喪失、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み54件／未確認18件（合計72件）である。
+Bot Send Messages権限喪失Option Aは、開発専用投稿先channelのBot本人に対するSend Messagesだけをdenyした実Discord観測と、failed／permanentで終端した単発Schedule graphの配信後・権限復元後read-only DB監査を合成して確認した。対象channel公開投稿、retry、blind retry、再送、新規Run／DeliveryAttemptは各0で、operator通知は1件・重複0だった。channel overwriteは変更前状態へ完全復元し、他のrole／channel／権限を変更せず、production code／testも変更せずcleanupした。userのView Channel、Embed Links、operator role、guild membership喪失は本Optionの対象外である。
+
+残るPhase 4I非AI受入は、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み55件／未確認17件（合計72件）である。
 
 本文生成feature flagは初期無効とし、`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持する。実Provider、AI有効時の実Discord、ARM64 Linux実機受入、運用承認がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理し、release／merge前には新しいtipでCIを通す。
 
