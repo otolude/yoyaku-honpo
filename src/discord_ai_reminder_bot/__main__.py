@@ -15,12 +15,22 @@ from discord_ai_reminder_bot.infrastructure.database.session import (
 )
 from discord_ai_reminder_bot.log_config import configure_logging
 from discord_ai_reminder_bot.post_draft_config import load_post_draft_usage_settings
+from discord_ai_reminder_bot.post_draft_provider_config import (
+    OpenAIPostDraftProviderSettingsState,
+    load_openai_post_draft_provider_settings,
+)
 
 
 def main() -> int:
     settings = load_settings()
     configure_logging(settings.log_level)
     logger = logging.getLogger("discord_ai_reminder_bot")
+    provider_settings = load_openai_post_draft_provider_settings()
+    if provider_settings.state is OpenAIPostDraftProviderSettingsState.INVALID or (
+        provider_settings.requested_enabled and not provider_settings.live_ready
+    ):
+        logger.error("post_draft_provider_startup_blocked")
+        return 1
     engine = create_database_engine(settings.database_url)
     bot = ReminderBot(
         settings=settings,

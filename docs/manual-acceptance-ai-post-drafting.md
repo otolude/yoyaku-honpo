@@ -7,10 +7,10 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 - Phase 4A 文書化: 完了
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み
-- PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み
+- PostgreSQL Usage Repository、Usage reservation orchestration、Usage cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`: 実装・自動隔離テスト済み。Real Provider向けには、immutable request planから`responses.input_tokens.count`と`responses.create`を投影する二段階Adapter、process内のgeneration attempt／external call／generation予約費用guard、module内固定scriptだけのoffline fake、offline専用harnessを追加した。任意client／client factoryの注入経路はなく、production effective gateはfalseのままである
 - Phase 4I: Post Draft Accept後も既存のaccepted terminal contractを維持し、独立したSchedule Sessionへ引き渡す。単発／毎日／毎週の選択・入力・編集・最終確認、認可、競合抑止、冪等な予約作成境界まで実装・自動テスト・PostgreSQL統合済み。採用済みの作業区分「Stage C」ではType Cancelと単発／毎日／毎週の作成・初回配信・recurrence lifecycleまで確認済みであり、その後の残存非AI受入ではstale ModalとEdit／Confirm／Cancel競合、2,000文字境界、mention安全性とMarkdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option A、Bot再起動／recovery Option Aを確認済み。Stage Cは正式計画上の独立Stage名ではなく、Phase 4I内の受入範囲を追跡する呼称である
 - `/post compose`: 既存guild限定`/post` Groupへ登録し、開発・検証専用Application／Guildでguild限定command、AI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Accept、確認表示の限定したescape境界を実Discord確認済み。global command syncは行っていない
-- production Composition: Provider gateはfalseで`DisabledPostDraftGenerator`を使用し、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
+- production Composition: Provider settingsは起動時のfail-closed検証だけに接続し、effective gateはfalseで`DisabledPostDraftGenerator`を使用する。`AsyncOpenAI`とOpenAI Adapterは未接続。AI buttonはdisabledの「AIで作成（準備中）」表示
 - Manualフロー: Preview／Edit／Acceptと、Accept後の予約種別選択、Type Cancel、単発／毎日／毎週の条件入力・最終確認・予約作成・初回配信に加え、stale Modal競合、2,000文字本文、mention／Markdown／URL境界、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option Aを開発・検証専用の実Discordで確認済み。Previewの`Embed.description`だけを表示用に変換し、Domain、Session、Edit Modal初期値、Accept本文はrawのまま保持する。「予約を確定」までは予約保存・投稿を行わない
 - Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠: 未実装
 - 正式model、価格・費用承認、Option A以外のUI timeout仕様: 未決定
@@ -156,6 +156,8 @@ Stage CはPhase 4Iの受入作業で用いた区分であり、正式計画に�
 - [x] Migrationの到達stageと失敗分類を固定marker／固定categoryだけで観測し、通常logと診断出力へ秘密情報を反射しないことを確認する。
 
 ## 実Provider受入
+
+準備実装はAPI通信0件のoffline範囲に限定する。正式modelは未選択で、候補allowlistは`gpt-5.6-luna`と`gpt-5.6-terra`である。Input Tokens APIによるcountも外部送信であり、count料金とendpoint固有の保持条件はUNKNOWNのため、generation予約費用capを総外部費用hard capとは扱わない。`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`を独立したlive-readiness blockerとし、通常の設定・credential・live authorizationだけでは解除できず、実`AsyncOpenAI` client構築は0件である。production／offline ownerとgenerator、process guard、scripted fakeは別のnominal型でruntime subclassを拒否する。offlineではmodule内の固定scenarioとprimitive capから生成するexact scripted fakeだけを許可し、任意client／callback／awaitable／例外class・instance／guardを受け取らず、例外分類policyもmodule内部に固定してBotへ登録できない。scripted fakeではclose開始最大1回を確認するが、任意のclose完了hard deadlineやcancellation後のpending task 0は保証しない。shutdown failureは固定分類をmemoryへ先に保存してからsafe loggingを試みる。process終了期限／subprocess隔離は将来判断である。`tiktoken`とStructured Outputsは採用していない。private credential、billing／budget、ZDR／Modified Abuse Monitoring、data residencyも未確認で、Phase 4受入集計は確認済み56件／未確認16件（合計72件）のままとする。
 
 - [ ] 実行直前にモデル提供状態、単価、Responses API、structured output、保持、ZDR、国内処理、SDK対応を公式情報で再監査する。
 - [ ] 専用Project、制限付きAPI key、Project予算・アラート、最大request数、悲観最大費用、Auto-recharge状態を確認する。

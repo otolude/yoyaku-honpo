@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 import discord
@@ -49,6 +51,9 @@ from discord_ai_reminder_bot.bot.posts import PostCommands
 from discord_ai_reminder_bot.config import Settings
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.recurrence import TOKYO, require_utc
+from discord_ai_reminder_bot.infrastructure.ai.openai_post_draft_generator import (
+    ProductionOpenAIPostDraftRuntimeOwner,
+)
 from discord_ai_reminder_bot.infrastructure.database.schema import verify_schema_revision
 from discord_ai_reminder_bot.infrastructure.discord.gateway import DiscordMessageGateway
 from discord_ai_reminder_bot.infrastructure.discord.notification_gateway import (
@@ -78,6 +83,18 @@ class GuildCommandSyncError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("guild command sync failed")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderCloseResult:
+    completed: bool
+    cancellation: asyncio.CancelledError | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _ShutdownFailureRecord:
+    stage: str
+    classification: str
 
 
 def minimal_intents() -> discord.Intents:
@@ -124,6 +141,7 @@ class ReminderBot(commands.Bot):
             session_factory=session_factory,
             clock=clock,
         )
+        self._post_draft_provider_resource: ProductionOpenAIPostDraftRuntimeOwner | None = None
         self.gateway: MessageGateway = DiscordMessageGateway(
             client=self,
             configured_guild_id=settings.discord_guild_id,
@@ -187,6 +205,8 @@ class ReminderBot(commands.Bot):
         self._startup_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed_once = False
+        self._shutdown_task: asyncio.Task[asyncio.CancelledError | None] | None = None
+        self._shutdown_failures: list[_ShutdownFailureRecord] = []
         self._command_sync_lock = asyncio.Lock()
         self._maintenance_lock = asyncio.Lock()
         self._command_sync_attempted = False
@@ -215,12 +235,59 @@ class ReminderBot(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        revision = await verify_schema_revision(self.engine)
-        self.logger.info(
-            "database_schema_verified",
-            extra={"worker_id": str(self.worker_id), "revision": revision},
+        try:
+            revision = await verify_schema_revision(self.engine)
+            self.logger.info(
+                "database_schema_verified",
+                extra={"worker_id": str(self.worker_id), "revision": revision},
+            )
+            await self.sync_guild_commands()
+        except BaseException as startup_error:
+            result = await self._close_post_draft_provider()
+            if not result.completed:
+                self._record_shutdown_failure(
+                    "post_draft_provider_shutdown_failed",
+                    "cleanup_cancelled" if result.cancellation is not None else "cleanup_failed",
+                )
+            if isinstance(startup_error, asyncio.CancelledError):
+                self._raise_preserved_cancellation(startup_error)
+            raise
+
+    def _register_post_draft_provider(
+        self, resource: ProductionOpenAIPostDraftRuntimeOwner
+    ) -> None:
+        if type(resource) is not ProductionOpenAIPostDraftRuntimeOwner:
+            raise RuntimeError("invalid production post draft provider")
+        if self._post_draft_provider_resource is not None:
+            raise RuntimeError("post draft provider lifecycle already registered")
+        self._post_draft_provider_resource = resource
+
+    def _safe_log_fixed_error(self, marker: str) -> None:
+        """Best-effort fixed-marker logging; logging can never interrupt cleanup."""
+        try:
+            self.logger.error(marker)
+        except BaseException:  # noqa: BLE001, S110 - logging failures are never recursive
+            pass
+
+    def _record_shutdown_failure(self, stage: str, classification: str) -> None:
+        self._shutdown_failures.append(
+            _ShutdownFailureRecord(stage=stage, classification=classification)
         )
-        await self.sync_guild_commands()
+        self._safe_log_fixed_error(stage)
+
+    async def _close_post_draft_provider(self) -> _ProviderCloseResult:
+        """Attempt provider close without logging or mutating failure records."""
+        resource = self._post_draft_provider_resource
+        self._post_draft_provider_resource = None
+        if resource is None:
+            return _ProviderCloseResult(completed=True)
+        try:
+            result = await resource.close()
+        except asyncio.CancelledError as error:
+            return _ProviderCloseResult(completed=False, cancellation=error)
+        except BaseException:  # noqa: BLE001 - never expose provider cleanup details
+            return _ProviderCloseResult(completed=False)
+        return _ProviderCloseResult(completed=result is True)
 
     def add_guild_command(
         self,
@@ -564,30 +631,44 @@ class ReminderBot(commands.Bot):
         if self._closing or not self.name_generation_worker.available:
             self.name_generation_polling_loop.stop()
 
-    async def close(self) -> None:
-        if self._closed_once:
-            return
-        self._closed_once = True
-        self._closing = True
+    async def _shutdown_task_loop(self, loop: tasks.Loop[object]) -> None:
+        failed = False
+        for operation in (loop.stop, loop.cancel):
+            try:
+                operation()
+            except BaseException:  # noqa: BLE001 - continue the same resource cleanup
+                failed = True
+        try:
+            task = loop.get_task()
+        except BaseException:  # noqa: BLE001 - fixed failure only
+            task = None
+            failed = True
+        if task is not None and task is not asyncio.current_task():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException:  # noqa: BLE001 - fixed failure only
+                failed = True
+        if failed:
+            raise RuntimeError("fixed loop shutdown failure")
 
-        self.name_generation_polling_loop.stop()
-        self.name_generation_polling_loop.cancel()
-        name_polling_task = self.name_generation_polling_loop.get_task()
-        if name_polling_task is not None and name_polling_task is not asyncio.current_task():
-            with contextlib.suppress(asyncio.CancelledError):
-                await name_polling_task
+    async def _shutdown_name_generation_loop(self) -> None:
+        await self._shutdown_task_loop(self.name_generation_polling_loop)
+
+    async def _shutdown_name_generation_worker(self) -> None:
         await self.name_generation_worker.shutdown()
 
-        self.polling_loop.stop()
-        self.notification_polling_loop.stop()
-        self.maintenance_loop.stop()
-        for loop in (self.polling_loop, self.notification_polling_loop, self.maintenance_loop):
-            loop.cancel()
-            polling_task = loop.get_task()
-            if polling_task is not None and polling_task is not asyncio.current_task():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await polling_task
+    async def _shutdown_polling_worker(self) -> None:
+        await self._shutdown_task_loop(self.polling_loop)
 
+    async def _shutdown_maintenance_worker(self) -> None:
+        await self._shutdown_task_loop(self.maintenance_loop)
+
+    async def _shutdown_notification_worker(self) -> None:
+        await self._shutdown_task_loop(self.notification_polling_loop)
+
+    async def _shutdown_startup_task(self) -> None:
         startup_task = self._startup_task
         if startup_task is not None and startup_task is not asyncio.current_task():
             if not startup_task.done():
@@ -595,18 +676,79 @@ class ReminderBot(commands.Bot):
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_task
 
+    async def _shutdown_confirmation_views(self) -> None:
         await self.post_commands.close_confirmation_views()
 
+    async def _attempt_shutdown_stage(
+        self, name: str, operation: Callable[[], Awaitable[object]]
+    ) -> asyncio.CancelledError | None:
         try:
-            await super().close()
-        finally:
+            result = await operation()
+            if result is False:
+                raise RuntimeError("fixed shutdown failure")
+        except asyncio.CancelledError as error:
+            self._record_shutdown_failure(name, "cleanup_cancelled")
+            return error
+        except BaseException:  # noqa: BLE001 - all stages continue; detail is suppressed
+            self._record_shutdown_failure(name, "cleanup_failed")
+        return None
+
+    async def _attempt_provider_shutdown_stage(self) -> asyncio.CancelledError | None:
+        result = await self._close_post_draft_provider()
+        if not result.completed:
+            self._record_shutdown_failure(
+                "post_draft_provider_shutdown_failed",
+                "cleanup_cancelled" if result.cancellation is not None else "cleanup_failed",
+            )
+        return result.cancellation
+
+    async def _shutdown_discord_client(self) -> None:
+        await super().close()
+
+    async def _dispose_database_engine(self) -> None:
+        await self.engine.dispose()
+
+    async def _run_shared_shutdown(self) -> asyncio.CancelledError | None:
+        cancellation = await self._attempt_provider_shutdown_stage()
+        stages = (
+            ("name_generation_loop_shutdown_failed", self._shutdown_name_generation_loop),
+            ("name_generation_worker_shutdown_failed", self._shutdown_name_generation_worker),
+            ("polling_worker_shutdown_failed", self._shutdown_polling_worker),
+            ("maintenance_worker_shutdown_failed", self._shutdown_maintenance_worker),
+            ("notification_worker_shutdown_failed", self._shutdown_notification_worker),
+            ("startup_task_shutdown_failed", self._shutdown_startup_task),
+            ("confirmation_view_shutdown_failed", self._shutdown_confirmation_views),
+            ("discord_client_close_failed", self._shutdown_discord_client),
+            ("database_engine_dispose_failed", self._dispose_database_engine),
+        )
+        for name, operation in stages:
+            stage_cancellation = await self._attempt_shutdown_stage(name, operation)
+            cancellation = cancellation or stage_cancellation
+        self._closed_once = True
+        return cancellation
+
+    async def close(self) -> None:
+        self._closing = True
+        # No await occurs before assignment, so all callers on this event loop share
+        # exactly one task. Callers are shielded; their cancellation never cancels it.
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(
+                self._run_shared_shutdown(), name="reminder-bot-shared-shutdown"
+            )
+        cancellation: asyncio.CancelledError | None = None
+        while not self._shutdown_task.done():
             try:
-                await self.engine.dispose()
-            except Exception:  # noqa: BLE001 - never expose engine connection details
-                self.logger.error(
-                    "database_engine_dispose_failed",
-                    extra={"worker_id": str(self.worker_id)},
-                )
+                await asyncio.shield(self._shutdown_task)
+            except asyncio.CancelledError as error:
+                cancellation = cancellation or error
+        cleanup_cancellation = self._shutdown_task.result()
+        cancellation = cancellation or cleanup_cancellation
+        if cancellation is not None:
+            self._raise_preserved_cancellation(cancellation)
+
+    @staticmethod
+    def _raise_preserved_cancellation(error: asyncio.CancelledError) -> None:
+        raise error
 
 
 from discord_ai_reminder_bot.application.cleanup import CleanupService

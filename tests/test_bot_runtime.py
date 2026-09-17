@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import subprocess
+import sys
 import uuid
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
+import httpx
 import pytest
 from discord import app_commands
 from discord.ext import commands
@@ -207,6 +211,125 @@ async def test_close_shuts_name_generation_once_before_engine_dispose() -> None:
     await bot.close()
     bot.name_generation_worker.shutdown.assert_awaited_once()  # type: ignore[attr-defined]
     assert order == ["name_shutdown", "dispose"]
+
+
+@pytest.mark.asyncio
+async def test_post_draft_provider_normal_shutdown_closes_exactly_once() -> None:
+    resource = MagicMock()
+    resource.close = AsyncMock(return_value=True)
+    bot = make_bot()
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    await bot.close()
+    await bot.close()
+    resource.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_draft_provider_registration_rejects_duck_typed_owner() -> None:
+    bot = make_bot()
+    accesses = 0
+
+    class Sentinel:
+        @property
+        def offline_only(self) -> bool:
+            nonlocal accesses
+            accesses += 1
+            return False
+
+        @property
+        def responses(self) -> object:
+            nonlocal accesses
+            accesses += 1
+            raise AssertionError("must not be accessed")
+
+    sentinel = Sentinel()
+    with pytest.raises(RuntimeError, match="invalid production post draft provider"):
+        bot._register_post_draft_provider(sentinel)  # type: ignore[arg-type]
+    assert bot._post_draft_provider_resource is None
+    assert accesses == 0
+
+
+@pytest.mark.asyncio
+async def test_offline_script_owner_cannot_register_with_production_bot() -> None:
+    from decimal import Decimal
+
+    from discord_ai_reminder_bot.infrastructure.ai.openai_post_draft_generator import (
+        OfflineScriptedOpenAIPostDraftRuntimeOwner,
+        OfflineScriptScenario,
+    )
+
+    owner = OfflineScriptedOpenAIPostDraftRuntimeOwner.for_offline_script(
+        scenario=OfflineScriptScenario.SUCCESS,
+        generation_attempt_cap=1,
+        external_call_cap=2,
+        generation_reserved_cost_cap=Decimal(1),
+    )
+    bot = make_bot()
+    with pytest.raises(RuntimeError, match="invalid production post draft provider"):
+        bot._register_post_draft_provider(owner)  # type: ignore[arg-type]
+    assert owner.close_start_count == 0
+    assert await owner.close() is True
+
+
+@pytest.mark.asyncio
+async def test_post_draft_provider_startup_failure_then_shutdown_closes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource = MagicMock()
+    resource.close = AsyncMock(return_value=True)
+
+    bot = make_bot()
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.verify_schema_revision",
+        AsyncMock(return_value="bf82b90bcd5e"),
+    )
+    bot.sync_guild_commands = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("startup failed")
+    )
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await bot.setup_hook()
+    await bot.close()
+    resource.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_draft_provider_close_failure_does_not_replace_startup_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    resource = MagicMock()
+    resource.close = AsyncMock(return_value=False)
+
+    bot = make_bot()
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.verify_schema_revision",
+        AsyncMock(return_value="bf82b90bcd5e"),
+    )
+    bot.sync_guild_commands = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("startup failed")
+    )
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="startup failed"):
+        await bot.setup_hook()
+    assert "post_draft_provider_shutdown_failed" in caplog.messages
+    assert [record.stage for record in bot._shutdown_failures] == [
+        "post_draft_provider_shutdown_failed"
+    ]
+    resource.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disabled_post_draft_provider_allocates_no_lifecycle_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.verify_schema_revision",
+        AsyncMock(return_value="bf82b90bcd5e"),
+    )
+    bot.sync_guild_commands = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    await bot.setup_hook()
+    assert bot._post_draft_provider_resource is None
 
 
 @pytest.mark.asyncio
@@ -1068,6 +1191,299 @@ async def test_close_collects_all_three_loop_tasks_and_startup_once(
     assert startup_task.done() and startup_task.cancelled()
     assert all(stop.call_count == 1 for stop in stops)
     assert all(cancel.call_count == 1 for cancel in cancels)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_close_callers_share_one_task_and_cancellation_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network_attempts: list[str] = []
+
+    def forbidden(name: str):
+        def reject(*_args: object, **_kwargs: object) -> object:
+            network_attempts.append(name)
+            raise AssertionError(name)
+
+        return reject
+
+    monkeypatch.setattr(socket, "create_connection", forbidden("socket"))
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden("dns"))
+    monkeypatch.setattr(socket.socket, "connect", forbidden("socket.connect"))
+    monkeypatch.setattr(asyncio, "open_connection", forbidden("asyncio"))
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden("httpx"))
+    monkeypatch.setattr(httpx, "Client", forbidden("httpx.sync"))
+    monkeypatch.setattr(subprocess, "run", forbidden("subprocess.run"))
+    monkeypatch.setattr(subprocess, "Popen", forbidden("subprocess"))
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        MagicMock(AsyncOpenAI=forbidden("openai")),
+    )
+    bot = make_bot()
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def cooperative_provider_close() -> bool:
+        started.set()
+        await release.wait()
+        return True
+
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=cooperative_provider_close)
+    bot._post_draft_provider_resource = resource
+    monkeypatch.setattr(commands.Bot, "close", AsyncMock())
+
+    first = asyncio.create_task(bot.close())
+    second = asyncio.create_task(bot.close())
+    await started.wait()
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not second.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await second
+
+    assert resource.close.await_count == 1
+    assert bot._shutdown_task is not None and bot._shutdown_task.done()
+    commands.Bot.close.assert_awaited_once()  # type: ignore[attr-defined]
+    bot.engine.dispose.assert_awaited_once()
+    assert network_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_attempts_every_stage_after_multiple_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=RuntimeError("private-provider"))
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    stage_methods = (
+        "_shutdown_name_generation_loop",
+        "_shutdown_name_generation_worker",
+        "_shutdown_polling_worker",
+        "_shutdown_maintenance_worker",
+        "_shutdown_notification_worker",
+        "_shutdown_startup_task",
+        "_shutdown_confirmation_views",
+        "_shutdown_discord_client",
+        "_dispose_database_engine",
+    )
+    mocks: dict[str, AsyncMock] = {}
+    for name in stage_methods:
+        mock = AsyncMock(side_effect=RuntimeError(f"private-{name}"))
+        mocks[name] = mock
+        monkeypatch.setattr(bot, name, mock)
+
+    await bot.close()
+    await bot.close()
+
+    assert all(mock.await_count == 1 for mock in mocks.values())
+    resource.close.assert_awaited_once()
+    assert len(bot._shutdown_failures) == len(stage_methods) + 1
+    assert all("private" not in repr(failure) for failure in bot._shutdown_failures)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_logger_failure_never_skips_cleanup_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = make_bot()
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=RuntimeError("private-provider"))
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    stage_methods = (
+        "_shutdown_name_generation_loop",
+        "_shutdown_name_generation_worker",
+        "_shutdown_polling_worker",
+        "_shutdown_maintenance_worker",
+        "_shutdown_notification_worker",
+        "_shutdown_startup_task",
+        "_shutdown_confirmation_views",
+        "_shutdown_discord_client",
+        "_dispose_database_engine",
+    )
+    mocks: dict[str, AsyncMock] = {}
+    for name in stage_methods:
+        mock = AsyncMock(side_effect=RuntimeError(f"private-{name}"))
+        mocks[name] = mock
+        monkeypatch.setattr(bot, name, mock)
+    bot.logger.error = MagicMock(side_effect=RuntimeError("private-logger"))
+
+    await bot.close()
+
+    assert all(mock.await_count == 1 for mock in mocks.values())
+    resource.close.assert_awaited_once()
+    assert len(bot._shutdown_failures) == len(stage_methods) + 1
+    assert all("private" not in repr(failure) for failure in bot._shutdown_failures)
+    assert bot.logger.error.call_count == len(stage_methods) + 1
+
+
+@pytest.mark.parametrize("failure_kind", ["handler", "filter", "formatter"])
+@pytest.mark.asyncio
+async def test_shutdown_handler_or_filter_failure_is_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+) -> None:
+    class ExplodingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            del record
+            raise RuntimeError("private-handler")
+
+    class ExplodingFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            del record
+            raise RuntimeError("private-filter")
+
+    class ExplodingFormatter(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            del record
+            raise RuntimeError("private-formatter")
+
+    logger = logging.getLogger(f"test.shutdown-{failure_kind}")
+    logger.handlers.clear()
+    logger.setLevel(logging.ERROR)
+    logger.propagate = False
+    handler = ExplodingHandler()
+    if failure_kind == "filter":
+        handler.addFilter(ExplodingFilter())
+    if failure_kind == "formatter":
+        handler.setFormatter(ExplodingFormatter())
+    logger.addHandler(handler)
+    bot = make_bot()
+    bot.logger = logger
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=RuntimeError("private-provider"))
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    discord_close = AsyncMock(side_effect=RuntimeError("private-discord"))
+    engine_dispose = AsyncMock(side_effect=RuntimeError("private-engine"))
+    monkeypatch.setattr(bot, "_shutdown_discord_client", discord_close)
+    monkeypatch.setattr(bot, "_dispose_database_engine", engine_dispose)
+
+    await bot.close()
+
+    resource.close.assert_awaited_once()
+    discord_close.assert_awaited_once()
+    engine_dispose.assert_awaited_once()
+    assert {
+        "post_draft_provider_shutdown_failed",
+        "discord_client_close_failed",
+        "database_engine_dispose_failed",
+    }.issubset({record.stage for record in bot._shutdown_failures})
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_logger_failure_preserves_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource = MagicMock()
+    resource.close = AsyncMock(return_value=False)
+    bot = make_bot()
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "discord_ai_reminder_bot.bot.client.verify_schema_revision",
+        AsyncMock(return_value="bf82b90bcd5e"),
+    )
+    bot.sync_guild_commands = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("startup-primary")
+    )
+    bot.logger.error = MagicMock(side_effect=RuntimeError("private-logger"))
+
+    with pytest.raises(RuntimeError, match="startup-primary"):
+        await bot.setup_hook()
+    resource.close.assert_awaited_once()
+    assert [record.stage for record in bot._shutdown_failures] == [
+        "post_draft_provider_shutdown_failed"
+    ]
+
+
+@pytest.mark.parametrize("path", ["normal", "startup"])
+@pytest.mark.parametrize("close_outcome", ["false", "exception"])
+@pytest.mark.asyncio
+async def test_provider_failure_is_recorded_before_safe_logging(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    close_outcome: str,
+) -> None:
+    events: list[str] = []
+
+    class RecordingFailures(list[object]):
+        def append(self, item: object) -> None:
+            events.append("record")
+            super().append(item)
+
+    bot = make_bot()
+    bot._shutdown_failures = RecordingFailures()  # type: ignore[assignment]
+    resource = MagicMock()
+    resource.close = AsyncMock(
+        return_value=False,
+        side_effect=(RuntimeError("private-provider") if close_outcome == "exception" else None),
+    )
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+
+    def failing_log(unused_marker: str) -> None:
+        events.append("log")
+        raise RuntimeError("private-logger")
+
+    bot.logger.error = MagicMock(side_effect=failing_log)
+    if path == "startup":
+        monkeypatch.setattr(
+            "discord_ai_reminder_bot.bot.client.verify_schema_revision",
+            AsyncMock(return_value="bf82b90bcd5e"),
+        )
+        bot.sync_guild_commands = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("startup-primary")
+        )
+        with pytest.raises(RuntimeError, match="startup-primary"):
+            await bot.setup_hook()
+    else:
+        await bot.close()
+
+    assert events[:2] == ["record", "log"]
+    assert bot._shutdown_failures[0].stage == "post_draft_provider_shutdown_failed"
+    resource.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("cleanup_failure_count", [0, 1, 3])
+@pytest.mark.asyncio
+async def test_bot_cancellation_identity_is_preserved_after_fixed_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch, cleanup_failure_count: int
+) -> None:
+    bot = make_bot()
+    original = asyncio.CancelledError("fixed-cancellation")
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=original)
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    stage_methods = (
+        "_shutdown_name_generation_loop",
+        "_shutdown_name_generation_worker",
+        "_shutdown_polling_worker",
+        "_shutdown_maintenance_worker",
+        "_shutdown_notification_worker",
+        "_shutdown_startup_task",
+        "_shutdown_confirmation_views",
+        "_shutdown_discord_client",
+        "_dispose_database_engine",
+    )
+    mocks: dict[str, AsyncMock] = {}
+    for index, name in enumerate(stage_methods):
+        mock = AsyncMock(
+            side_effect=(RuntimeError(f"private-{name}") if index < cleanup_failure_count else None)
+        )
+        mocks[name] = mock
+        monkeypatch.setattr(bot, name, mock)
+    bot.logger.error = MagicMock(side_effect=RuntimeError("private-logger"))
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await bot.close()
+
+    assert all(mock.await_count == 1 for mock in mocks.values())
+    resource.close.assert_awaited_once()
+    assert len(bot._shutdown_failures) == cleanup_failure_count + 1
+    assert all("private" not in repr(failure) for failure in bot._shutdown_failures)
+    assert bot.logger.error.call_count == cleanup_failure_count + 1
+    assert raised.value is original
 
 
 def test_formatter_suppresses_exception_details() -> None:

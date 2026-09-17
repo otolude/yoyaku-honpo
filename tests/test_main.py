@@ -2,6 +2,10 @@ import importlib
 from unittest.mock import MagicMock
 
 from discord_ai_reminder_bot.config import Settings
+from discord_ai_reminder_bot.post_draft_provider_config import (
+    OpenAIPostDraftProviderSettingsResult,
+    OpenAIPostDraftProviderSettingsState,
+)
 
 
 def settings() -> Settings:
@@ -37,6 +41,42 @@ def test_main_unwraps_token_only_for_run(monkeypatch) -> None:
     monkeypatch.setattr(module, "create_database_engine", lambda value: engine)
     monkeypatch.setattr(module, "create_session_factory", lambda value: "sessions")
     monkeypatch.setattr(module, "ReminderBot", lambda **kwargs: bot)
+    monkeypatch.setattr(
+        module,
+        "load_openai_post_draft_provider_settings",
+        lambda: OpenAIPostDraftProviderSettingsResult(
+            state=OpenAIPostDraftProviderSettingsState.UNCONFIGURED,
+            settings=None,
+            requested_enabled=False,
+            live_ready=False,
+            blockers=("production_effective_gate_closed",),
+        ),
+    )
 
     assert module.main() == 0
     bot.run.assert_called_once_with("main-boundary-token", reconnect=True, log_handler=None)
+
+
+def test_main_rejects_requested_provider_before_database_or_bot(monkeypatch) -> None:
+    module = importlib.import_module("discord_ai_reminder_bot.__main__")
+    configured = settings()
+    create_engine = MagicMock()
+    bot = MagicMock()
+    monkeypatch.setattr(module, "load_settings", lambda: configured)
+    monkeypatch.setattr(module, "configure_logging", MagicMock())
+    monkeypatch.setattr(module, "create_database_engine", create_engine)
+    monkeypatch.setattr(module, "ReminderBot", bot)
+    monkeypatch.setattr(
+        module,
+        "load_openai_post_draft_provider_settings",
+        lambda: OpenAIPostDraftProviderSettingsResult(
+            state=OpenAIPostDraftProviderSettingsState.BLOCKED,
+            settings=None,
+            requested_enabled=True,
+            live_ready=False,
+            blockers=("formal_model_selected",),
+        ),
+    )
+    assert module.main() == 1
+    create_engine.assert_not_called()
+    bot.assert_not_called()

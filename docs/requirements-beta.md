@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きMVP要件
 
-本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Acceptに加え、Phase 4Iの採用済みStage C範囲としてType Cancel、単発／毎日／毎週の予約作成と初回配信まで実Discord確認済みである。Stage C後には、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、Phase 4I画面と配信のmention安全性とMarkdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option A、Bot再起動／recovery Option Aも確認した。Stage Cは正式計画上の独立Stageではなく、Phase 4I全体の完了を意味しない。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態を維持する。残る非AI Phase 4I受入は0件である。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、Option A以外のUI timeout仕様も未決定である。Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認は別gateとして残る。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
+本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。Real Provider向けのoffline準備として、immutable request planからInput Tokens countとgeneration createを投影する二段階Adapter、process内guard、module内固定scenarioだけのscripted fake、offline harnessも実装したが、任意client注入経路はなく、production effective gateはfalse、実client生成と実API requestは各0である。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Acceptに加え、Phase 4Iの採用済みStage C範囲としてType Cancel、単発／毎日／毎週の予約作成と初回配信まで実Discord確認済みである。Stage C後には、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、Phase 4I画面と配信のmention安全性とMarkdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option A、Bot再起動／recovery Option Aも確認した。Stage Cは正式計画上の独立Stageではなく、Phase 4I全体の完了を意味しない。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態を維持する。残る非AI Phase 4I受入は0件である。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、Option A以外のUI timeout仕様も未決定である。Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認は別gateとして残る。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
 
 ### 目的と操作境界
 
@@ -41,9 +41,13 @@ Provider送信前に、目的と要点が外部AIへ送られること、個人�
 - Moderation API、自動retry、fallback model、複数候補、利用者文体学習はMVP対象外とする。
 - user単位とguild単位のrate limit、および再起動・複数processを越えて維持する運営者全体の永続Budgetを設ける。
 - Provider呼出前に1回分の利用枠と悲観最大費用を予約する。再生成、timeout、cancel後の結果不明、Provider結果不明も安全上1回分として扱い、返却しない。
+- Real Providerの入力tokenは、1回だけ構築したimmutable request planから投影するResponses Input Tokens APIで取得する。count前後とcreate直前に入力対象fieldのcanonical fingerprintを照合し、不一致、未知count、未知価格、上限超過ではcreateを呼ばない。Input Tokens APIも外部送信であり、live時の明示承認対象とする。
+- generation attempt、外部call、generation予約費用をprocess内で別々に単調消費し、失敗時も返却しない。generation予約費用はexact input tokenと設定済み最大output tokenをDecimalで計算するが、料金UNKNOWNのcount callを含む総外部費用hard capではない。
 - 表示額は設定済み単価、最大token、為替、安全係数に基づく悲観見積りであり、最終請求、税、為替、販売価格を保証しない。
 - 本文生成feature flagは初期無効とする。設定不正、Provider disabled、価格不明、Budget超過、rate limit、Provider障害ではAI生成だけをfail-closedとし、既存の本文手入力予約を維持する。
 - 実Provider、実Discord、ARM64 Linux実機の本文生成受入がすべて完了するまでfeature flagを有効化しない。
+
+正式modelは未選択とし、候補allowlistを`gpt-5.6-luna`と`gpt-5.6-terra`に限定する。正式model／snapshot、価格とlong-context policy、Input Tokens APIの料金・保持、専用credential、billing／budget、ZDR／Modified Abuse Monitoring、data residency、live承認、client shutdown strategy承認が1つでも欠ける間はOpenAI client生成前にfail-closedとする。現在は`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`であり、実client生成とAPI requestは0件である。production／offline ownerとgenerator、process guard、scripted fakeは別のruntime subclass禁止nominal型とし、offline factoryは固定scenarioとprimitive capだけを受け、任意client／callable／awaitable／例外class・instance／guardを受け取らない。offline例外分類policyはmodule内部へ固定する。close開始は最大1回とするが、任意のclose完了hard deadlineやcancellation後のpending task 0は保証しない。shutdown failureは固定分類をmemoryへ先に保存し、logging失敗でも残りのcleanupを試行する。process終了期限／subprocess隔離は将来判断とする。`store=False`はgeneration requestへ固定するが、標準abuse monitoringや他のdata controlsの代替とはしない。Japan regional storageをregional processingの保証として解釈しない。Structured Outputsと`tiktoken`は本準備実装へ導入しない。
 
 ### 利用枠の暫定値と商品仕様の境界
 
