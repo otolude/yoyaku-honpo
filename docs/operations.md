@@ -2,7 +2,7 @@
 
 ## Phase 4A: AI投稿本文下書きの将来運用境界
 
-本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Accept、Accept後のType Cancel、単発／毎日／毎週の予約作成と初回配信、stale Modal競合、2,000文字境界、mention／Markdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option Aまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。Stage CはPhase 4I内の採用済み作業区分であり、正式計画上の独立Stageではない。Phase 4I全体は未完了で、Bot再起動／recoveryの非AI受入が残る。Usage cleanupのruntime wiring／定期実行、Plan／Entitlementは未実装で、実Provider、AI生成／再生成、ARM64 Linux、正式model／価格およびOption A以外のUI timeout仕様は未確認または未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
+本項は段階実装中のPhase 4 MVPに対する運用要件である。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、Cancel、ManualのPreview／Edit／Accept、Accept後のType Cancel、単発／毎日／毎週の予約作成と初回配信、stale Modal競合、2,000文字境界、mention／Markdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option A、Bot再起動／recovery Option Aまで実Discord確認済みである。Provider gateはfalseで`DisabledPostDraftGenerator`を使い、Provider Settings loader、`AsyncOpenAI`、OpenAI Adapterはproduction Compositionへ接続しない。Stage CはPhase 4I内の採用済み作業区分であり、正式計画上の独立Stageではない。残る非AI Phase 4I受入は0件であるが、Phase 4全体または一般公開の完了を意味しない。Usage cleanupのruntime wiring／定期実行、Plan／Entitlementは未実装で、Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認、正式model／価格およびOption A以外のUI timeout仕様は未確認または未決定である。Phase 3の受入集計と第6項6Cの結果は変更せず、Phase 4は[専用受入表](manual-acceptance-ai-post-drafting.md)で管理する。
 
 - 本文生成feature flagは初期無効とし、実Provider、実Discord、ARM64 Linux実機の受入完了まで有効化しない。
 - AIは目的、要点、文体、長さから本文下書きを返すだけで、予約、DB保存、Discord投稿を行わない。
@@ -56,7 +56,7 @@ command定義が事前確認済みのremoteと同一であることを確かめ�
 
 Phase 4IではPost Draft Accept後のaccepted terminal contractを変更せず、独立Schedule Sessionへ現在本文を引き渡す構成を追加した。単発／毎日／毎週の選択・入力・編集・最終確認、validation失敗時の旧入力保持、owner／guild／channel認可、stale View、二重押下、Edit／Confirm／Cancel競合を自動テストで確認した。public ID生成と予約作成Port呼出しは各最大1回であり、`created`／`already_created`／`conflict`／`unknown`を固定結果として扱い、`unknown`後の再INSERT・retryは行わない。Discordのtransport／render／response失敗は、値を伴わない固定eventへ閉じる。
 
-初期の予約引渡しgateではDBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passedだった。その後に採用したStage C gateでは、read-only DB audit supportのfake boundary validationと実PostgreSQL integration、同一weekly Scheduleの必須22条件を確認し、full DB gate 2,567／2,567に成功した。さらに2,000文字lifecycle characterizationを追加した最新のfull DB gateは2,568 collected／2,568 passedで、failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0である。関連commitの通常push、Gitのlocal／origin同期、隔離資材のcleanupまで完了した。この記録の診断は固定値だけを用い、URL、credential、DB識別子、SQL、例外messageを出力しない。Phase 4受入集計は[専用受入表](manual-acceptance-ai-post-drafting.md)の確認済み55件／未確認17件（合計72件）を正本とする。
+初期の予約引渡しgateではDBなし通常pytest 2,048 passed／393 skipped、DB付き通常pytest 2,441 passed、PostgreSQL integration 397 passed、冪等作成22 passedだった。その後に採用したStage C gateでは、read-only DB audit supportのfake boundary validationと実PostgreSQL integration、同一weekly Scheduleの必須22条件を確認し、full DB gate 2,567／2,567に成功した。さらに2,000文字lifecycle characterizationを追加した最新のfull DB gateは2,568 collected／2,568 passedで、failed／error／skipped／warning／xfailおよびpending task／unclosed resource／timeout／signalは各0である。関連commitの通常push、Gitのlocal／origin同期、隔離資材のcleanupまで完了した。この記録の診断は固定値だけを用い、URL、credential、DB識別子、SQL、例外messageを出力しない。Phase 4受入集計は[専用受入表](manual-acceptance-ai-post-drafting.md)の確認済み56件／未確認16件（合計72件）を正本とする。
 
 Stage Cでは、手動観測としてType Cancel、単発／毎日／毎週の実入力・確定、予約作成、初回配信各1件を確認した。DB側では単発のUTC保存／handoff／lifecycle、毎日の初回Run succeededと翌日Run pending、毎週の初回Run succeededと翌週Run pendingをintegration testで確認した。Discord上の公開投稿とDB lifecycleは別の証拠として扱い、一方から他方を推測しない。Phase 4I全体の完了とは扱わない。
 
@@ -66,7 +66,9 @@ Stage C後の残存非AI受入では、ConfirmとCancelが先に有効な状態�
 
 Bot Send Messages権限喪失Option Aでは、開発専用投稿先channelのBot本人に対するSend Messagesだけをdenyし、他のrole、channel、権限は変更しなかった。対象channel公開投稿0とoperator通知1件・重複0は実Discord観測として記録する。配信後read-only DB監査ではSchedule／Run／DeliveryAttempt／OperationLogが1／1／1／2で、ScheduleとRunはfailed、Runは`RESULT_FAILED`かつ次回試行なし、DeliveryAttemptはfailed／permanent、OperationLogはcreated→failedだけだった。retry／duplicate／unknown／internal errorは各0である。保存済みのchannel overwriteへ手動で完全復元し、復元後監査でも新規Run／DeliveryAttempt、blind retry、再送が各0であることを確認した。実Discord観測、DB証拠、手動復元を区別し、production code／testを変更せず今回projectだけをcleanupした。userのView Channel、Embed Links、operator role、guild membership喪失は本Optionの対象外である。
 
-### Phase 4I 実Discord予約接続受入手順（Stage C完了・残件あり）
+Bot再起動／recovery Option Aでは、future once予約の配信前にforeground BotへCtrl+Cを1回送り、DBとDockerを保持したまま保存済みhashと一致する同一launcherを1回だけ再実行した。startup recovery完了後にworker pollを開始し、停止前後のSchedule active／Run pending graphが不変であることをread-only DB監査で確認した。実Discordの公開投稿は1件・重複0件であり、配信後DBはSchedule completed、Run succeeded／`RESULT_SUCCEEDED`、DeliveryAttempt 1件 succeeded、OperationLog created→completedだけ、retry／failed／unknown／internal error各0だった。実Discord観測、DB証拠、launcher hash、cleanupを別々に記録し、production code／testは変更していない。環境準備ではWindows excluded port rangeを回避するため、受入projectだけにhost port 20000のtemporary `ports: !override`とprivate DB URLの一時port変更を適用した。Migrationはdirect Alembicではなく正式wrapperを使用し、cleanup時に一時overrideとDB URL変更を完全復元したため、production変更ではない。
+
+### Phase 4I 実Discord予約接続受入手順（Stage C・後続非AI受入記録）
 
 実行時は開発・検証専用Application／Guild／channel、匿名合成本文、専用tmpfs PostgreSQLを使用し、Provider gateを無効のまま維持する。command定義を先に比較し、差分がない場合はguild syncを行わない。syncが必要な場合は受入本体から分けて明示承認を得る。通常開発DB、実利用者データ、実Provider、本番Applicationを混在させない。
 
@@ -78,7 +80,7 @@ Bot Send Messages権限喪失Option Aでは、開発専用投稿先channelのBot
 6. **完了:** 予約種別選択Viewをproduction設定の900秒以上保持し、timeout後のCancelが有効な状態遷移、予約、利用枠副作用、投稿を生じないOption A contractを確認した。Discord標準のgeneric failure表示を許容し、Bot独自表示とcomponent disableを要求しない。
 7. 成功ケースはcleanup前に期待する予約・実行行を保持したまま監査し、全業務table 0行を合格条件にしない。手動DELETEで状態を作らず、専用tmpfs projectの停止・cleanupによって隔離資材を破棄する。
 
-残る非AI受入は、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateであり、この手順の一部完了を転用しない。`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持し、これらのgateが完了して運用者が明示承認するまで変更しない。release／merge前には、その時点の新しいtipでCIを通す。
+残る非AI Phase 4I受入は0件である。Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateであり、この手順の完了を転用しない。`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持し、これらのgateが完了して運用者が明示承認するまで変更しない。release／merge前には、その時点の新しいtipでCIを通す。
 
 ## 1. 文書の目的と対象環境
 

@@ -22,7 +22,9 @@ Stage C後の残存非AI受入では、stale ModalとEdit／Confirm／Cancel競�
 
 Bot Send Messages権限喪失Option Aは、開発専用投稿先channelのBot本人に対するSend Messagesだけをdenyした実Discord観測と、failed／permanentで終端した単発Schedule graphの配信後・権限復元後read-only DB監査を合成して確認した。対象channel公開投稿、retry、blind retry、再送、新規Run／DeliveryAttemptは各0で、operator通知は1件・重複0だった。channel overwriteは変更前状態へ完全復元し、他のrole／channel／権限を変更せず、production code／testも変更せずcleanupした。userのView Channel、Embed Links、operator role、guild membership喪失は本Optionの対象外である。
 
-残るPhase 4I非AI受入は、対象時点が未確定のBot再起動／recoveryである。実Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残る。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み55件／未確認17件（合計72件）である。
+Bot再起動／recovery Option Aは、future once予約、配信前のgraceful Ctrl+C、DB／Docker保持、同一launcher・同一hashでの再起動、worker poll前のstartup recovery完了を確認した。停止前後のSchedule active／Run pending graphは不変で、実Discord公開投稿1件・重複0件、最終DB graphはSchedule completed、Run succeeded／`RESULT_SUCCEEDED`、DeliveryAttempt 1件 succeeded、OperationLog created→completedだけだった。retry／failed／unknown／internal errorは各0である。手動観測、read-only DB監査、launcher hash、cleanup証拠を分離し、production code／testを変更していない。
+
+残るPhase 4I非AI受入は0件である。Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認はfeature flag有効化前の別gateとして残るため、Phase 4全体または製品リリースの完了とは扱わない。正式計画にStage DまたはPhase 4Jは定義しない。Phase 4受入集計は確認済み56件／未確認16件（合計72件）である。
 
 本文生成feature flagは初期無効とし、`AI_POST_DRAFT_ENABLED=false`、`AI_NAME_GENERATION_ENABLED=false`、`AI_NAME_GENERATION_PROVIDER=disabled`を維持する。実Provider、AI有効時の実Discord、ARM64 Linux実機受入、運用承認がすべて完了するまで有効化しない。Phase 4の受入は[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)で管理し、release／merge前には新しいtipでCIを通す。
 
