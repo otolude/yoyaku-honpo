@@ -24,6 +24,7 @@ from discord_ai_reminder_bot.application.gateway import MessageGateway
 from discord_ai_reminder_bot.application.name_generation_worker import NameGenerationPollResult
 from discord_ai_reminder_bot.application.notification_recovery import NotificationRecoverySummary
 from discord_ai_reminder_bot.application.pending_recovery import PendingRecoverySummary
+from discord_ai_reminder_bot.application.shutdown_measurement import SHUTDOWN_STAGE_ORDER
 from discord_ai_reminder_bot.application.worker import PollResult
 from discord_ai_reminder_bot.bot.client import (
     MAINTENANCE_TIME,
@@ -1249,6 +1250,86 @@ async def test_concurrent_close_callers_share_one_task_and_cancellation_waits(
     commands.Bot.close.assert_awaited_once()  # type: ignore[attr-defined]
     bot.engine.dispose.assert_awaited_once()
     assert network_attempts == []
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancellation"])
+@pytest.mark.asyncio
+async def test_production_shutdown_trace_matches_independent_literal_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    expected_trace = (
+        "post_draft_provider",
+        "name_generation_polling",
+        "name_generation_worker",
+        "schedule_polling",
+        "maintenance",
+        "notification_polling",
+        "startup_recovery",
+        "confirmation_views",
+        "discord_client",
+        "database_engine",
+    )
+    expected_measurement_names = (
+        "POST_DRAFT_PROVIDER_RUNTIME_OWNER",
+        "NAME_GENERATION_POLLING_LOOP",
+        "NAME_GENERATION_WORKER",
+        "SCHEDULE_POLLING_LOOP",
+        "MAINTENANCE_LOOP",
+        "NOTIFICATION_POLLING_LOOP",
+        "STARTUP_RECOVERY_TASK",
+        "CONFIRMATION_VIEW_MODAL",
+        "DISCORD_CLIENT",
+        "DATABASE_ENGINE_DISPOSE",
+    )
+    trace: list[str] = []
+    bot = make_bot()
+    original_cancellation = asyncio.CancelledError("fixed production trace cancellation")
+
+    async def provider_close() -> bool:
+        trace.append("post_draft_provider")
+        return True
+
+    resource = MagicMock()
+    resource.close = AsyncMock(side_effect=provider_close)
+    bot._post_draft_provider_resource = resource  # type: ignore[assignment]
+    stage_methods = (
+        ("_shutdown_name_generation_loop", "name_generation_polling"),
+        ("_shutdown_name_generation_worker", "name_generation_worker"),
+        ("_shutdown_polling_worker", "schedule_polling"),
+        ("_shutdown_maintenance_worker", "maintenance"),
+        ("_shutdown_notification_worker", "notification_polling"),
+        ("_shutdown_startup_task", "startup_recovery"),
+        ("_shutdown_confirmation_views", "confirmation_views"),
+        ("_shutdown_discord_client", "discord_client"),
+        ("_dispose_database_engine", "database_engine"),
+    )
+
+    for index, (method_name, label) in enumerate(stage_methods):
+
+        async def traced_stage(
+            *,
+            stage_index: int = index,
+            stage_label: str = label,
+        ) -> None:
+            trace.append(stage_label)
+            if stage_index == 2 and outcome == "failure":
+                raise RuntimeError("fixed production trace failure")
+            if stage_index == 2 and outcome == "cancellation":
+                raise original_cancellation
+
+        monkeypatch.setattr(bot, method_name, traced_stage)
+
+    if outcome == "cancellation":
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await bot.close()
+        assert raised.value is original_cancellation
+    else:
+        await bot.close()
+
+    assert tuple(trace) == expected_trace
+    assert len(trace) == len(set(trace)) == 10
+    assert tuple(stage.name for stage in SHUTDOWN_STAGE_ORDER) == expected_measurement_names
 
 
 @pytest.mark.asyncio

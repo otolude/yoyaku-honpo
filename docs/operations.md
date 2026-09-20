@@ -8,7 +8,7 @@ Real Providerのoffline準備では、同一のimmutable planから[Responses In
 
 offline runtimeはmodule内の固定enum/dataとprimitive capだけからexact scripted fakeを内部生成し、任意client、borrowed HTTP client、client factory、callback、awaitable、例外class／instance、guard、lockをcallerから受け取らない。timeout／unavailable等の例外分類policyもmodule内部の固定scenarioに閉じる。production／offlineのowner・generator、process guard、scripted fakeは別のnominal型でruntime subclassを拒否し、guardとserial gateはowner内部で生成する。Botはexact production ownerだけを受理するためoffline ownerをproduction compositionへ登録できず、shutdown blockerの解除には通常設定ではなく明示的なsource変更とreviewを必要とする。
 
-client lifecycleでは`CLOSE_START_EXACTLY_ONCE`と`CLOSE_COMPLETION`を区別する。正式contractで確認するのはclose coroutine開始が最大1回であることと、cooperative終了時の完了だけである。任意のclose coroutineに対するin-process hard deadline、cancel-resistant close終了、cancellation後のbackground task 0は保証しない。`PROCESS_TERMINATION_DEADLINE`とsubprocess isolationは将来のsupervisor運用判断であり、現行実装には含めない。
+client lifecycleでは`CLOSE_START_EXACTLY_ONCE`と`CLOSE_COMPLETION`を区別する。正式contractで確認するのはclose coroutine開始が最大1回であることと、cooperative終了時の完了だけである。任意のclose coroutineに対するin-process hard deadline、cancel-resistant close終了、cancellation後のbackground task 0は保証しない。process終了方式はOption A（初期productionはLinux／systemd）を採用済みで、Option Bのsubprocess isolationは未採用である。具体的な`PROCESS_TERMINATION_DEADLINE`は無通信測定とLinux実機証拠のreview後に決定し、現行実装には含めない。
 
 Bot shutdownは最初のcallerが作る単一共有taskへprovider、name-generation、polling、notification、Discord client、DB engineのcleanupを集約する。各段階の失敗は固定stage／分類としてmemoryへ先に保存し、その後のbest-effort loggingが失敗しても後続段階を試行する。caller cancellationは共有taskをcancelせず、cleanupがcooperativeに完了した後で元のcancellationを再送出する。cleanup段階そのものが非協調的に停止する場合のin-process完了期限は保証しない。
 
@@ -227,14 +227,24 @@ python -m discord_ai_reminder_bot
 
 ## 7. 正常停止
 
-Botのターミナルで`Ctrl+C`を1回押し、プロセス終了まで待つ。実装上の停止順は次のとおりである。
+開発時はBotのターミナルで`Ctrl+C`を1回押し、プロセス終了まで待つ。初期production方針はLinux／systemdのOption A（cooperative closeとprocess supervisor deadline）で、WSLは開発確認だけに使い、Windows nativeとARM64は別gateとする。実装上の停止順は次のとおりである。
 
-1. closing状態にして新規処理開始を抑止
-2. 投稿、通知、maintenanceの3 loopをstop、cancel、Task回収
-3. startup Recovery Taskをcancel・回収
-4. 作成・削除の確認Viewを停止・回収
-5. Discord Clientをclose
-6. DB Engineをdispose
+1. closing状態にして新規処理開始を抑止し、Post Draft provider runtime ownerをclose
+2. Name Generation polling loopを停止・回収
+3. Name Generation worker、active task、結果確定、generatorを停止・回収
+4. Schedule polling loopを停止・回収
+5. maintenance loopを停止・回収
+6. notification polling loopを停止・回収
+7. startup Recovery Taskをcancel・回収
+8. 作成・削除の確認View／Modalを停止・回収
+9. Discord Clientをclose
+10. DB Engineをdispose
+
+shutdown measurement harnessは、この固定10段階、active provider operation、signal受理、deadlineの直列加算をfake clock／固定scenario／synthetic childだけで検証する。実OpenAI、Discord、DB、network、systemdは使用しない。configured hard bound、synthetic logical observation、WSL wall-clock observation、Linux real-host observation、approved production valueを別種別とし、観測値をhard boundや承認値へ自動昇格しない。全allowance、signal／scheduler allowance、明示safety marginがconfigured hard boundとして揃った場合だけ、整数millisecondを直列加算し、systemd用秒は安全側へ切り上げられる。
+
+現時点ではprovider outer timeout、各cleanup allowance、`TimeoutStopSec`はいずれも未採用である。WSL synthetic processは開発証拠に限り、Linux実機では将来、匿名化したmonotonic timestamp、service result、exit分類、process group残存、restart抑止、journal／OnFailure通知を確認する。これはallowanceが十分かを確認する証拠であり、観測最大値をhard boundに変換するものではない。`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`とReal Provider gate CLOSEDを維持し、具体値の採用、systemd unit作成、実host測定、reviewが完了するまで実clientを生成しない。
+
+将来のLinux実機測定では、`Type=simple`相当のforeground process、repositoryとは分離した`WorkingDirectory`と秘密配送、`KillSignal=SIGINT`候補、process group全体を最終停止できる`KillMode`、明示`TimeoutStopSec`、`SendSIGKILL=yes`、有限の`RestartSec`／`StartLimitIntervalSec`／`StartLimitBurst`、専用user／group、filesystem／network hardening、journalの固定event、`OnFailure`通知をreview対象とする。SIGINT候補は現行のPython runner／開発Ctrl+C経路へ合わせるためで、repository固有signal wiringとSIGTERM比較をLinux実機で確定するまで正式採用しない。graceful期限超過時はcgroup全体をhard terminateし、exitをforced terminationとして通知する。中断したprovider requestは結果UNKNOWN、usage reservation返却0、retry 0、blind retry 0とし、次回起動ではstartup recovery完了前にworkerを開始しない。`Restart=on-failure`候補とrestart-loop抑止値も実機証跡後に決める。scheduled delivery recoveryとAI本文生成requestの再送判断は混同しない。
 
 終了後、開発用PostgreSQLだけを停止する。
 

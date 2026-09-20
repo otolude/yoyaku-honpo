@@ -41,6 +41,10 @@ from discord_ai_reminder_bot.application.pending_recovery import (
 )
 from discord_ai_reminder_bot.application.recovery import ProcessingRecoveryService
 from discord_ai_reminder_bot.application.schedule_queries import ScheduleQueryService
+from discord_ai_reminder_bot.application.shutdown_measurement import (
+    SHUTDOWN_STAGE_ORDER,
+    ShutdownStage,
+)
 from discord_ai_reminder_bot.application.worker import PollingWorker
 from discord_ai_reminder_bot.bot.interactions import Phase1CommandTree
 from discord_ai_reminder_bot.bot.post_draft_runtime import (
@@ -697,7 +701,7 @@ class ReminderBot(commands.Bot):
         result = await self._close_post_draft_provider()
         if not result.completed:
             self._record_shutdown_failure(
-                "post_draft_provider_shutdown_failed",
+                ShutdownStage.POST_DRAFT_PROVIDER_RUNTIME_OWNER.value,
                 "cleanup_cancelled" if result.cancellation is not None else "cleanup_failed",
             )
         return result.cancellation
@@ -710,19 +714,19 @@ class ReminderBot(commands.Bot):
 
     async def _run_shared_shutdown(self) -> asyncio.CancelledError | None:
         cancellation = await self._attempt_provider_shutdown_stage()
-        stages = (
-            ("name_generation_loop_shutdown_failed", self._shutdown_name_generation_loop),
-            ("name_generation_worker_shutdown_failed", self._shutdown_name_generation_worker),
-            ("polling_worker_shutdown_failed", self._shutdown_polling_worker),
-            ("maintenance_worker_shutdown_failed", self._shutdown_maintenance_worker),
-            ("notification_worker_shutdown_failed", self._shutdown_notification_worker),
-            ("startup_task_shutdown_failed", self._shutdown_startup_task),
-            ("confirmation_view_shutdown_failed", self._shutdown_confirmation_views),
-            ("discord_client_close_failed", self._shutdown_discord_client),
-            ("database_engine_dispose_failed", self._dispose_database_engine),
-        )
-        for name, operation in stages:
-            stage_cancellation = await self._attempt_shutdown_stage(name, operation)
+        operations: dict[ShutdownStage, Callable[[], Awaitable[object]]] = {
+            ShutdownStage.NAME_GENERATION_POLLING_LOOP: self._shutdown_name_generation_loop,
+            ShutdownStage.NAME_GENERATION_WORKER: self._shutdown_name_generation_worker,
+            ShutdownStage.SCHEDULE_POLLING_LOOP: self._shutdown_polling_worker,
+            ShutdownStage.MAINTENANCE_LOOP: self._shutdown_maintenance_worker,
+            ShutdownStage.NOTIFICATION_POLLING_LOOP: self._shutdown_notification_worker,
+            ShutdownStage.STARTUP_RECOVERY_TASK: self._shutdown_startup_task,
+            ShutdownStage.CONFIRMATION_VIEW_MODAL: self._shutdown_confirmation_views,
+            ShutdownStage.DISCORD_CLIENT: self._shutdown_discord_client,
+            ShutdownStage.DATABASE_ENGINE_DISPOSE: self._dispose_database_engine,
+        }
+        for stage in SHUTDOWN_STAGE_ORDER[1:]:
+            stage_cancellation = await self._attempt_shutdown_stage(stage.value, operations[stage])
             cancellation = cancellation or stage_cancellation
         self._closed_once = True
         return cancellation
