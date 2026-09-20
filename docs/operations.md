@@ -242,9 +242,28 @@ python -m discord_ai_reminder_bot
 
 shutdown measurement harnessは、この固定10段階、active provider operation、signal受理、deadlineの直列加算をfake clock／固定scenario／synthetic childだけで検証する。実OpenAI、Discord、DB、network、systemdは使用しない。configured hard bound、synthetic logical observation、WSL wall-clock observation、Linux real-host observation、approved production valueを別種別とし、観測値をhard boundや承認値へ自動昇格しない。全allowance、signal／scheduler allowance、明示safety marginがconfigured hard boundとして揃った場合だけ、整数millisecondを直列加算し、systemd用秒は安全側へ切り上げられる。
 
-現時点ではprovider outer timeout、各cleanup allowance、`TimeoutStopSec`はいずれも未採用である。WSL synthetic processは開発証拠に限り、Linux実機では将来、匿名化したmonotonic timestamp、service result、exit分類、process group残存、restart抑止、journal／OnFailure通知を確認する。これはallowanceが十分かを確認する証拠であり、観測最大値をhard boundに変換するものではない。`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`とReal Provider gate CLOSEDを維持し、具体値の採用、systemd unit作成、実host測定、reviewが完了するまで実clientを生成しない。
+現時点ではprovider outer timeout、各cleanup allowance、`TimeoutStopSec`はいずれも未採用である。WSL synthetic processは開発証拠に限り、Linux実機では将来、匿名化したmonotonic timestamp、service result、exit分類、process group残存、restart抑止、journal／OnFailure通知を確認する。これはallowanceが十分かを確認する証拠であり、観測最大値をhard boundに変換するものではない。`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`とReal Provider gate CLOSEDを維持し、具体値の採用、concrete systemd unit生成、実host測定、reviewが完了するまで実clientを生成しない。
 
 将来のLinux実機測定では、`Type=simple`相当のforeground process、repositoryとは分離した`WorkingDirectory`と秘密配送、`KillSignal=SIGINT`候補、process group全体を最終停止できる`KillMode`、明示`TimeoutStopSec`、`SendSIGKILL=yes`、有限の`RestartSec`／`StartLimitIntervalSec`／`StartLimitBurst`、専用user／group、filesystem／network hardening、journalの固定event、`OnFailure`通知をreview対象とする。SIGINT候補は現行のPython runner／開発Ctrl+C経路へ合わせるためで、repository固有signal wiringとSIGTERM比較をLinux実機で確定するまで正式採用しない。graceful期限超過時はcgroup全体をhard terminateし、exitをforced terminationとして通知する。中断したprovider requestは結果UNKNOWN、usage reservation返却0、retry 0、blind retry 0とし、次回起動ではstartup recovery完了前にworkerを開始しない。`Restart=on-failure`候補とrestart-loop抑止値も実機証跡後に決める。scheduled delivery recoveryとAI本文生成requestの再送判断は混同しない。
+
+### 7.1 fail-closed systemd deployment preparation
+
+repositoryの`deployment/systemd/discord-ai-reminder-bot.service.in`は直接install禁止のreview templateであり、systemd unitではない。未解決token、非absolute `ExecStart` placeholderを含み、`[Install]` sectionを持たない。factory-only candidate builderはservice user／group、immutable release `WorkingDirectory`、absolute Python executableと`-m discord_ai_reminder_bot`、EnvironmentFile参照、停止・再起動・hardening値、`startup_recovery_complete` readiness marker、release commit、rollback commitを全て明示しなければvalidにならない。candidate／snapshotの直接constructor、caller指定fingerprint、mutable input保持は許可しない。数値文字列は最大許容値から導出した桁数をregex・整数変換より前に検査し、巨大値をcanonicalizeしない。`CapabilityBoundingSet`は少なくとも1件の明示allowlistを必須とし、空値のsystemd意味は未承認のため、omission・空assignment・deny-allへの変換をしない。値にdefaultはなく、`CLIENT_SHUTDOWN_STRATEGY_APPROVED=false`とinstallable artifact承認falseの間はconcrete unit text、installable file、activation commandを生成しない。環境変数だけではこのsource governanceを解除できない。現行artifactはsystemctl、sudo、install、enable、start、stop、restart、daemon-reloadを実行または提供しない。
+
+readinessはsystemd上のprocess生存と業務処理readyを区別する。`database_schema_verified`はschema確認の固定marker、`startup_recovery_complete`はRecovery完了後かつpolling開始前の業務処理ready候補である。将来の確認はmarker文字列だけの全journal検索を禁止し、current boot、current invocation、systemdが記録した今回の起動時刻以後に限定する。current MainPID／invocation identityを再確認した上で、同一invocationの`database_schema_verified`の後に`startup_recovery_complete`が1回だけ出たことを確認する。過去boot、以前のrestart、別unit、重複markerはreadyとして拒否し、PID、invocation ID、path、private値を最終報告へ反射しない。stdout／stderrのjournald収集はcandidate contractだが、raw environment、credential、private値をmarkerへ追加しない。HTTP health endpointと`sd_notify`は未実装である。
+
+将来のdeploy／rollbackは次の順に別々の承認を得る。
+
+1. immutable release directory、dedicated user／group、unit・release・virtualenv・EnvironmentFileのownerとpermissionを決める。user／group作成は管理者操作であり、本準備では行わない。
+2. network承認後にrelease専用virtualenvへ依存を導入する。secret値をcopy、commit、表示せず、EnvironmentFileには参照contractだけを適用する。
+3. Botを起動せず、正式Migration wrapper `python -m discord_ai_reminder_bot.infrastructure.database.migrate`でtarget、DB名、confirmationを検証してMigrationを実行する。direct Alembicは使用しない。
+4. candidate validation、native Linux測定、deadline値とsignal／restart／hardeningのreviewを完了する。
+5. 別の明示承認で初めてconcrete unit rendererを実装し、生成unitをreviewする。その後のinstall、daemon-reload、enable、startも個別の管理者操作とする。
+6. `database_schema_verified`と`startup_recovery_complete`を値なしの固定journal markerとして確認し、restart、shutdown、startup recovery、process group残存0を確認する。
+7. rollbackではserviceを停止し、release identityとownershipを再確認してから、承認済みrollback commitのimmutable releaseと対応virtualenvへ切り替え、同じcandidate／unit reviewを繰り返す。DB downgradeを自動実行しない。schema互換性が確認できなければrollbackを中止し、backup／forward fix手順へ移る。保持対象はcurrent releaseと直前のrollback可能releaseを基本上限候補（bounded retention）とし、実際の保持数／期間は運用承認まで未決定とする。無制限保持は禁止し、rollback window終了後はfailed release、不要virtualenv、build artifactを明示手順で削除する。
+8. VM削除時はdefinition、virtual disk、snapshot、saved state、ISO attachmentを個別に確認して削除対象を確定する。local VM基本経路はcloud料金0だが、電力・disk・任意supportは別である。cloud/VPSは作成前に料金、disk、snapshot、IP、egress、backup、停止中課金を提示して明示承認を得る。VM停止だけでは課金停止とみなさず、削除後にcompute、disk、snapshot、IP、backup等の残存と請求状態を確認する。課金停止を確認できなければcleanup完了と分類しない。
+
+この準備はsystemd運用、Linux real-host測定、deadline、hardening値、private設定、Real Provider、AI有効時実Discord、運用承認を完了扱いにしない。Phase 4受入集計は確認済み56件／未確認16件（合計72件）のままである。
 
 終了後、開発用PostgreSQLだけを停止する。
 

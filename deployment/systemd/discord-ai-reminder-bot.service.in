@@ -1,0 +1,43 @@
+# DIRECT INSTALL IS PROHIBITED: incomplete review template, not a systemd unit.
+# This file must never be copied to a systemd unit directory or passed to systemd.
+# Every @@...@@ token requires an approved candidate and a separately reviewed renderer.
+
+[Unit]
+Description=Discord AI Reminder Bot (@@RELEASE_IDENTIFIER@@)
+StartLimitIntervalSec=@@START_LIMIT_INTERVAL_SEC@@
+StartLimitBurst=@@START_LIMIT_BURST@@
+
+[Service]
+Type=simple
+User=@@SERVICE_USER@@
+Group=@@SERVICE_GROUP@@
+WorkingDirectory=@@ABSOLUTE_IMMUTABLE_WORKING_DIRECTORY@@
+EnvironmentFile=@@ABSOLUTE_ENVIRONMENT_FILE_REFERENCE@@
+# Rendered ExecStart must be an absolute Python path followed by -m discord_ai_reminder_bot.
+ExecStart=@@ABSOLUTE_EXEC_START@@
+
+KillSignal=@@KILL_SIGNAL@@
+KillMode=@@KILL_MODE@@
+TimeoutStopSec=@@TIMEOUT_STOP_SEC@@
+SendSIGKILL=@@SEND_SIGKILL@@
+Restart=@@RESTART_POLICY@@
+RestartSec=@@RESTART_SEC@@
+
+NoNewPrivileges=@@NO_NEW_PRIVILEGES@@
+PrivateTmp=@@PRIVATE_TMP@@
+ProtectSystem=@@PROTECT_SYSTEM@@
+ProtectHome=@@PROTECT_HOME@@
+# Empty CapabilityBoundingSet semantics are unapproved and therefore prohibited.
+CapabilityBoundingSet=@@CAPABILITY_BOUNDING_SET@@
+RestrictAddressFamilies=@@RESTRICT_ADDRESS_FAMILIES@@
+LockPersonality=@@LOCK_PERSONALITY@@
+RestrictSUIDSGID=@@RESTRICT_SUID_SGID@@
+UMask=@@UMASK@@
+
+StandardOutput=journal
+StandardError=journal
+# Process liveness is not business readiness.
+# Approved business-readiness marker: @@READINESS_JOURNAL_MARKER@@
+# Rollback target reviewed with this candidate: @@ROLLBACK_TARGET@@
+
+# The activation section is intentionally absent. Activation is not approved.
