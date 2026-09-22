@@ -6,7 +6,8 @@ from typing import Any, Self
 
 import pytest
 from sqlalchemy import literal, select
-from support.read_only_database_audit import (
+
+from tests.support.read_only_database_audit import (
     AuditStage,
     CleanupFailure,
     ConditionState,

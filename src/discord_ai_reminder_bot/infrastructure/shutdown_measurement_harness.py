@@ -34,27 +34,30 @@ class SyntheticChildScenario(StrEnum):
 
 
 class _SyntheticAuditGuard:
-    """Fail closed if the child unexpectedly attempts external capabilities."""
+    """Fail closed if the synthetic child attempts external capabilities."""
 
     _BLOCKED_EVENTS = frozenset(
         {
             "socket.bind",
             "socket.connect",
+            "socket.connect_ex",
+            "socket.sendmsg",
+            "socket.sendto",
             "socket.getaddrinfo",
+            "socket.getnameinfo",
             "socket.gethostbyaddr",
             "socket.gethostbyname",
             "socket.gethostbyname_ex",
             "subprocess.Popen",
+            "os.system",
+            "os.posix_spawn",
+            "os.spawn",
         }
     )
-
-    def __init__(self) -> None:
-        self.blocked_attempt_count = 0
 
     def __call__(self, event: str, args: tuple[object, ...]) -> None:
         del args
         if event in self._BLOCKED_EVENTS:
-            self.blocked_attempt_count += 1
             raise RuntimeError("synthetic child capability blocked")
 
 
@@ -132,8 +135,7 @@ def main(argv: tuple[str, ...] | None = None) -> int:
     if not args.synthetic_child:
         raise SystemExit("synthetic child mode is required")
     scenario = SyntheticChildScenario(args.scenario)
-    guard = _SyntheticAuditGuard()
-    sys.addaudithook(guard)
+    sys.addaudithook(_SyntheticAuditGuard())
     if scenario is SyntheticChildScenario.READY_BEFORE_HANDLER:
 
         def _exit_before_ready(signum: int, frame: object) -> NoReturn:

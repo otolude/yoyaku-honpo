@@ -1094,19 +1094,58 @@ def test_pipe_close_failure_does_not_skip_the_other_pipe() -> None:
     assert second.closed is True
 
 
-def test_synthetic_child_has_fixed_modes_and_blocks_capability_audit_events() -> None:
+def test_synthetic_child_has_fixed_modes_and_fails_closed_capability_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parser = shutdown_measurement_harness._parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["--synthetic-child", "--scenario", "unknown"])
+
+    assert shutdown_measurement_harness._SyntheticAuditGuard._BLOCKED_EVENTS == {
+        "socket.bind",
+        "socket.connect",
+        "socket.connect_ex",
+        "socket.sendmsg",
+        "socket.sendto",
+        "socket.getaddrinfo",
+        "socket.getnameinfo",
+        "socket.gethostbyaddr",
+        "socket.gethostbyname",
+        "socket.gethostbyname_ex",
+        "subprocess.Popen",
+        "os.system",
+        "os.posix_spawn",
+        "os.spawn",
+    }
+    audit_guard = shutdown_measurement_harness._SyntheticAuditGuard()
+    for event in shutdown_measurement_harness._SyntheticAuditGuard._BLOCKED_EVENTS:
+        canary = f"SENSITIVE_AUDIT_CANARY_{event}"
+        with pytest.raises(RuntimeError, match="synthetic child capability blocked") as caught:
+            audit_guard(event, (canary,))
+        rendered = "".join(traceback.format_exception(caught.value))
+        assert caught.value.__cause__ is None
+        assert canary not in str(caught.value)
+        assert canary not in rendered
+
+    registered: list[object] = []
+
+    def suppress_child(coroutine: object) -> int:
+        coroutine.close()  # type: ignore[union-attr]
+        return 0
+
+    monkeypatch.setattr(shutdown_measurement_harness.sys, "addaudithook", registered.append)
+    monkeypatch.setattr(shutdown_measurement_harness.asyncio, "run", suppress_child)
+    assert (
+        shutdown_measurement_harness.main(("--synthetic-child", "--scenario", "immediate-success"))
+        == 0
+    )
+    assert len(registered) == 1
+    assert type(registered[0]) is shutdown_measurement_harness._SyntheticAuditGuard
+
+    registered.clear()
     with pytest.raises(SystemExit, match="synthetic child mode"):
         shutdown_measurement_harness.main(())
-
-    guard = shutdown_measurement_harness._SyntheticAuditGuard()
-    with pytest.raises(RuntimeError, match="capability blocked"):
-        guard("socket.connect", ())
-    with pytest.raises(RuntimeError, match="capability blocked"):
-        guard("subprocess.Popen", ())
-    assert guard.blocked_attempt_count == 2
+    assert registered == []
 
 
 def test_synthetic_child_source_has_no_resource_or_escape_imports() -> None:
