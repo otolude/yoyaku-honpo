@@ -1187,4 +1187,4 @@ def test_shutdown_docs_have_selected_option_a_without_stale_current_state() -> N
     assert "process終了方式はOption A" in text
     assert "Option Bのsubprocess isolationは未採用" in text
     assert "CLIENT_SHUTDOWN_STRATEGY_APPROVED=false" in text
-    assert "確認済み56件／未確認16件（合計72件）" in text
+    assert "確認済み55件／未確認17件（合計72件）" in text

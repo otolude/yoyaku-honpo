@@ -12,6 +12,7 @@ import traceback
 from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -219,6 +220,13 @@ def test_provider_is_disabled_and_unconfigured_by_default(
     assert config_module().PRODUCTION_REAL_PROVIDER_GATE_OPEN is False
 
 
+def test_env_example_documents_the_closed_provider_without_a_credential_value() -> None:
+    text = (Path(__file__).parents[1] / ".env.example").read_text(encoding="utf-8")
+    assert text.count("AI_POST_DRAFT_PROVIDER_ENABLED=false") == 1
+    assert "\nAI_POST_DRAFT_OPENAI_API_KEY=" not in text
+    assert API_KEY_CANARY not in text
+
+
 @pytest.mark.parametrize(
     "missing",
     tuple(
@@ -342,6 +350,20 @@ def test_inner_timeout_must_be_less_than_outer(
     assert result.state is config_module().OpenAIPostDraftProviderSettingsState.INVALID
 
 
+def test_external_call_cap_must_cover_the_fixed_two_call_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = load(
+        monkeypatch,
+        **all_provider_values(
+            AI_POST_DRAFT_OPENAI_GENERATION_ATTEMPT_CAP="2",
+            AI_POST_DRAFT_OPENAI_EXTERNAL_CALL_CAP="3",
+        ),
+    )
+    assert result.state is config_module().OpenAIPostDraftProviderSettingsState.INVALID
+    assert result.blockers == ("invalid_provider_settings",)
+
+
 @pytest.mark.parametrize("blocker", LIVE_READINESS_CHECKS)
 def test_every_live_readiness_blocker_remains_closed(
     monkeypatch: pytest.MonkeyPatch, blocker: str
@@ -389,6 +411,292 @@ def test_client_construction_is_rejected_before_sdk_import(
     with pytest.raises(ValueError, match="not live-ready"):
         asyncio.run(adapter_module()._create_openai_post_draft_runtime_owner(settings))
     assert constructed == 0
+
+
+def test_production_owner_does_not_depend_on_the_offline_scripted_runtime() -> None:
+    source = __import__("inspect").getsource(adapter_module().ProductionOpenAIPostDraftRuntimeOwner)
+    assert "OfflineScripted" not in source
+    assert "tests.support" not in source
+
+
+def _production_owner_for_direct_offline_test(monkeypatch: pytest.MonkeyPatch, client: object):
+    config = config_module()
+    adapter = adapter_module()
+    monkeypatch.setattr(config, "PRODUCTION_REAL_PROVIDER_GATE_OPEN", True)
+    monkeypatch.setattr(config, "CLIENT_SHUTDOWN_STRATEGY_APPROVED", True)
+    monkeypatch.setattr(adapter, "PRODUCTION_REAL_PROVIDER_GATE_OPEN", True)
+    monkeypatch.setattr(adapter, "CLIENT_SHUTDOWN_STRATEGY_APPROVED", True)
+    values = all_provider_values(
+        AI_POST_DRAFT_OPENAI_INNER_TIMEOUT_SECONDS="0.01",
+        AI_POST_DRAFT_OPENAI_OUTER_TIMEOUT_SECONDS="0.02",
+    )
+    for field in LIVE_READINESS_CHECKS:
+        alias = config.OpenAIPostDraftProviderSettings.model_fields[field].validation_alias
+        assert isinstance(alias, str)
+        values[alias] = "true"
+    settings = config.OpenAIPostDraftProviderSettings(_env_file=None, **values)
+    owner_type = adapter.ProductionOpenAIPostDraftRuntimeOwner
+    return owner_type(
+        _construction_token=owner_type._CONSTRUCTION_TOKEN,
+        client=client,
+        settings=settings,
+    )
+
+
+class _DirectProductionClient:
+    def __init__(self, count, create) -> None:
+        self.responses = SimpleNamespace(
+            input_tokens=SimpleNamespace(count=count),
+            create=create,
+        )
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_production_close_cancels_and_reaps_the_tracked_inflight_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+
+    async def count(**_kwargs: object) -> object:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def create(**_kwargs: object) -> object:
+        raise AssertionError("create must not start after shutdown")
+
+    client = _DirectProductionClient(count, create)
+    owner = _production_owner_for_direct_offline_test(monkeypatch, client)
+    task = asyncio.create_task(owner.create_generator().generate(request()))
+    await started.wait()
+
+    assert await owner.close() is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client.close_calls == 1
+    assert owner._active_task is None  # type: ignore[attr-defined]
+    assert owner._active_task_cancel_count == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_production_closing_rejects_create_and_a_concurrent_new_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"count": 0, "create": 0}
+
+    async def count(**_kwargs: object) -> object:
+        calls["count"] += 1
+        started.set()
+        await release.wait()
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        calls["create"] += 1
+        raise AssertionError("create must not start after CLOSING")
+
+    client = _DirectProductionClient(count, create)
+    owner = _production_owner_for_direct_offline_test(monkeypatch, client)
+    generator = owner.create_generator()
+    first = asyncio.create_task(generator.generate(request()))
+    await started.wait()
+    closing = asyncio.create_task(owner.close())
+    await asyncio.sleep(0)
+    with pytest.raises(PostDraftUnavailableError):
+        await generator.generate(request())
+    release.set()
+    with pytest.raises(PostDraftUnavailableError):
+        await first
+    assert await closing is True
+    assert calls == {"count": 1, "create": 0}
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_production_close_never_reports_closed_while_cancelled_task_is_still_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def count(**_kwargs: object) -> object:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        raise AssertionError("create must not start after CLOSING")
+
+    client = _DirectProductionClient(count, create)
+    owner = _production_owner_for_direct_offline_test(monkeypatch, client)
+    task = asyncio.create_task(owner.create_generator().generate(request()))
+    await started.wait()
+
+    assert await owner.close() is False
+    assert owner.closed is False
+    assert owner.closing is True
+    assert client.close_calls == 0
+    assert owner._active_task_cancel_count == 1  # type: ignore[attr-defined]
+    release.set()
+    with pytest.raises(PostDraftUnavailableError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_production_create_cancel_ignore_cannot_return_a_success_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_started = asyncio.Event()
+    calls = {"count": 0, "create": 0}
+    canary = "private-create-response-canary"
+
+    async def count(**_kwargs: object) -> object:
+        calls["count"] += 1
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        calls["create"] += 1
+        create_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            message = SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=canary)],
+            )
+            return SimpleNamespace(status="completed", output=[message], output_text=canary)
+        raise AssertionError("create must be cancelled exactly once")
+
+    client = _DirectProductionClient(count, create)
+    owner = _production_owner_for_direct_offline_test(monkeypatch, client)
+    task = asyncio.create_task(owner.create_generator().generate(request()))
+    await create_started.wait()
+
+    assert await owner.close() is True
+    with pytest.raises(PostDraftUnavailableError) as raised:
+        await task
+    assert canary not in f"{raised.value!r} {raised.value}"
+    assert calls == {"count": 1, "create": 1}
+    assert owner._active_task is None  # type: ignore[attr-defined]
+    assert owner._active_task_cancel_count == 1  # type: ignore[attr-defined]
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_production_response_property_failure_is_non_reflecting_invalid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "private-response-property-canary"
+
+    class BrokenResponse:
+        @property
+        def status(self) -> object:
+            raise RuntimeError(canary)
+
+    async def count(**_kwargs: object) -> object:
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        return BrokenResponse()
+
+    owner = _production_owner_for_direct_offline_test(
+        monkeypatch, _DirectProductionClient(count, create)
+    )
+    with pytest.raises(PostDraftInvalidResponseError) as raised:
+        await owner.create_generator().generate(request())
+    observed = f"{raised.value!r} {raised.value}"
+    assert canary not in observed
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_production_nested_response_iterator_failure_is_non_reflecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "private-response-iterator-canary"
+
+    class BrokenOutput(list[object]):
+        def __iter__(self):
+            raise RuntimeError(canary)
+
+    class BrokenResponse:
+        status = "completed"
+        output = BrokenOutput([SimpleNamespace(type="message", content=[])])
+        output_text = "ignored"
+
+    async def count(**_kwargs: object) -> object:
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        return BrokenResponse()
+
+    owner = _production_owner_for_direct_offline_test(
+        monkeypatch, _DirectProductionClient(count, create)
+    )
+    with pytest.raises(PostDraftInvalidResponseError) as raised:
+        await owner.create_generator().generate(request())
+    assert canary not in f"{raised.value!r} {raised.value}"
+
+
+@pytest.mark.asyncio
+async def test_production_count_property_failure_is_non_reflecting_invalid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "private-count-property-canary"
+
+    class BrokenCount:
+        @property
+        def input_tokens(self) -> object:
+            raise RuntimeError(canary)
+
+    async def count(**_kwargs: object) -> object:
+        return BrokenCount()
+
+    async def create(**_kwargs: object) -> object:
+        raise AssertionError("create must not start after invalid count")
+
+    owner = _production_owner_for_direct_offline_test(
+        monkeypatch, _DirectProductionClient(count, create)
+    )
+    with pytest.raises(PostDraftInvalidResponseError) as raised:
+        await owner.create_generator().generate(request())
+    assert canary not in f"{raised.value!r} {raised.value}"
+
+
+@pytest.mark.asyncio
+async def test_production_response_special_exception_identity_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = KeyboardInterrupt("private-keyboard-canary")
+
+    class BrokenResponse:
+        @property
+        def status(self) -> object:
+            raise primary
+
+    async def count(**_kwargs: object) -> object:
+        return SimpleNamespace(input_tokens=1, object="response.input_tokens")
+
+    async def create(**_kwargs: object) -> object:
+        return BrokenResponse()
+
+    owner = _production_owner_for_direct_offline_test(
+        monkeypatch, _DirectProductionClient(count, create)
+    )
+    try:
+        await owner.create_generator().generate(request())
+    except KeyboardInterrupt as error:
+        assert error is primary
+    else:
+        raise AssertionError("KeyboardInterrupt must remain authoritative")
 
 
 def test_shutdown_strategy_cannot_be_approved_by_environment_string(

@@ -2,6 +2,8 @@
 
 ## Phase 4A: AI投稿本文下書きMVP要件
 
+production provider adapterは設定を読んだだけではSDKをimport/constructしない。source release gate、shutdown approval、usage feature flag、complete readinessが全て成立するまでprovider object、external call、usage reservationは0である。Input Tokens countの料金・保持・総費用capは未確定のため、このreleaseのlive-readyはfalseである。
+
 本項は段階実装中のPhase 4の要件であり、一般提供可能なBot機能を示さない。Provider非依存Domain／Application、本文専用Usage schemaとrevision `c72e91f4b6a3`、PostgreSQL Usage Repository、Usage reservation orchestration／cleanup、独立Usage Settings、無効Composition、production未接続のOpenAI Responses API Adapter、UI Session／Controller、Discord UI部品、`PostDraftRuntime`は実装済みである。Real Provider向けのoffline準備として、immutable request planからInput Tokens countとgeneration createを投影する二段階Adapter、process内guard、module内固定scenarioだけのscripted fake、offline harnessも実装したが、任意client注入経路はなく、production effective gateはfalse、実client生成と実API requestは各0である。`/post compose`は既存guild限定`/post` Groupへ登録し、開発・検証専用Application／GuildでAI無効表示、初期Mode／PreviewのCancel、ManualのPreview／Edit／Acceptに加え、Phase 4Iの採用済みStage C範囲としてType Cancel、単発／毎日／毎週の予約作成と初回配信まで実Discord確認済みである。Stage C後には、stale ModalとEdit／Confirm／Cancel競合、2,000文字の入力・保存・1回配信、Phase 4I画面と配信のmention安全性とMarkdown／URL表示、予約種別選択ViewのOption A timeout、Bot本人のSend Messages権限喪失Option A、Bot再起動／recovery Option Aも確認した。Stage Cは正式計画上の独立Stageではなく、Phase 4I全体の完了を意味しない。Provider gateはfalseで、AI buttonは「AIで作成（準備中）」のdisabled状態を維持する。残る非AI Phase 4I受入は0件である。実Provider、AI生成／再生成、Usage cleanupのruntime wiring／定期実行、Plan／Entitlementとプラン別利用枠は未実装・未確認で、正式model、価格・費用承認、Option A以外のUI timeout仕様も未決定である。Real Provider、AI有効時の実Discord、ARM64 Linux、運用承認は別gateとして残る。Phase 3の確認済み125件／未確認2件（合計127件）および第6項6Cの4件／4件は変更せず、受入状態を[AI投稿本文下書き受入表](manual-acceptance-ai-post-drafting.md)へ分離する。
 
 ### 目的と操作境界

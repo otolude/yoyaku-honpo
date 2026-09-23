@@ -4,6 +4,8 @@ AI投稿本文下書きをPhase 3から分離して管理する。Phase 3の確�
 
 ## 現在の判定
 
+production adapter/lifecycleのoffline contract実装は、source-controlled gateが閉じた状態だけを対象とする。count/createのretry・failover・background continuationはなく、provider failureでは既存Manual導線を維持する。これは実Provider、AI有効Discord、P01–P06、R06–R09/R12、G01–G04、ARM64 L01/L02の受入をconfirmedへ変更しない。
+
 - Phase 4A 文書化: 完了
 - Provider非依存Domain型とvalidation、one-shot Application Service、Usage Repository Port、Budget／rate limit／receipt Domain: 実装・自動隔離テスト済み
 - 本文専用ORM schema: `post_draft_operator_budget_buckets`、`post_draft_rate_limit_buckets`、`post_draft_usage_reservation_receipts`の3 tableとrevision `c72e91f4b6a3`を実装・実DB検証済み

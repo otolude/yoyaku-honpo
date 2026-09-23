@@ -2,6 +2,8 @@
 
 ## Phase 4A: AI投稿本文下書きMVP設計
 
+production runtimeはoffline scripted fakeと別のnominal owner/generatorであり、SDKはsource gate検証後にのみlazy constructする。ownerは一方向OPEN→CLOSING→CLOSED、serial in-flight最大1、count/create各最大1、SDK retry0、close最大1を固定する。gate/feature/shutdown approvalはfalseのままであり、この実装はlive API承認を意味しない。
+
 ### Phase 4D schema実DB検証と未決定Quota境界
 
 本文専用Budget／rate limit schemaのrevision `c72e91f4b6a3`は、専用tmpfs PostgreSQL 18.4でcurrent、single heads、checkまで確認した。新3 tableの全14 CHECK制約はORM metadataと一致し、hash付き短縮名、naming conventionの二重prefix、63-byte超過はない。空DB downgradeとheadへの再upgradeに成功し、新3 tableへ匿名合成行を1件ずつ置いた試験ではdowngradeを拒否してrevision、schema、対象データを保持した。最終11業務tableは各0件で、既存DB・Volumeへの影響はなく、専用containerは`Exited (0)`となった。OpenAI通信は行っていない。

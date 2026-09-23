@@ -387,7 +387,7 @@ def _offline_integer_cap(value: int) -> int:
 
 @final
 class ProductionOpenAIPostDraftGenerator:
-    """Closed production generator boundary; no live implementation exists yet."""
+    """One-shot production generator; construction remains source-gated."""
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
@@ -396,29 +396,296 @@ class ProductionOpenAIPostDraftGenerator:
     def __init__(self, *, runtime_owner: ProductionOpenAIPostDraftRuntimeOwner) -> None:
         if type(runtime_owner) is not ProductionOpenAIPostDraftRuntimeOwner:
             raise TypeError("invalid production runtime owner")
-        if not CLIENT_SHUTDOWN_STRATEGY_APPROVED or not PRODUCTION_REAL_PROVIDER_GATE_OPEN:
-            raise PostDraftUnavailableError from None
-        raise PostDraftUnavailableError from None
+        self._runtime_owner = runtime_owner
+
+    async def generate(self, request: PostDraftGenerationRequest) -> GeneratedPostDraft:
+        return await self._runtime_owner._generate(request)
+
+    async def close(self) -> bool:
+        return await self._runtime_owner.close()
 
 
 @final
 class ProductionOpenAIPostDraftRuntimeOwner:
-    """Nominal production owner; governance blocks construction before any client."""
+    """One process-owned SDK client with closed admission during shutdown.
+
+    The only public construction path is ``create``.  It validates the two
+    source-controlled gates before importing the SDK or unwrapping a secret.
+    Consequently a settings/environment change cannot manufacture a client
+    while this release remains closed.
+    """
+
+    __slots__ = (
+        "_active_task",
+        "_active_task_cancel_count",
+        "_client",
+        "_close_start_count",
+        "_close_task",
+        "_closed",
+        "_closing",
+        "_configured_max_output_tokens",
+        "_guard",
+        "_inner_timeout_seconds",
+        "_model",
+        "_price_policy",
+        "_reasoning_effort",
+        "_serial_gate",
+        "_shutdown_timeout_seconds",
+    )
+    _CONSTRUCTION_TOKEN = object()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
         raise TypeError("production runtime owner subclassing is prohibited")
 
-    def __init__(self) -> None:
-        if not CLIENT_SHUTDOWN_STRATEGY_APPROVED or not PRODUCTION_REAL_PROVIDER_GATE_OPEN:
+    def __init__(
+        self,
+        *,
+        _construction_token: object | None = None,
+        client: object | None = None,
+        settings: OpenAIPostDraftProviderSettings | None = None,
+    ) -> None:
+        if _construction_token is not self._CONSTRUCTION_TOKEN:
             raise RuntimeError("OpenAI runtime construction is not approved")
-        raise RuntimeError("OpenAI runtime construction is not implemented")
+        if client is None or not isinstance(settings, OpenAIPostDraftProviderSettings):
+            raise RuntimeError("OpenAI runtime construction is not approved")
+        _validate_live_settings(settings)
+        assert settings.model is not None
+        assert settings.reasoning_effort is not None
+        assert settings.sdk_inner_timeout_seconds is not None
+        assert settings.application_outer_timeout_seconds is not None
+        assert settings.max_output_tokens is not None
+        assert settings.generation_attempt_cap is not None
+        assert settings.external_call_cap is not None
+        assert settings.generation_reserved_cost_cap_usd is not None
+        self._client = client
+        self._guard = ProcessGenerationGuard(
+            generation_attempt_cap=settings.generation_attempt_cap,
+            external_call_cap=settings.external_call_cap,
+            generation_reserved_cost_cap=settings.generation_reserved_cost_cap_usd,
+        )
+        self._serial_gate = asyncio.Lock()
+        self._active_task: asyncio.Task[object] | None = None
+        self._active_task_cancel_count = 0
+        self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task[bool] | None = None
+        self._close_start_count = 0
+        self._model = settings.model
+        self._reasoning_effort = settings.reasoning_effort
+        self._price_policy = settings.price_policy()
+        self._inner_timeout_seconds = settings.sdk_inner_timeout_seconds
+        self._shutdown_timeout_seconds = settings.application_outer_timeout_seconds
+        self._configured_max_output_tokens = settings.max_output_tokens
+
+    @staticmethod
+    def create(settings: OpenAIPostDraftProviderSettings) -> ProductionOpenAIPostDraftRuntimeOwner:
+        """Construct the SDK only after complete source-controlled validation."""
+        _validate_live_settings(settings)
+        assert settings.api_key is not None
+        assert settings.sdk_inner_timeout_seconds is not None
+        client = _new_async_openai_client(
+            api_key=settings.api_key.get_secret_value(),
+            timeout_seconds=settings.sdk_inner_timeout_seconds,
+        )
+        return ProductionOpenAIPostDraftRuntimeOwner(
+            _construction_token=ProductionOpenAIPostDraftRuntimeOwner._CONSTRUCTION_TOKEN,
+            client=client,
+            settings=settings,
+        )
 
     def create_generator(self) -> ProductionOpenAIPostDraftGenerator:
         return ProductionOpenAIPostDraftGenerator(runtime_owner=self)
 
+    @property
+    def closing(self) -> bool:
+        return self._closing
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def close_start_count(self) -> int:
+        return self._close_start_count
+
+    async def _generate(self, request: PostDraftGenerationRequest) -> GeneratedPostDraft:
+        if self._closing or self._closed or self._serial_gate.locked():
+            raise PostDraftUnavailableError from None
+        async with self._serial_gate:
+            if self._closing or self._closed:
+                raise PostDraftUnavailableError from None
+            task = asyncio.current_task()
+            if task is None or self._active_task is not None:
+                raise PostDraftUnavailableError from None
+            self._active_task = task
+            try:
+                plan = build_post_draft_request_plan(
+                    request=request,
+                    model=self._model,
+                    instructions=INSTRUCTIONS,
+                    reasoning_effort=self._reasoning_effort,
+                )
+                if plan.max_output_tokens > self._configured_max_output_tokens:
+                    raise PostDraftUnavailableError from None
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                await self._guard.consume_generation_attempt()
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                await self._guard.consume_external_call()
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                count = await self._call_count(plan)
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                try:
+                    input_tokens = _parse_input_tokens(count)
+                except PostDraftInvalidResponseError:
+                    raise
+                except Exception:  # noqa: BLE001 - malformed provider objects remain non-reflecting
+                    raise PostDraftInvalidResponseError from None
+                reserved = self._price_policy.reserved_generation_cost(
+                    input_tokens=input_tokens, max_output_tokens=plan.max_output_tokens
+                )
+                await self._guard.reserve_generation_cost(reserved)
+                await self._guard.consume_external_call()
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                response = await self._call_create(plan)
+                if self._closing:
+                    raise PostDraftUnavailableError from None
+                try:
+                    return _parse_response(response)
+                except PostDraftInvalidResponseError:
+                    raise
+                except Exception:  # noqa: BLE001 - malformed provider objects remain non-reflecting
+                    raise PostDraftInvalidResponseError from None
+            except asyncio.CancelledError:
+                raise
+            except PostDraftUnavailableError:
+                raise
+            except PostDraftInvalidResponseError:
+                raise
+            except TimeoutError:
+                raise
+            except ValueError:
+                raise PostDraftUnavailableError from None
+            except Exception:  # noqa: BLE001 - provider detail never crosses this boundary
+                raise PostDraftUnknownError from None
+            finally:
+                if self._active_task is task:
+                    self._active_task = None
+
+    async def _call_count(self, plan: OpenAIResponseRequestPlan) -> object:
+        expected = plan.count_fingerprint()
+        try:
+            call = self._client.responses.input_tokens.count
+            pending = call(**plan.count_payload(), timeout=self._inner_timeout_seconds)
+            if not inspect.isawaitable(pending):
+                raise PostDraftUnavailableError
+            result = await pending
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            raise
+        except PostDraftUnavailableError:
+            raise
+        except Exception:  # noqa: BLE001 - provider detail never crosses this boundary
+            raise PostDraftUnknownError from None
+        if plan.count_fingerprint() != expected:
+            raise PostDraftInvalidResponseError from None
+        return result
+
+    async def _call_create(self, plan: OpenAIResponseRequestPlan) -> object:
+        expected = plan.count_fingerprint()
+        try:
+            call = self._client.responses.create
+            pending = call(**plan.create_payload(), timeout=self._inner_timeout_seconds)
+            if not inspect.isawaitable(pending):
+                raise PostDraftUnavailableError
+            result = await pending
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            raise
+        except PostDraftUnavailableError:
+            raise
+        except Exception:  # noqa: BLE001 - provider detail never crosses this boundary
+            raise PostDraftUnknownError from None
+        if plan.count_fingerprint() != expected:
+            raise PostDraftInvalidResponseError from None
+        return result
+
+    async def _run_close(self) -> bool:
+        if not await self._drain_active_task():
+            return False
+        acquired = False
+        try:
+            async with asyncio.timeout(self._shutdown_timeout_seconds):
+                await self._serial_gate.acquire()
+                acquired = True
+                self._close_start_count += 1
+                close = getattr(self._client, "close", None)
+                if not callable(close):
+                    return False
+                pending = close()
+                if not inspect.isawaitable(pending):
+                    return False
+                await pending
+                self._closed = True
+                return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - close details are intentionally non-reflecting
+            return False
+        finally:
+            if acquired:
+                self._serial_gate.release()
+
+    async def _drain_active_task(self) -> bool:
+        """Wait, cancel once, and reap the admitted task before SDK close."""
+        task = self._active_task
+        if task is None:
+            return True
+        if task is asyncio.current_task():
+            return False
+        done, _pending = await asyncio.wait({task}, timeout=self._shutdown_timeout_seconds)
+        if not done:
+            task.cancel()
+            self._active_task_cancel_count += 1
+            done, _pending = await asyncio.wait({task}, timeout=self._shutdown_timeout_seconds)
+        if not done:
+            return False
+        if not task.cancelled():
+            task.exception()
+        return self._active_task is None
+
     async def close(self) -> bool:
-        raise RuntimeError("OpenAI runtime construction is not implemented")
+        self._closing = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(
+                self._run_close(), name="openai-post-draft-runtime-close"
+            )
+        cancellation: asyncio.CancelledError | None = None
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError as error:
+                cancellation = cancellation or error
+        result = self._close_task.result()
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+
+def _new_async_openai_client(*, api_key: str, timeout_seconds: float) -> object:
+    """The sole lazy SDK construction point; never called while gates are closed."""
+    if not isinstance(api_key, str) or not api_key or not isinstance(timeout_seconds, float):
+        raise ValueError("invalid OpenAI runtime construction")
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(api_key=api_key, max_retries=SDK_MAX_RETRIES, timeout=timeout_seconds)
 
 
 @final
@@ -830,6 +1097,47 @@ class OfflineScriptedOpenAIPostDraftGenerator:
         return generated
 
 
+def _parse_input_tokens(response: object) -> int:
+    value = getattr(response, "input_tokens", None)
+    object_type = getattr(response, "object", None)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or object_type != "response.input_tokens"
+    ):
+        raise PostDraftInvalidResponseError from None
+    return value
+
+
+def _parse_response(response: object) -> GeneratedPostDraft:
+    if getattr(response, "status", None) != "completed":
+        raise PostDraftInvalidResponseError
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        raise PostDraftInvalidResponseError
+    messages = [item for item in output if getattr(item, "type", None) == "message"]
+    if len(messages) != 1:
+        raise PostDraftInvalidResponseError
+    content = getattr(messages[0], "content", None)
+    if not isinstance(content, list) or any(
+        getattr(item, "type", None) == "refusal" for item in content
+    ):
+        raise PostDraftInvalidResponseError
+    texts = [item for item in content if getattr(item, "type", None) == "output_text"]
+    output_text = getattr(response, "output_text", None)
+    if (
+        len(texts) != 1
+        or not isinstance(output_text, str)
+        or getattr(texts[0], "text", None) != output_text
+    ):
+        raise PostDraftInvalidResponseError
+    try:
+        return GeneratedPostDraft(output_text)
+    except TypeError, ValueError:
+        raise PostDraftInvalidResponseError from None
+
+
 def _validate_live_settings(settings: OpenAIPostDraftProviderSettings) -> None:
     if not isinstance(settings, OpenAIPostDraftProviderSettings):
         raise TypeError("invalid OpenAI post draft provider settings")
@@ -849,6 +1157,7 @@ def _validate_live_settings(settings: OpenAIPostDraftProviderSettings) -> None:
         or settings.external_call_cap is None
         or settings.generation_reserved_cost_cap_usd is None
         or settings.sdk_inner_timeout_seconds >= settings.application_outer_timeout_seconds
+        or settings.external_call_cap < 2 * settings.generation_attempt_cap
     ):
         raise ValueError("OpenAI post draft provider is not live-ready")
 
@@ -858,4 +1167,4 @@ async def _create_openai_post_draft_runtime_owner(
 ) -> ProductionOpenAIPostDraftRuntimeOwner:
     """Production-only boundary; governance rejects before any client access."""
     _validate_live_settings(settings)
-    return ProductionOpenAIPostDraftRuntimeOwner()
+    return ProductionOpenAIPostDraftRuntimeOwner.create(settings)

@@ -28,6 +28,9 @@ from discord_ai_reminder_bot.bot.post_draft_ui import (
 )
 from discord_ai_reminder_bot.domain.clock import Clock
 from discord_ai_reminder_bot.domain.recurrence import require_utc
+from discord_ai_reminder_bot.infrastructure.ai.openai_post_draft_generator import (
+    ProductionOpenAIPostDraftRuntimeOwner,
+)
 from discord_ai_reminder_bot.infrastructure.database.idempotent_schedule_creation_repository import (
     PostgreSQLIdempotentScheduleCreationRepository,
 )
@@ -122,9 +125,14 @@ def create_post_draft_runtime(
     settings: PostDraftUsageSettingsResult,
     session_factory: async_sessionmaker[AsyncSession],
     clock: Clock,
+    provider_owner: ProductionOpenAIPostDraftRuntimeOwner | None = None,
 ) -> PostDraftRuntime:
     """Compose the disabled service graph exactly once for one Bot runtime."""
-    composition = compose_post_draft_services(settings=settings, session_factory=session_factory)
+    composition = compose_post_draft_services(
+        settings=settings,
+        session_factory=session_factory,
+        provider_owner=provider_owner,
+    )
     repository = PostgreSQLIdempotentScheduleCreationRepository(
         session_factory, wait_limit=ScheduleCreationWaitLimit.create(5.0)
     )

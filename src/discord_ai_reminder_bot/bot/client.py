@@ -123,6 +123,7 @@ class ReminderBot(commands.Bot):
         name_generator: NameGenerator | None = None,
         post_draft_usage_settings: PostDraftUsageSettingsResult | None = None,
         post_draft_runtime: PostDraftRuntime | None = None,
+        post_draft_provider_resource: ProductionOpenAIPostDraftRuntimeOwner | None = None,
     ) -> None:
         super().__init__(
             command_prefix=SLASH_ONLY_PREFIX,
@@ -144,8 +145,11 @@ class ReminderBot(commands.Bot):
             settings=post_draft_usage_settings or load_post_draft_usage_settings(env_file=None),
             session_factory=session_factory,
             clock=clock,
+            provider_owner=post_draft_provider_resource,
         )
         self._post_draft_provider_resource: ProductionOpenAIPostDraftRuntimeOwner | None = None
+        if post_draft_provider_resource is not None:
+            self._register_post_draft_provider(post_draft_provider_resource)
         self.gateway: MessageGateway = DiscordMessageGateway(
             client=self,
             configured_guild_id=settings.discord_guild_id,

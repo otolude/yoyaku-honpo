@@ -2,6 +2,8 @@
 
 ## 1. 現在地と開発方針
 
+production adapterはlazy SDK construction、count/create各最大1回、`max_retries=0`、ownerのOPEN→CLOSING→CLOSEDと有限drain/closeを実装した。ただしsource release gate、`CLIENT_SHUTDOWN_STRATEGY_APPROVED`、本文feature flagはいずれもfalseであり、環境値だけではclient生成も通信も開始しない。Input Tokens countの料金・保持・総費用算入が未確定のためProvider gateはCLOSEDのままとする。
+
 Phase 1とPhase 2は受入完了済みである。現在はローカル環境で開発を継続し、一般公開の準備が整うまで常時稼働環境を構築しない。長期間のベータ運用は必須とせず、機能実装、自動テスト、文書、ポートフォリオを先に完成させる。
 
 開発、公開前限定テスト、本番ではDiscord Application、PostgreSQLデータベース、秘密情報を分離する。クラウド固有機能への依存を抑え、Dockerを使って配置先を移行できる構成を維持する。

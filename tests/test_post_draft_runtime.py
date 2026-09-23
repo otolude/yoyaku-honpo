@@ -95,7 +95,9 @@ def test_runtime_composes_once_and_remains_effectively_disabled(
     )
     assert isinstance(runtime, PostDraftRuntime)
     assert runtime.composition is composition
-    compose.assert_called_once_with(settings=usage_result(state), session_factory=sessions)
+    compose.assert_called_once_with(
+        settings=usage_result(state), session_factory=sessions, provider_owner=None
+    )
 
 
 @pytest.mark.asyncio

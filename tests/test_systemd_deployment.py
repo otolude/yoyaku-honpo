@@ -635,7 +635,7 @@ def test_docs_keep_fail_closed_systemd_contract_and_acceptance_totals() -> None:
     texts = tuple(path.read_text(encoding="utf-8") for path in DOCUMENT_PATHS)
 
     for text in texts:
-        assert "確認済み56件／未確認16件（合計72件）" in text
+        assert "確認済み55件／未確認17件（合計72件）" in text
         assert "CLIENT_SHUTDOWN_STRATEGY_APPROVED=false" in text
         assert "Real Provider gate" in text
     combined = "\n".join(texts)

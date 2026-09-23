@@ -232,7 +232,7 @@ def test_public_api_and_import_are_side_effect_free(monkeypatch: pytest.MonkeyPa
 
 def test_env_example_has_exactly_one_entry_for_every_usage_field() -> None:
     lines = ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
-    keys = [line.split("=", 1)[0] for line in lines if line.startswith("AI_POST_DRAFT_")]
+    keys = [line.split("=", 1)[0] for line in lines if line.split("=", 1)[0] in POST_DRAFT_ENV_KEYS]
     assert tuple(keys) == POST_DRAFT_ENV_KEYS
     assert len(keys) == len(set(keys))
 

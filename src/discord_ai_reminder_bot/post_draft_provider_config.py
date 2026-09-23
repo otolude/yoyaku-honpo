@@ -393,6 +393,13 @@ def load_openai_post_draft_provider_settings(
             assert settings.application_outer_timeout_seconds is not None
             if settings.sdk_inner_timeout_seconds >= settings.application_outer_timeout_seconds:
                 raise ValueError(_INVALID_PROVIDER_SETTINGS)
+            # Every admitted generation has one count and one create call.  Do
+            # not allow a configured attempt budget that cannot complete its
+            # own fixed two-call protocol.
+            assert settings.generation_attempt_cap is not None
+            assert settings.external_call_cap is not None
+            if settings.external_call_cap < 2 * settings.generation_attempt_cap:
+                raise ValueError(_INVALID_PROVIDER_SETTINGS)
             settings.price_policy()
     except TypeError, ValidationError, ValueError:
         return OpenAIPostDraftProviderSettingsResult(

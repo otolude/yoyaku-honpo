@@ -33,8 +33,10 @@ ALLOWED_IMPORTS = frozenset(
         "sqlalchemy.ext.asyncio",
         "discord_ai_reminder_bot.application.post_draft_generation",
         "discord_ai_reminder_bot.application.post_draft_usage_generation",
+        "discord_ai_reminder_bot.infrastructure.ai.openai_post_draft_generator",
         "discord_ai_reminder_bot.infrastructure.database.post_draft_usage_repository",
         "discord_ai_reminder_bot.post_draft_config",
+        "discord_ai_reminder_bot.post_draft_provider_config",
     }
 )
 
