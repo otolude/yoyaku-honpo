@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import http.client
 import importlib.machinery
 import json
@@ -23,6 +24,7 @@ import pytest
 
 from discord_ai_reminder_bot.application.shutdown_measurement import SHUTDOWN_STAGE_ORDER
 from discord_ai_reminder_bot.infrastructure import shutdown_measurement_harness
+from tests.support import linux_shutdown_measurement_evidence as evidence
 from tests.support import linux_shutdown_measurement_runner as runner
 from tests.support import shutdown_measurement_source_metadata as source_metadata
 from tests.support import shutdown_process_harness
@@ -695,6 +697,381 @@ def _fixed_output() -> runner.ShutdownMeasurementOutput:
         exit_classification="exit_zero",
         residual_count=0,
     )
+
+
+def _evidence_identity() -> evidence.EvidenceIdentity:
+    return evidence.EvidenceIdentity("manifest-v1", "0" * 40, "1" * 40, "2" * 64, "3" * 64)
+
+
+def _successful_evidence_output() -> runner.ShutdownMeasurementOutput:
+    stages = (
+        runner.MeasurementStage("ready", "observed"),
+        runner.MeasurementStage("sigint", "sent"),
+        runner.MeasurementStage("cleanup_start", "observed"),
+        *(
+            runner.MeasurementStage(stage.name.lower(), "completed")
+            for stage in SHUTDOWN_STAGE_ORDER
+        ),
+        runner.MeasurementStage("cleanup_complete", "observed"),
+        runner.MeasurementStage("exit", "observed"),
+    )
+    return runner.ShutdownMeasurementOutput(
+        runner.OUTPUT_SCHEMA_VERSION,
+        "0" * 40,
+        evidence.FIXED_SCENARIO,
+        "run-000001",
+        1,
+        stages,
+        "exit_zero",
+        0,
+    )
+
+
+@pytest.fixture
+def evidence_output_adapter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Temporary-root adapter for component tests; never formal evidence."""
+
+    source_root = tmp_path / "source-root"
+    source_root.mkdir()
+    monkeypatch.setattr(evidence, "_REPOSITORY_ROOT", source_root)
+    monkeypatch.setattr(evidence, "_manifest_and_identity", _evidence_identity)
+    return source_root.parent / f"{source_root.name}.shutdown-measurement-evidence"
+
+
+def test_evidence_schema_is_canonical_exact_and_non_reflecting() -> None:
+    identity = _evidence_identity()
+    output = _successful_evidence_output()
+    value = evidence._evidence_from_output(output, identity)
+    raw = evidence.serialize_evidence(value)
+
+    assert raw == json.dumps(
+        json.loads(raw), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
+    assert evidence.parse_evidence(raw) == value
+    assert b"stdout" not in raw and b"path" not in raw and b"hostname" not in raw
+
+    for altered in (
+        raw.replace(b'"duration_ns":1', b'"duration_ns":0'),
+        raw.replace(b'"duration_ns":1', b'"duration_ns":true'),
+        raw[:-1] + b',"canary":"secret"}',
+    ):
+        with pytest.raises(evidence.EvidenceContractError) as caught:
+            evidence.parse_evidence(altered)
+        _assert_non_reflecting(caught.value, "secret")
+
+
+def test_evidence_receipts_and_hash_sidecar_are_fixed() -> None:
+    identity = _evidence_identity()
+    prepared = evidence.serialize_prepared(identity)
+    completed = evidence.serialize_completed(identity, "a" * 64)
+
+    assert evidence.parse_prepared(prepared)["status"] == "prepared"
+    assert evidence.parse_completed(completed)["status"] == "completed"
+    assert evidence.SIDECAR_NAME == "measurement-evidence.sha256"
+    assert ("a" * 64 + "\n").encode("ascii") == b"a" * 64 + b"\n"
+    digest = hashlib.sha256(b"evidence").hexdigest()
+    assert evidence.validate_sidecar(digest.encode("ascii") + b"\n", b"evidence") == digest
+    with pytest.raises(evidence.EvidenceContractError):
+        evidence.validate_sidecar(digest.encode("ascii") + b"\n\n", b"evidence")
+    with pytest.raises(evidence.EvidenceContractError):
+        evidence.parse_completed(completed.replace(b"a" * 64, b"A" * 64))
+
+
+def test_evidence_fixed_sibling_ignores_cwd_argv_and_environment(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["caller", "other"])
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "untrusted"))
+
+    assert evidence._fixed_evidence_directory() == evidence_output_adapter
+
+
+def test_evidence_run_once_writes_ordered_one_shot_files(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path
+) -> None:
+    calls = 0
+
+    def fixed_run() -> runner.ShutdownMeasurementOutput:
+        nonlocal calls
+        calls += 1
+        return _successful_evidence_output()
+
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", fixed_run)
+    result, digest = evidence.run_once()
+
+    assert calls == 1
+    assert result.duration_ns == 1
+    assert sorted(item.name for item in evidence_output_adapter.iterdir()) == [
+        evidence.COMPLETED_NAME,
+        evidence.EVIDENCE_NAME,
+        evidence.SIDECAR_NAME,
+        evidence.PREPARED_NAME,
+    ]
+    assert (evidence_output_adapter / evidence.SIDECAR_NAME).read_bytes() == (
+        digest.encode("ascii") + b"\n"
+    )
+    assert (
+        evidence.parse_evidence((evidence_output_adapter / evidence.EVIDENCE_NAME).read_bytes())
+        == result
+    )
+
+
+def test_existing_evidence_directory_blocks_runner_before_launch(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path
+) -> None:
+    evidence_output_adapter.mkdir()
+    calls = 0
+
+    def forbidden() -> runner.ShutdownMeasurementOutput:
+        nonlocal calls
+        calls += 1
+        return _successful_evidence_output()
+
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", forbidden)
+    with pytest.raises(evidence.EvidenceContractError):
+        evidence.run_once()
+    assert calls == 0
+
+
+@pytest.mark.parametrize("special", [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit(7)])
+def test_evidence_preserves_special_runner_failure_identity(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path, special: BaseException
+) -> None:
+    def fail() -> runner.ShutdownMeasurementOutput:
+        raise special
+
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", fail)
+    with pytest.raises(type(special)) as caught:
+        evidence.run_once()
+    assert caught.value is special
+    assert (evidence_output_adapter / evidence.PREPARED_NAME).is_file()
+    assert not (evidence_output_adapter / evidence.COMPLETED_NAME).exists()
+
+
+def test_evidence_write_failure_never_reinvokes_runner(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path
+) -> None:
+    calls = 0
+    real_write = evidence._write_new
+
+    def fixed_run() -> runner.ShutdownMeasurementOutput:
+        nonlocal calls
+        calls += 1
+        return _successful_evidence_output()
+
+    def fail_evidence(handles: object, name: str, payload: bytes) -> None:
+        if name == evidence.EVIDENCE_NAME:
+            raise evidence.EvidenceContractError()
+        real_write(handles, name, payload)
+
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", fixed_run)
+    monkeypatch.setattr(evidence, "_write_new", fail_evidence)
+    with pytest.raises(evidence.EvidenceContractError):
+        evidence.run_once()
+    assert calls == 1
+    assert (evidence_output_adapter / evidence.PREPARED_NAME).is_file()
+    assert not (evidence_output_adapter / evidence.COMPLETED_NAME).exists()
+
+
+def test_evidence_main_rejects_arguments_without_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_output_adapter: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["module", "unexpected"])
+    assert evidence.main() == 2
+    assert not evidence_output_adapter.exists()
+    assert capsys.readouterr().err == "FORMAL_MEASUREMENT_EVIDENCE_FAILURE\n"
+
+
+def _parent_status_with_nlink(status: os.stat_result, nlink: object) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        st_mode=status.st_mode,
+        st_uid=status.st_uid,
+        st_nlink=nlink,
+        st_dev=status.st_dev,
+        st_ino=status.st_ino,
+    )
+
+
+@pytest.mark.parametrize("nlink", [0, 1, -1, True, "parent-nlink-canary"])
+def test_evidence_parent_nlink_rejection_blocks_attempt_before_runner(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path, nlink: object
+) -> None:
+    parent_status = evidence_output_adapter.parent.stat()
+    real_fstat = os.fstat
+    calls = 0
+
+    def invalid_parent_fstat(descriptor: int) -> os.stat_result | types.SimpleNamespace:
+        status = real_fstat(descriptor)
+        if status.st_dev == parent_status.st_dev and status.st_ino == parent_status.st_ino:
+            return _parent_status_with_nlink(status, nlink)
+        return status
+
+    def forbidden() -> runner.ShutdownMeasurementOutput:
+        nonlocal calls
+        calls += 1
+        return _successful_evidence_output()
+
+    monkeypatch.setattr(evidence.os, "fstat", invalid_parent_fstat)
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", forbidden)
+    with pytest.raises(evidence.EvidenceContractError) as caught:
+        evidence.run_once()
+    _assert_non_reflecting(caught.value, "parent-nlink-canary")
+    assert calls == 0
+    assert not evidence_output_adapter.exists()
+
+
+@pytest.mark.parametrize("nlink", [2, 5])
+def test_evidence_parent_nlink_accepts_linux_directory_values(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path, nlink: int
+) -> None:
+    parent_status = evidence_output_adapter.parent.stat()
+    real_fstat = os.fstat
+
+    def valid_parent_fstat(descriptor: int) -> os.stat_result | types.SimpleNamespace:
+        status = real_fstat(descriptor)
+        if status.st_dev == parent_status.st_dev and status.st_ino == parent_status.st_ino:
+            return _parent_status_with_nlink(status, nlink)
+        return status
+
+    monkeypatch.setattr(evidence.os, "fstat", valid_parent_fstat)
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", _successful_evidence_output)
+    evidence.run_once()
+    assert (evidence_output_adapter / evidence.COMPLETED_NAME).is_file()
+
+
+def _new_evidence_handles() -> evidence._Handles:
+    handles = evidence._Handles()
+    evidence._create_attempt_directory(handles)
+    return handles
+
+
+def _close_after_call(
+    monkeypatch: pytest.MonkeyPatch, failing_calls: set[int]
+) -> tuple[list[int], object]:
+    real_close = os.close
+    calls: list[int] = []
+
+    def close(descriptor: int) -> None:
+        calls.append(descriptor)
+        real_close(descriptor)
+        if len(calls) in failing_calls:
+            raise OSError("close-error-canary")
+
+    monkeypatch.setattr(evidence.os, "close", close)
+    return calls, real_close
+
+
+@pytest.mark.parametrize("failing_calls", [{1}, {2}, {1, 2}])
+def test_evidence_write_close_failure_is_fixed_and_closes_each_fd_once(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_output_adapter: Path,
+    failing_calls: set[int],
+) -> None:
+    handles = _new_evidence_handles()
+    calls, real_close = _close_after_call(monkeypatch, failing_calls)
+    try:
+        with pytest.raises(evidence.EvidenceContractError) as caught:
+            evidence._write_new(handles, "close-only.json", b"payload")
+        _assert_non_reflecting(caught.value, "close-error-canary")
+        assert len(calls) == 2
+        assert calls[0] != calls[1]
+    finally:
+        monkeypatch.setattr(evidence.os, "close", real_close)
+        evidence._close(handles)
+
+
+@pytest.mark.parametrize("failing_calls", [{1}, {2}])
+def test_evidence_write_primary_failure_survives_read_or_write_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_output_adapter: Path,
+    failing_calls: set[int],
+) -> None:
+    del evidence_output_adapter
+    handles = _new_evidence_handles()
+    primary = evidence.EvidenceContractError()
+    calls, real_close = _close_after_call(monkeypatch, failing_calls)
+    monkeypatch.setattr(
+        evidence.os, "read", lambda descriptor, size: (_ for _ in ()).throw(primary)
+    )
+    try:
+        with pytest.raises(evidence.EvidenceContractError) as caught:
+            evidence._write_new(handles, "primary.json", b"payload")
+        assert caught.value is primary
+        assert len(calls) == 2
+        assert calls[0] != calls[1]
+    finally:
+        monkeypatch.setattr(evidence.os, "close", real_close)
+        evidence._close(handles)
+
+
+@pytest.mark.parametrize(
+    ("primary", "failing_calls"),
+    [
+        (asyncio.CancelledError("cancelled"), {1}),
+        (asyncio.CancelledError("cancelled"), {2}),
+        (KeyboardInterrupt("keyboard"), {1}),
+        (SystemExit("system-exit"), {2}),
+    ],
+)
+def test_evidence_write_special_primary_identity_survives_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_output_adapter: Path,
+    primary: BaseException,
+    failing_calls: set[int],
+) -> None:
+    del evidence_output_adapter
+    handles = _new_evidence_handles()
+    calls, real_close = _close_after_call(monkeypatch, failing_calls)
+    monkeypatch.setattr(
+        evidence.os, "read", lambda descriptor, size: (_ for _ in ()).throw(primary)
+    )
+    try:
+        with pytest.raises(type(primary)) as caught:
+            evidence._write_new(handles, "special.json", b"payload")
+        assert caught.value is primary
+        assert len(calls) == 2
+        assert calls[0] != calls[1]
+    finally:
+        monkeypatch.setattr(evidence.os, "close", real_close)
+        evidence._close(handles)
+
+
+def test_evidence_close_failure_never_reinvokes_runner_or_completes_attempt(
+    monkeypatch: pytest.MonkeyPatch, evidence_output_adapter: Path
+) -> None:
+    calls = 0
+
+    def fixed_run() -> runner.ShutdownMeasurementOutput:
+        nonlocal calls
+        calls += 1
+        return _successful_evidence_output()
+
+    close_calls, _real_close = _close_after_call(monkeypatch, {3})
+    monkeypatch.setattr(runner, "run_fixed_linux_shutdown_measurement", fixed_run)
+    with pytest.raises(evidence.EvidenceContractError) as caught:
+        evidence.run_once()
+    _assert_non_reflecting(caught.value, "close-error-canary")
+    assert calls == 1
+    assert len(close_calls) == 6
+    assert len(set(close_calls[:4])) == 2
+    assert not (evidence_output_adapter / evidence.COMPLETED_NAME).exists()
+
+
+def test_evidence_component_success_uses_temporary_adapter_only(
+    monkeypatch: pytest.MonkeyPatch,
+    authorized_offline_success: Path,
+    sandbox_tmp_root_adapter: None,
+    evidence_output_adapter: Path,
+) -> None:
+    """Authorized test-only synthetic child; not formal Linux evidence."""
+
+    del authorized_offline_success, sandbox_tmp_root_adapter
+    result, _digest = evidence.run_once()
+    assert result.residual_count == 0
+    assert (evidence_output_adapter / evidence.COMPLETED_NAME).is_file()
 
 
 def test_artifact_uses_only_fixed_root_and_fd_relative_operations(

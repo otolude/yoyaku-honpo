@@ -21,6 +21,7 @@ SOURCE_SET_RELATIVE_PATHS = (
     "tests/__init__.py",
     "tests/support/__init__.py",
     "tests/support/linux_shutdown_measurement_runner.py",
+    "tests/support/linux_shutdown_measurement_evidence.py",
     "tests/support/snapshot_child_bootstrap_policy.py",
     "tests/support/shutdown_measurement_source_metadata.py",
     "tests/support/shutdown_process_harness.py",
