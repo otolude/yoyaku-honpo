@@ -12,6 +12,12 @@ venv/
 # Environment variables and secrets
 .env
 .env.*
+.env.acceptance-postgres
+.env.development-postgres
+.env.test-postgres
+.acceptance-postgres-secrets/
+.development-postgres-secrets/
+.test-postgres-secrets/
 !.env.example
 
 # Editors and operating systems
@@ -26,4 +32,3 @@ dist/
 *.egg-info/
 .coverage
 htmlcov/
-

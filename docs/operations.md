@@ -173,7 +173,7 @@ Botが投稿する各チャンネルとoperator channelで、閲覧・送信・E
 
 1. `.venv`を作成して依存関係を導入する。
 2. `.env.example`からGit管理対象外の`.env`を作る。
-3. `docker compose config`で定義を確認する。
+3. `docker compose --env-file .env.development-postgres config`で定義を確認する。
 4. 開発用`postgres`だけを起動する。
 5. healthコマンドで`SELECT 1`を確認する。
 6. 管理されたAlembic手順で`upgrade head`を行う。
@@ -182,8 +182,8 @@ Botが投稿する各チャンネルとoperator channelで、閲覧・送信・E
 
 ```bash
 source .venv/bin/activate
-docker compose config
-docker compose up -d postgres
+docker compose --env-file .env.development-postgres config
+docker compose --env-file .env.development-postgres up -d postgres
 python -m discord_ai_reminder_bot.infrastructure.database.health
 python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev --confirm development:discord_bot_dev:upgrade upgrade head
 python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
@@ -217,8 +217,8 @@ Schema確認はDiscord readyより前の`setup_hook`で行われる。Recovery�
 ```bash
 git status --short --branch
 source .venv/bin/activate
-docker compose up -d postgres
-docker compose ps
+docker compose --env-file .env.development-postgres up -d postgres
+docker compose --env-file .env.development-postgres ps
 python -m discord_ai_reminder_bot.infrastructure.database.health
 python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev current
 python -m discord_ai_reminder_bot.infrastructure.database.migrate heads
@@ -274,8 +274,8 @@ readinessはsystemd上のprocess生存と業務処理readyを区別する。`dat
 終了後、開発用PostgreSQLだけを停止する。
 
 ```bash
-docker compose stop postgres
-docker compose ps
+docker compose --env-file .env.development-postgres stop postgres
+docker compose --env-file .env.development-postgres ps
 git status --short --branch
 ```
 
@@ -321,7 +321,7 @@ Alembic CLIを直接実行しない。offline modeは禁止する。`downgrade`�
 - 開発環境では次の読み取り中心の確認を行う。
 
 ```bash
-docker compose ps
+docker compose --env-file .env.development-postgres ps
 python -m discord_ai_reminder_bot.infrastructure.database.health
 ```
 
@@ -473,15 +473,15 @@ psql "$RESTORE_DATABASE_URL" -c "SELECT contype, count(*) FROM pg_constraint WHE
 
 ## 18. テストDB
 
-[README](../README.md)のテスト境界を維持する。`postgres_test`は`127.0.0.1:55432`の一時DBで、開発用`postgres`と名前付きVolumeを共有しない。
+[README](../README.md)のテスト境界を維持する。`postgres_test`は`.env.test-postgres`で指定するloopback-only host portの一時DBで、開発用`postgres`と名前付きVolumeを共有しない。
 
 起動・停止・削除は必ずサービス名を明示する。
 
 ```bash
-docker compose --profile test up -d postgres_test
-docker compose --profile test ps
-docker compose --profile test stop postgres_test
-docker compose --profile test rm -f postgres_test
+docker compose --env-file .env.test-postgres --profile test up -d postgres_test
+docker compose --env-file .env.test-postgres --profile test ps
+docker compose --env-file .env.test-postgres --profile test stop postgres_test
+docker compose --env-file .env.test-postgres --profile test rm -f postgres_test
 ```
 
 `TEST_DATABASE_URL`はコマンド単位で指定する。開発用`postgres`、`postgres_data`、本番DBへ触れない。プロジェクト全体やVolumeをまとめて削除するCompose操作を使わない。
@@ -586,20 +586,20 @@ READMEの再現手順は安全な最短入口に限定し、DB操作、Discord�
 
 既存開発DBは撮影用に初期化せず、Compose project `discord-ai-reminder-bot`、container `discord-ai-reminder-bot-postgres-1`、Volume `discord-ai-reminder-bot_postgres_data`を停止状態で保持する。撮影用はCompose project `discord-ai-reminder-bot-portfolio`、container `discord-ai-reminder-bot-portfolio-postgres-1`、専用Volume `discord-ai-reminder-bot-portfolio_postgres_data`を使用する。DB内部名はMigration安全ガードに合わせて`discord_bot_dev`とするが、同じDB名だけを分離の根拠にしない。リリース時も開発DBや撮影DBを流用せず、新しい本番DBを用意する。DB、Volume、backup、`.env`、秘密情報はGit公開対象に含めない。
 
-現行Composeは`container_name`、外部Volume、bind mountを使用せず、projectごとの名前付きVolumeを`/var/lib/postgresql`へmountし、`127.0.0.1:5432`を公開する。したがって既存環境と撮影環境は同時起動せず、再起動前に毎回、展開後Compose設定とDocker実体のproject label、service label、container名、Volume名・mount先、portを照合する。Compose変更後はこの前提を再監査し、project名だけで分離済みと判断しない。
+現行Composeは`container_name`と外部Volumeを使用しない。projectごとの名前付きVolumeは既存development contractと同じ`/var/lib/postgresql`へmountし、secretless契約のread-only bind mountは`.development-postgres-secrets/`から`/run/development-postgres-secrets`だけに固定する。host公開は`.env.development-postgres`で指定する`127.0.0.1`限定portであり、固定のhost portを前提にしない。したがって既存環境と撮影環境は同時起動せず、再起動前に毎回、展開後Compose設定とDocker実体のproject label、service label、container名、Volume名・mount先、private secret bind mount、loopback portを照合する。Compose変更後はこの前提を再監査し、project名だけで分離済みと判断しない。
 
 撮影環境を再起動するときは、Bot processがなく、既存projectの`postgres`が停止し、撮影用Volumeが想定名で存在することを先に確認する。想定外のprocess、container、Volume、bind mount、外部Volume、port利用があれば起動せず調査する。確認後、撮影用PostgreSQLだけを起動する。
 
 ```bash
-docker compose config
-docker compose ps
-docker compose -p discord-ai-reminder-bot-portfolio up -d postgres
-docker compose -p discord-ai-reminder-bot-portfolio ps
+docker compose --env-file .env.development-postgres config
+docker compose --env-file .env.development-postgres ps
+docker compose --env-file .env.development-postgres -p discord-ai-reminder-bot-portfolio up -d postgres
+docker compose --env-file .env.development-postgres -p discord-ai-reminder-bot-portfolio ps
 docker inspect discord-ai-reminder-bot-portfolio-postgres-1
 docker volume inspect discord-ai-reminder-bot-portfolio_postgres_data
 ```
 
-`docker inspect`では出力をそのまま公開せず、projectが`discord-ai-reminder-bot-portfolio`、serviceが`postgres`、mountが専用Volumeから`/var/lib/postgresql`、公開先が`127.0.0.1:5432`、既存開発containerが停止中であることだけを確認する。`.env`は変更・表示せず、設定loaderとMigration安全処理でdriver、loopback endpoint、DB名を検証する。撮影用containerだけがこのportを保持すると確定してから、正式ラッパーで次を実行する。
+`docker inspect`では出力をそのまま公開せず、projectが`discord-ai-reminder-bot-portfolio`、serviceが`postgres`、mountが専用Volumeから`/var/lib/postgresql`、secret bind mountが`.development-postgres-secrets/`から`/run/development-postgres-secrets`、公開先がprivate `.env.development-postgres`で指定したloopback port、既存開発containerが停止中であることだけを確認する。`.env`とdevelopment private env/secret filesは変更・表示せず、設定loaderとMigration安全処理でdriver、loopback endpoint、DB名を検証する。撮影用containerだけがこのprivate portを保持すると確定してから、正式ラッパーで次を実行する。
 
 ```bash
 python -m discord_ai_reminder_bot.infrastructure.database.health
@@ -613,8 +613,8 @@ python -m discord_ai_reminder_bot.infrastructure.database.migrate --target devel
 撮影準備前は、接続後にも`current_database()`が`discord_bot_dev`であることを確認し、read-only transactionの集計で業務8表が想定状態であることを確認する。2026-08-31の初期構築直後は業務8表がすべて0件だったが、これは確認時点の証跡であり、将来も空であることを保証しない。本文、予約名、実ID、接続URL、資格情報を取得・出力しない。撮影作業を終えたらBotを正常停止した後、撮影用PostgreSQLだけを停止し、専用Volumeは削除せず保持する。
 
 ```bash
-docker compose -p discord-ai-reminder-bot-portfolio stop postgres
-docker compose -p discord-ai-reminder-bot-portfolio ps
+docker compose --env-file .env.development-postgres -p discord-ai-reminder-bot-portfolio stop postgres
+docker compose --env-file .env.development-postgres -p discord-ai-reminder-bot-portfolio ps
 ```
 
 ## 23. GitHub Actions CI（公開前構成）
@@ -649,7 +649,7 @@ wheelは76 memberで`RECORD`整合だが`COPYRIGHT.md`未収録、sdistは追跡
 
 2026-09-01にidentity書換え前の対応commitを対象として、Git管理外のclean archiveとDocker internal networkを使った隔離再現を行った。runnerは専用postgres_testとnetwork namespaceを共有し、local-only guardを変更せず`127.0.0.1:5432`だけへ接続した。PostgreSQLだけが専用internal network endpointを持ち、公開port、named Volume、既存DB・撮影DB・既存Volumeへの接続はなく、test DBはtmpfsだけに置いた。runnerは非root、read-only、全capability drop、no-new-privilegesで、Docker socket、host source、既存`.env`・`.venv`をmountしなかった。書換え時に対応する旧新tree OID一致を確認したが、新commitで再実行した結果とは扱わない。
 
-公開IPv4／IPv6への直接接続は`ENETUNREACH`となり、bridge gatewayの既知portとloopback 55432も接続できなかった。依存取得はbuild段階の公開PyPI接続で完了し、test段階では外部取得を行っていない。PostgreSQL health、アプリケーションhealthの`SELECT 1`、正式Migrationラッパーの`upgrade head`／`current`／`heads`／`check`が成功し、`a41f8c7d2e90`のsingle headを確認した。通常pytestは1,019 passed／349 skipped、専用integrationは349 passed／0 skipped／0 errors、合計1,368 passedで、warningはなかった。主要8表はMigration直後、integration後、停止直前に全て0件で、両containerは`Exited (0)`となった。
+公開IPv4／IPv6への直接接続は`ENETUNREACH`となり、bridge gatewayの既知portとhistorical loopback test endpointも接続できなかった。依存取得はbuild段階の公開PyPI接続で完了し、test段階では外部取得を行っていない。PostgreSQL health、アプリケーションhealthの`SELECT 1`、正式Migrationラッパーの`upgrade head`／`current`／`heads`／`check`が成功し、`a41f8c7d2e90`のsingle headを確認した。通常pytestは1,019 passed／349 skipped、専用integrationは349 passed／0 skipped／0 errors、合計1,368 passedで、warningはなかった。主要8表はMigration直後、integration後、停止直前に全て0件で、両containerは`Exited (0)`となった。
 
 この手順は通常の開発・CI手順へ追加するものではなく、保存証跡の再現時だけ個別承認して実行する。接続URLやcredentialをcommand引数へ置かず、0600のCompose secretを検査wrapperからchild processだけへ渡す。通常・integrationログで合成secret完全一致0件を確認したが、Git管理外の永続証跡には再監査用の専用secretファイルとして合成値が残る。実credentialではないものの、証跡を公開、配布、Git追加しない。
 
@@ -661,7 +661,47 @@ internal networkはDocker Desktop daemon、WSL2 kernel、管理者侵害への�
 
 書換え後の83 commit／708 blobを再監査し、高確度secret候補は0件だった。現行・旧版のPNG 8 blobも従来SHAと一致した。画像のsignature、CRC、IEND、trailing data、metadata chunk、alphaと黒矩形、目視上の写り込み、匿名化前画像・編集layer・生成前画像の非到達を確認した。専用secret scannerは未導入で、GitHub内部object、cache、旧Actions run、既存cloneや画像編集前データの不存在は保証しない。旧main／develop／MIT commitはbranch・tagから到達不能だが、非公開復旧証跡と元cloneのreflogは保持する。
 
-## 27. GitHub username変更時の個人情報除去
+## 27. acceptance専用PostgreSQLの構成境界
+
+`compose.acceptance.yaml`はacceptance専用のproject、service、volume、networkを定義するtracked secretless contractである。既存development Compose、`TEST_DATABASE_URL`、production DB、既存private `.env`は変更対象ではない。Compose fileだけでDocker daemon、image pull、container、network、volume、DB、migration、Bot、schedulerを開始しない。
+
+acceptance Composeの唯一の正式な操作経路はproject interpreterで`python scripts/acceptance_database_preflight.py`を引数なしで実行することだけである。launcherはfilesystem rootをtrust anchorとしてrepositoryの全ancestor、private metadata、固定system Compose V2 executableとそのparent directory chainのFDを保持し、実行直前・直後にrootからFD-relative identityを再照合する。FDから読んだ厳密JSON-compatible Compose topologyを先に検証し、standalone Composeの固定argv・固定最小environmentによる`config --quiet`だけを実行できる。child-visible FDはCompose executable、project directory、private env、Compose file、secret directoryの5個だけであり、`pass_fds`と`/proc/self/fd`参照を一致させる。Docker CLIの`docker compose`、ambient plugin directory、credential helper、user plugin、direct Compose invocationはunsupported bypassであり、host metadataを保証しない。Compose executableが追加plugin/helperを実行しないconfig-only境界を前提とする。Compose executable不在・unsupported・errorは固定非反射failureであり、successとして扱わない。provisioning、up/down、volume deletionはlauncherのallowlist外であり、将来のprovisioningには別launcher/別承認が必要である。
+
+fixed candidateのsymlinkは正当性を推測してfollowせずunsupportedとしてfail-closedにする。rootからcandidate parent directory chain、final Compose executableまで、root owner、group/other非書込、regular directory/file、non-symlink、strict identityを満たすものだけを受理する。
+
+現在このlocal environmentで検出したfixed Compose candidateはsymlinkでありunsupported/fail-closedである。利用可能なroot-owned regular non-symlink standalone Compose V2 binaryはまだfixed allowlist pathに配置されていないため、authoritativeな`config --quiet` validationは未実施である。approved standalone Compose V2 binaryをそのfixed allowlist pathへ配置すること、download、package install、copy、network、sudo、owner/mode変更はいずれも別承認を要する。binary配置、metadata検証、authoritative config成功の前にprivate acceptance inputsを作成せず、provisioning、migration、DB接続へ進まない。Docker CLIまたはsymlink candidateを代替経路として使わない。将来のprovisioning launcherはこのconfig-only preflightとは別設計・別承認とする。
+
+private inputはrepository rootの`.env.acceptance-postgres`と`.acceptance-postgres-secrets/`へ限定する。前者はimmutable PostgreSQL image digestとloopback host portだけを持ち、後者は`postgres-user`、`postgres-password`、`postgres-database`の三regular fileを持つ。directoryは0700、filesは0600、いずれもcurrent user所有かつnon-symlinkでなければならない。Compose interpolationとbind mountの`create_host_path: false`により、private inputが未設定・不在ならfail-closedとする。
+
+development Composeもliteral passwordを保持しない。`postgres`には`.env.development-postgres`と`.development-postgres-secrets/`、test profileには`.env.test-postgres`と`.test-postgres-secrets/`を使用する。各組はrepository rootの固定名であり、private directoryを0700、private envと`postgres-user`、`postgres-password`、`postgres-database`の三fileを0600・current-user-owned・regular/non-symlinkで作成してから使う。値は対話editorでのみ入力し、command line/history、logへ出さず、画面共有禁止とする。各current Compose commandは対応する`--env-file`を必ず指定する。portfolio projectもdevelopment Composeの`.env.development-postgres`と`.development-postgres-secrets/`をそのままmountするため、acceptance入力とは共有しない一方、portfolio専用secret sourceではない。この関係を変える場合は別のprivate input契約と承認が必要である。これらはacceptance private inputと共有せず、既存volumeの削除、migration、container再作成、旧credentialの再利用を伴わない。旧手順のimplicit startupは互換対象ではなく、secretless private inputがなければfail-closedとする。
+
+development用の作成は、private terminalで次の標準ライブラリ手順だけを一度実行する。値をcommand line/historyへ置かず、`O_CREAT|O_EXCL|O_NOFOLLOW`相当で空のregular fileだけを新規作成する。既存file、directory、通常symlink、dangling symlinkのいずれかが一つでもあれば上書き・削除せず停止する。
+
+```bash
+python - <<'PY'
+import os
+from pathlib import Path
+
+directory = Path(".development-postgres-secrets")
+files = (Path(".env.development-postgres"), *(directory / name for name in ("postgres-user", "postgres-password", "postgres-database")))
+if any(os.path.lexists(path) for path in (directory, *files)):
+    raise SystemExit("private input already exists")
+os.mkdir(directory, 0o700)
+for path in files:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.close(descriptor)
+PY
+```
+
+`.env.development-postgres`には非秘密の`DEVELOPMENT_POSTGRES_IMAGE_DIGEST`と`DEVELOPMENT_POSTGRES_HOST_PORT`だけを対話editorで設定する。三secret fileも同じeditorで編集し、password、role、databaseの値を例示・画面共有・画像共有しない。編集後は値を表示せず、各targetについてregular/non-symlink/current-user-owned/0600/nlink 1、directoryについて0700/nlink 2以上を確認する。Composeは必ず`docker compose --env-file .env.development-postgres`を使用する。
+
+test用はdevelopmentと混同せず、上記の`directory`を`.test-postgres-secrets`、env fileを`.env.test-postgres`へ固定して同じnew-only手順を実行する。env fileには`TEST_POSTGRES_IMAGE_DIGEST`と`TEST_POSTGRES_HOST_PORT`だけを設定し、Composeは必ず`docker compose --env-file .env.test-postgres --profile test`を使用する。acceptanceは別launcher/別承認であり、このdevelopment/test作成手順を流用しない。
+
+imageは`postgres@sha256:...`のdigest-only policyであり、floating tagまたは`latest`は許可しない。host公開は`127.0.0.1`固定で、required private port以外へbindしない。healthcheckはpasswordを引数・environment・logへ投影せず、restartは`no`、health timeout、retry数、start period、shutdown graceは有限とする。acceptance volumeの削除はdestructive operationであり、DB provisioningとは別承認にする。
+
+正式手順は、(1) private inputの属性検証、(2) dedicated Compose provisioning、(3) migration、(4) one-shot read-only schema/head verification、(5) command-sync review、(6) manual-only Bot acceptanceの順である。seed data、Provider、Discord、scheduler副作用は前段の成功を推測して開始しない。Provider gate CLOSED、55 confirmed／17 unconfirmed／72 total、`EXECUTION_BOUNDARY_VIOLATION`はこの構成追加では変化しない。
+
+## 28. GitHub username変更時の個人情報除去
 
 2026-09-02に、上記83件の書換えとは別に、main／developの88 commitを同一mappingで再構築した。author／committer nameはOto、message、parent構造、author／committer日時・timezoneは88／88で維持し、emailの新しいGitHub noreplyへの統一、usernameの置換、mapping済みcommit SHA参照の置換だけを行った。tree／blob全面不変とは扱わない。旧新reachable blobは各745件で、source、test、Migration、PNG履歴8 blob、画像内容、`COPYRIGHT.md`、`THIRD_PARTY_NOTICES.md`等の対象外byteは不変だった。
 

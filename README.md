@@ -159,7 +159,7 @@ source .venv/bin/activate
 python -m pip install -e '.[dev]'
 cp .env.example .env
 git check-ignore .env
-docker compose up -d postgres
+docker compose --env-file .env.development-postgres up -d postgres
 python -m discord_ai_reminder_bot.infrastructure.database.health
 python -m discord_ai_reminder_bot.infrastructure.database.migrate --target development --expected-database discord_bot_dev --confirm development:discord_bot_dev:upgrade upgrade head
 python -m pytest
@@ -183,6 +183,25 @@ python -m discord_ai_reminder_bot
 - 今後: 公開後の限定テスト、常時稼働環境、subscription商品仕様と決済、正式リリース
 
 詳細は[開発・公開ロードマップ](docs/development-roadmap.md)を参照してください。
+
+## acceptance PostgreSQLの事前構成
+
+`compose.acceptance.yaml`はdevelopment用`compose.yaml`を流用しない、acceptance専用のPostgreSQL構成である。Docker daemon、image pull、volume作成、DB接続、migration、Bot起動はこの構成を追加しただけでは行わない。
+
+- project、service、volume、networkはacceptance専用名で分離する。
+- imageは`postgres@sha256:...`形式のimmutable digestだけをprivate `.env.acceptance-postgres`から指定する。floating tagと`latest`は許可しない。
+- host公開はrequiredなprivate host portを`127.0.0.1`へ固定してbindする。全interface bindは許可しない。
+- `.acceptance-postgres-secrets/`はrepository rootのprivate 0700 directoryであり、`postgres-user`、`postgres-password`、`postgres-database`を各0600のregular/non-symlink/current-user-owned fileとして置く。Composeはread-only bind mountと`POSTGRES_*_FILE`だけを使用する。
+- `.env.acceptance-postgres`とsecret directoryはGit管理外である。実値、credential-like placeholder、DB role/name/password、host portをtracked fileへ置かない。
+- healthcheckはcredentialをargvやlogへ渡さない`pg_isready -q`だけを使う。restartは`no`、shutdown graceとhealth timeoutは有限である。
+
+acceptance volumeの削除、DB provisioning、migration、seed、read-only verification、Discord Bot/scheduler起動はそれぞれ別承認である。`TEST_DATABASE_URL`、production DB、既存private `.env`、Provider gate、guild command syncの通常false設定はこの構成の対象外である。
+
+acceptance Composeの唯一の正式操作経路はproject interpreterによる`python scripts/acceptance_database_preflight.py`である。このlauncherはfilesystem rootをtrust anchorとしてrepository全ancestor、private metadata、固定system Compose V2 executableをFD-relativeに検証・保持し、厳密なJSON-compatible Compose topologyを受理した場合だけ、childに必要な5 FDだけを`pass_fds`で渡してstandalone Composeの固定`config --quiet`を呼ぶ。Docker CLIの`docker compose`、ambient plugin directory、credential helper、直接のCompose invocationはunsupported bypassである。Compose executable自身が別plugin/helperを実行しないconfig-only境界を前提とし、launcher自身はprovisioning、up/down、volume削除を実行しない。将来のprovisioningには別launcher/別承認が必要である。
+
+fixed candidate上のsymlinkは正当性を推測してfollowせずunsupportedとしてfail-closedにする。candidate parent directory chainとfinal executableはroot-owned・group/other非書込のregular/non-symlink契約を満たす必要がある。
+
+development Composeもtracked password literalを保持しない。`postgres`は`.env.development-postgres`と`.development-postgres-secrets/`、`postgres_test` profileは`.env.test-postgres`と`.test-postgres-secrets/`を必要とする。いずれもdigest-only image、loopback-only host port、`POSTGRES_*_FILE`を使用し、private inputがなければ起動しない。各private directoryは0700、private envと三secret fileは0600・current-user-owned・regular/non-symlinkで作成する。値は対話editorで入力し、command line/historyや画面共有へ出さない。既存development volumeを削除・再利用・移行する操作は、この文書変更では行わない。
 
 ## 詳細文書
 

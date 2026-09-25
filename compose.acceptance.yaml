@@ -1,0 +1,47 @@
+{
+  "name": "discord-ai-reminder-bot-acceptance-db",
+  "services": {
+    "acceptance_postgres": {
+      "image": "postgres@${ACCEPTANCE_POSTGRES_IMAGE_DIGEST:?set an immutable sha256 digest}",
+      "environment": {
+        "POSTGRES_DB_FILE": "/run/acceptance-postgres-secrets/postgres-database",
+        "POSTGRES_USER_FILE": "/run/acceptance-postgres-secrets/postgres-user",
+        "POSTGRES_PASSWORD_FILE": "/run/acceptance-postgres-secrets/postgres-password",
+        "POSTGRES_INITDB_ARGS": "--auth=scram-sha-256"
+      },
+      "ports": [
+        "127.0.0.1:${ACCEPTANCE_POSTGRES_HOST_PORT:?set an acceptance loopback host port}:5432"
+      ],
+      "volumes": [
+        "acceptance_postgres_data:/var/lib/postgresql/data",
+        {
+          "type": "bind",
+          "source": "${ACCEPTANCE_POSTGRES_SECRET_DIRECTORY_FD_PATH:?set only by the acceptance preflight launcher}",
+          "target": "/run/acceptance-postgres-secrets",
+          "read_only": true,
+          "bind": {"create_host_path": false}
+        }
+      ],
+      "networks": ["acceptance_postgres_network"],
+      "healthcheck": {
+        "test": ["CMD-SHELL", "pg_isready -q"],
+        "interval": "5s",
+        "timeout": "3s",
+        "retries": 5,
+        "start_period": "10s"
+      },
+      "restart": "no",
+      "stop_grace_period": "20s"
+    }
+  },
+  "volumes": {
+    "acceptance_postgres_data": {
+      "name": "discord-ai-reminder-bot-acceptance-postgres-data"
+    }
+  },
+  "networks": {
+    "acceptance_postgres_network": {
+      "name": "discord-ai-reminder-bot-acceptance-postgres-network"
+    }
+  }
+}

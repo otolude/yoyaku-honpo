@@ -1,40 +1,57 @@
 services:
   postgres:
-    image: postgres:18.4-bookworm
+    image: "postgres@${DEVELOPMENT_POSTGRES_IMAGE_DIGEST:?set an immutable sha256 digest}"
     environment:
-      POSTGRES_DB: discord_bot_dev
-      POSTGRES_USER: discord_bot
-      POSTGRES_PASSWORD: discord_bot_dev_password
+      POSTGRES_DB_FILE: /run/development-postgres-secrets/postgres-database
+      POSTGRES_USER_FILE: /run/development-postgres-secrets/postgres-user
+      POSTGRES_PASSWORD_FILE: /run/development-postgres-secrets/postgres-password
+      POSTGRES_INITDB_ARGS: "--auth=scram-sha-256"
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DEVELOPMENT_POSTGRES_HOST_PORT:?set a development loopback host port}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
+      - type: bind
+        source: ./.development-postgres-secrets
+        target: /run/development-postgres-secrets
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U discord_bot -d discord_bot_dev"]
+      test: ["CMD-SHELL", "pg_isready -q"]
       interval: 5s
-      timeout: 5s
-      retries: 10
+      timeout: 3s
+      retries: 5
       start_period: 10s
-    restart: unless-stopped
+    restart: "no"
+    stop_grace_period: 20s
 
   postgres_test:
-    image: postgres:18.4-bookworm
+    image: "postgres@${TEST_POSTGRES_IMAGE_DIGEST:?set an immutable sha256 digest}"
     profiles: ["test"]
     environment:
-      POSTGRES_DB: discord_bot_test
-      POSTGRES_USER: discord_bot_test
-      POSTGRES_PASSWORD: discord_bot_test_password
+      POSTGRES_DB_FILE: /run/test-postgres-secrets/postgres-database
+      POSTGRES_USER_FILE: /run/test-postgres-secrets/postgres-user
+      POSTGRES_PASSWORD_FILE: /run/test-postgres-secrets/postgres-password
+      POSTGRES_INITDB_ARGS: "--auth=scram-sha-256"
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:${TEST_POSTGRES_HOST_PORT:?set a test loopback host port}:5432"
     tmpfs:
       - /var/lib/postgresql
+    volumes:
+      - type: bind
+        source: ./.test-postgres-secrets
+        target: /run/test-postgres-secrets
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U discord_bot_test -d discord_bot_test"]
-      interval: 2s
-      timeout: 5s
-      retries: 15
-      start_period: 5s
+      test: ["CMD-SHELL", "pg_isready -q"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     restart: "no"
+    stop_grace_period: 20s
 
 volumes:
   postgres_data:

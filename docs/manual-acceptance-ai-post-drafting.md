@@ -193,6 +193,12 @@ test-only runnerのsource identityはsource内自己参照hashではなく、承
 - [ ] 配置先候補と同等のARM64 Linux実機で依存解決、import、Mock transport、Provider Adapter shutdownを確認する。
 - [ ] 実Discordを使用する場合は実Provider受入と別の明示手順・費用境界で実施する。
 
+## acceptance PostgreSQL構成は未実施
+
+acceptance専用のsecretless Compose contractは`compose.acceptance.yaml`に限定して追加した。これはDB provisioning、image pull、migration、seed、read-only DB verification、Bot/scheduler起動、Discord command syncを実施した証拠ではない。専用volumeの削除も別承認である。
+
+private `.env.acceptance-postgres`と`.acceptance-postgres-secrets/`はGit管理外であり、actual database、role、password、host portはtracked文書・Compose・testへ記録しない。imageはimmutable digest、host bindは127.0.0.1限定、credentialsは`POSTGRES_*_FILE`のread-only mountだけを用いる。既存development/test/production DB、既存private `.env`、Provider gate CLOSED、55 confirmed／17 unconfirmed／72 total、未確認項目、ARM64状態、`EXECUTION_BOUNDARY_VIOLATION`は不変である。
+
 ## feature flag有効化gate
 
 次をすべて満たすまで本文生成feature flagを有効化しない。
