@@ -191,11 +191,13 @@ python -m discord_ai_reminder_bot
 - project、service、volume、networkはacceptance専用名で分離する。
 - imageは`postgres@sha256:...`形式のimmutable digestだけをprivate `.env.acceptance-postgres`から指定する。floating tagと`latest`は許可しない。
 - host公開はrequiredなprivate host portを`127.0.0.1`へ固定してbindする。全interface bindは許可しない。
-- `.acceptance-postgres-secrets/`はrepository rootのprivate 0700 directoryであり、`postgres-user`、`postgres-password`、`postgres-database`を各0600のregular/non-symlink/current-user-owned fileとして置く。Composeはread-only bind mountと`POSTGRES_*_FILE`だけを使用する。
+- `.acceptance-postgres-secrets/`はrepository rootのprivate 0700 directoryであり、`postgres-user`、`postgres-password`、`postgres-database`を各0600のregular/non-symlink/current-user-owned fileとして置く。将来のroot-owned provisioning helperはこれをdaemonへ直接bindせず、検証済みFDからroot-owned `/run` runtime snapshotへnew-onlyコピーして、その0400 snapshotだけをread-only bind mountと`POSTGRES_*_FILE`に使う。runtime snapshotは再起動後に再利用しない。
 - `.env.acceptance-postgres`とsecret directoryはGit管理外である。実値、credential-like placeholder、DB role/name/password、host portをtracked fileへ置かない。
 - healthcheckはcredentialをargvやlogへ渡さない`pg_isready -q`だけを使う。restartは`no`、shutdown graceとhealth timeoutは有限である。
 
 acceptance volumeの削除、DB provisioning、migration、seed、read-only verification、Discord Bot/scheduler起動はそれぞれ別承認である。`TEST_DATABASE_URL`、production DB、既存private `.env`、Provider gate、guild command syncの通常false設定はこの構成の対象外である。
+
+DB provisioning用のsource候補は`compose.acceptance.provision.yaml`と`scripts/acceptance_database_provision.py`である。これはconfig-only preflightとは別contractであり、root-owned canonical helper `/usr/local/libexec/discord-ai-reminder-bot/acceptance_database_provision.py` としてrepository外へnew-only配置する別承認まで実行不可とする。helperはcanonical `/usr/bin/python3.14`、helper自身、固定standalone Composeのmetadataを受理した場合だけ動作する。fixed standalone Compose、digest-only image、linux/amd64、loopback-only port、read-only stable secret bind、`pull_policy: never`、`up --detach --no-build --pull never --wait`、有限healthcheck/logを固定する。Docker Engine導入、daemon start、image pull、container/volume/network作成、healthcheck、migration、rollback/deleteはまだ実施していない。
 
 acceptance Composeの唯一の正式操作経路はproject interpreterによる`python scripts/acceptance_database_preflight.py`である。このlauncherはfilesystem rootをtrust anchorとしてrepository全ancestor、private metadata、固定system Compose V2 executableをFD-relativeに検証・保持し、厳密なJSON-compatible Compose topologyを受理した場合だけ、childに必要な5 FDだけを`pass_fds`で渡してstandalone Composeの固定`config --quiet`を呼ぶ。Docker CLIの`docker compose`、ambient plugin directory、credential helper、直接のCompose invocationはunsupported bypassである。Compose executable自身が別plugin/helperを実行しないconfig-only境界を前提とし、launcher自身はprovisioning、up/down、volume削除を実行しない。将来のprovisioningには別launcher/別承認が必要である。
 

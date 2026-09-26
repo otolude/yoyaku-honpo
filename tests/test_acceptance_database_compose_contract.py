@@ -177,11 +177,11 @@ def test_runbooks_state_private_creation_and_exact_compose_contracts() -> None:
     assert "Docker CLIの`docker compose`" in operations
     assert "standalone Compose" in operations
     for boundary in (
-        "symlinkでありunsupported/fail-closed",
-        "authoritativeな`config --quiet` validationは未実施",
-        "fixed allowlist pathへ配置",
-        "binary配置、metadata検証、authoritative config成功の前にprivate acceptance inputsを作成せず",
-        "Docker CLIまたはsymlink candidateを代替経路として使わない",
+        "fixed candidate 1の既存symlinkは変更せずunsupported",
+        "COMPLETED_USER_ATTESTED",
+        "/usr/lib/docker/cli-plugins/docker-compose",
+        "Docker Engine package導入、daemon start、image pull、root helper配置、provisioning",
+        "Docker CLIまたはsymlink candidateを代替経路として使わず",
     ):
         assert boundary in operations
     for name in (
