@@ -92,6 +92,19 @@ def _docker_chunked(body: bytes) -> bytes:
     )
 
 
+def _expected_pinned_postgres_image(helper: ModuleType) -> dict[str, object]:
+    return {
+        "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
+        "Os": "linux",
+        "Architecture": "amd64",
+        "Id": "sha256:" + "0" * 64,
+        "Config": {
+            "Env": ["PG_MAJOR=18", f"PGDATA={helper.EXPECTED_POSTGRES_DATA_DIRECTORY}"],
+            "Volumes": {helper.EXPECTED_POSTGRES_VOLUME_DESTINATION: {}},
+        },
+    }
+
+
 def _install_docker_socket(
     helper: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -1006,12 +1019,7 @@ def test_production_state_probe_accepts_only_exact_local_digest_and_absent_targe
 ) -> None:
     responses = iter(
         (
-            {
-                "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
-                "Os": "linux",
-                "Architecture": "amd64",
-                "Id": "sha256:" + "0" * 64,
-            },
+            _expected_pinned_postgres_image(helper),
             [],
             [],
             {"Volumes": []},
@@ -1047,25 +1055,108 @@ def test_proc_port_parser_rejects_tcp6_listener_and_malformed_input(
 def test_image_identity_rejects_platform_and_strict_type_mismatch(
     helper: ModuleType, field: str, value: object
 ) -> None:
-    image: dict[str, object] = {
-        "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
-        "Os": "linux",
-        "Architecture": "amd64",
-        "Id": "sha256:" + "0" * 64,
-    }
+    image = _expected_pinned_postgres_image(helper)
     image[field] = value
     assert helper._valid_image(image) is False
+
+
+@pytest.mark.parametrize(
+    "environment,volumes",
+    (
+        (["PG_MAJOR=17", "PGDATA=/var/lib/postgresql/18/docker"], {"/var/lib/postgresql": {}}),
+        (["PG_MAJOR=18", "PGDATA=/unexpected"], {"/var/lib/postgresql": {}}),
+        (
+            [
+                "PG_MAJOR=18",
+                "PGDATA=/var/lib/postgresql/18/docker",
+                "PGDATA=/override",
+            ],
+            {"/var/lib/postgresql": {}},
+        ),
+        (["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker"], {"/var/lib/postgresql/data": {}}),
+        (
+            ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker"],
+            {"/var/lib/postgresql": {}, "/anonymous": {}},
+        ),
+    ),
+)
+def test_image_identity_requires_pinned_postgres_layout(
+    helper: ModuleType, environment: list[str], volumes: dict[str, dict[str, object]]
+) -> None:
+    image = _expected_pinned_postgres_image(helper)
+    configuration = image["Config"]
+    assert isinstance(configuration, dict)
+    configuration["Env"] = environment
+    configuration["Volumes"] = volumes
+    assert helper._valid_image(image) is False
+
+
+@pytest.mark.parametrize(
+    "environment",
+    (
+        ["PG_MAJOR", "PGDATA=/var/lib/postgresql/18/docker"],
+        ["PG_MAJOR=18", "PGDATA"],
+        ["PG_MAJOR=18", "PG_MAJOR", "PGDATA=/var/lib/postgresql/18/docker"],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", "PGDATA"],
+        ["PG_MAJOR=18", "PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker"],
+        [
+            "PG_MAJOR=18",
+            "PGDATA=/var/lib/postgresql/18/docker",
+            "PGDATA=/var/lib/postgresql/18/docker",
+        ],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", "OTHER=one", "OTHER=two"],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", "MISSING_EQUALS"],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", "=empty-name"],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", "1INVALID=value"],
+        ["PG_MAJOR=18", "PGDATA=/var/lib/postgresql/18/docker", 42],
+    ),
+)
+def test_image_identity_rejects_malformed_or_duplicate_environment_entries(
+    helper: ModuleType, environment: list[object]
+) -> None:
+    image = _expected_pinned_postgres_image(helper)
+    configuration = image["Config"]
+    assert isinstance(configuration, dict)
+    configuration["Env"] = environment
+    assert helper._valid_image(image) is False
+
+
+def test_image_identity_accepts_unique_non_reserved_environment_value_with_equals(
+    helper: ModuleType,
+) -> None:
+    image = _expected_pinned_postgres_image(helper)
+    configuration = image["Config"]
+    assert isinstance(configuration, dict)
+    configuration["Env"] = [
+        "PG_MAJOR=18",
+        f"PGDATA={helper.EXPECTED_POSTGRES_DATA_DIRECTORY}",
+        "UNRELATED=value=with=equals",
+    ]
+    assert helper._valid_image(image) is True
+
+
+def test_provisioning_compose_contract_uses_parent_postgres_volume_without_pgdata_override(
+    helper: ModuleType,
+) -> None:
+    document = json.loads(COMPOSE_PATH.read_text(encoding="utf-8"))
+    service = document["services"]["acceptance_postgres"]
+    assert service["volumes"] == [
+        f"acceptance_postgres_data:{helper.EXPECTED_POSTGRES_VOLUME_DESTINATION}",
+        {
+            "type": "bind",
+            "source": "${ACCEPTANCE_POSTGRES_RUNTIME_SECRET_DIRECTORY:?set only by the root-owned provisioning helper}",
+            "target": "/run/acceptance-postgres-secrets",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        },
+    ]
+    assert all(not key.startswith("PGDATA") for key in service["environment"])
 
 
 def test_state_probe_rejects_volume_project_label_mismatch_and_malformed_item(
     helper: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    image = {
-        "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
-        "Os": "linux",
-        "Architecture": "amd64",
-        "Id": "sha256:" + "0" * 64,
-    }
+    image = _expected_pinned_postgres_image(helper)
     responses = iter((image, [], [], {"Volumes": [{"Name": helper.EXPECTED_VOLUME, "Labels": {}}]}))
     monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
     assert helper._state_is_pristine() is False
@@ -1523,12 +1614,7 @@ def test_runtime_self_path_swaps_fail_closed_at_each_boundary(
 def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
     helper: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    image = {
-        "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
-        "Os": "linux",
-        "Architecture": "amd64",
-        "Id": "sha256:" + "0" * 64,
-    }
+    image = _expected_pinned_postgres_image(helper)
     container = {
         "Name": f"/{helper.EXPECTED_CONTAINER}",
         "Config": {
@@ -1547,7 +1633,7 @@ def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
             {
                 "Type": "volume",
                 "Source": helper.EXPECTED_VOLUME,
-                "Destination": "/var/lib/postgresql/data",
+                "Destination": helper.EXPECTED_POSTGRES_VOLUME_DESTINATION,
                 "RW": True,
             },
             {
@@ -1602,6 +1688,32 @@ def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
     )
     monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
     assert helper._post_state_is_exact(helper.RUNTIME_SECRET_DIRECTORY) is True
+    expected_mounts = container["Mounts"]
+    assert isinstance(expected_mounts, list)
+    container["Mounts"] = [
+        {**expected_mounts[0], "Destination": "/var/lib/postgresql/data"},
+        expected_mounts[1],
+    ]
+    responses = iter(
+        (image, container, network, volume, [global_container], [global_network], global_volumes)
+    )
+    monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
+    assert helper._post_state_is_exact(helper.RUNTIME_SECRET_DIRECTORY) is False
+    container["Mounts"] = [
+        *expected_mounts,
+        {
+            "Type": "volume",
+            "Source": "anonymous-postgres-volume",
+            "Destination": "/var/lib/postgresql/anonymous",
+            "RW": True,
+        },
+    ]
+    responses = iter(
+        (image, container, network, volume, [global_container], [global_network], global_volumes)
+    )
+    monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
+    assert helper._post_state_is_exact(helper.RUNTIME_SECRET_DIRECTORY) is False
+    container["Mounts"] = expected_mounts
     container["State"] = {"Health": {"Status": "starting"}}
     responses = iter(
         (image, container, network, volume, [global_container], [global_network], global_volumes)
@@ -1671,12 +1783,7 @@ def test_post_global_state_rejects_every_extra_or_conflicting_resource(
 def test_post_state_rejects_non_exact_port_publication(
     helper: ModuleType, monkeypatch: pytest.MonkeyPatch, ports: object
 ) -> None:
-    image = {
-        "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
-        "Os": "linux",
-        "Architecture": "amd64",
-        "Id": "sha256:" + "0" * 64,
-    }
+    image = _expected_pinned_postgres_image(helper)
     container = {
         "Name": f"/{helper.EXPECTED_CONTAINER}",
         "Config": {
@@ -1692,7 +1799,7 @@ def test_post_state_rejects_non_exact_port_publication(
             {
                 "Type": "volume",
                 "Source": helper.EXPECTED_VOLUME,
-                "Destination": "/var/lib/postgresql/data",
+                "Destination": helper.EXPECTED_POSTGRES_VOLUME_DESTINATION,
                 "RW": True,
             },
             {

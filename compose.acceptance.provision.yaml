@@ -16,7 +16,7 @@
         "127.0.0.1:${ACCEPTANCE_POSTGRES_HOST_PORT:?set an acceptance loopback host port}:5432"
       ],
       "volumes": [
-        "acceptance_postgres_data:/var/lib/postgresql/data",
+        "acceptance_postgres_data:/var/lib/postgresql",
         {
           "type": "bind",
           "source": "${ACCEPTANCE_POSTGRES_RUNTIME_SECRET_DIRECTORY:?set only by the root-owned provisioning helper}",

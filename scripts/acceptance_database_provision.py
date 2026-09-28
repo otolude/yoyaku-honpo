@@ -56,6 +56,8 @@ EXPECTED_NETWORK = "discord-ai-reminder-bot-acceptance-postgres-network"
 EXPECTED_PROJECT = "discord-ai-reminder-bot-acceptance-db"
 DOCKER_SOCKET = Path("/run/docker.sock")
 DOCKER_DATA_ROOT = Path("/var/lib/docker")
+EXPECTED_POSTGRES_VOLUME_DESTINATION = "/var/lib/postgresql"
+EXPECTED_POSTGRES_DATA_DIRECTORY = "/var/lib/postgresql/18/docker"
 RUNTIME_SECRET_DIRECTORY = Path("/run/discord-ai-reminder-bot-acceptance-postgres-secrets")
 WINDOWS_PORT_PRECHECK_ENVIRONMENT = "ACCEPTANCE_POSTGRES_WINDOWS_PORT_PRECHECK"
 WINDOWS_PORT_PRECHECK_VALUE = "USER_ATTESTED_25432"
@@ -95,7 +97,7 @@ EXPECTED_COMPOSE_CONTRACT: dict[str, object] = {
                 "127.0.0.1:${ACCEPTANCE_POSTGRES_HOST_PORT:?set an acceptance loopback host port}:5432"
             ],
             "volumes": [
-                "acceptance_postgres_data:/var/lib/postgresql/data",
+                f"acceptance_postgres_data:{EXPECTED_POSTGRES_VOLUME_DESTINATION}",
                 {
                     "type": "bind",
                     "source": "${ACCEPTANCE_POSTGRES_RUNTIME_SECRET_DIRECTORY:?set only by the root-owned provisioning helper}",
@@ -1045,6 +1047,22 @@ def _docker_request(path: str) -> object:
         _fail()
 
 
+def _valid_image_environment(environment: object) -> bool:
+    if type(environment) is not list:
+        return False
+    values: dict[str, str] = {}
+    for entry in environment:
+        if type(entry) is not str or "=" not in entry:
+            return False
+        name, value = entry.split("=", 1)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None or name in values:
+            return False
+        values[name] = value
+    return (
+        values.get("PG_MAJOR") == "18" and values.get("PGDATA") == EXPECTED_POSTGRES_DATA_DIRECTORY
+    )
+
+
 def _valid_image(image: object) -> bool:
     if not isinstance(image, dict):
         return False
@@ -1052,6 +1070,15 @@ def _valid_image(image: object) -> bool:
     if not isinstance(digests, list) or any(type(item) is not str for item in digests):
         return False
     image_id = image.get("Id")
+    configuration = image.get("Config")
+    if not isinstance(configuration, dict):
+        return False
+    environment = configuration.get("Env")
+    declared_volumes = configuration.get("Volumes")
+    if not _valid_image_environment(environment) or declared_volumes != {
+        EXPECTED_POSTGRES_VOLUME_DESTINATION: {}
+    }:
+        return False
     return (
         EXPECTED_IMAGE_REFERENCE in digests
         and image.get("Os") == "linux"
@@ -1320,9 +1347,11 @@ def _post_state_is_exact(runtime_directory: Path) -> bool:
         ):
             return False
         required_mounts = {
-            ("volume", EXPECTED_VOLUME, "/var/lib/postgresql/data", False),
+            ("volume", EXPECTED_VOLUME, EXPECTED_POSTGRES_VOLUME_DESTINATION, False),
             ("bind", os.fspath(runtime_directory), "/run/acceptance-postgres-secrets", True),
         }
+        if len(mounts) != len(required_mounts):
+            return False
         actual_mounts: set[tuple[str, str, str, bool]] = set()
         for mount in mounts:
             if not isinstance(mount, dict) or any(
