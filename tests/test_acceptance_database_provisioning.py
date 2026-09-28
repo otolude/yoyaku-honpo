@@ -12,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Self
 
 import pytest
 
@@ -40,6 +41,487 @@ def helper(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         if name.startswith(module.PROHIBITED_ENVIRONMENT_PREFIXES):
             monkeypatch.delenv(name, raising=False)
     return module
+
+
+class _DockerResponseSocket:
+    """Offline AF_UNIX response fixture; it never opens a real socket."""
+
+    def __init__(self, response: bytes | list[bytes | BaseException]) -> None:
+        self._fragments = [response] if isinstance(response, bytes) else list(response)
+        self.request = b""
+        self.timeout: float | None = None
+        self.connected: str | None = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def settimeout(self, value: float) -> None:
+        self.timeout = value
+
+    def connect(self, path: str) -> None:
+        self.connected = path
+
+    def sendall(self, value: bytes) -> None:
+        self.request += value
+
+    def recv(self, size: int) -> bytes:
+        if not self._fragments:
+            return b""
+        fragment = self._fragments.pop(0)
+        if isinstance(fragment, BaseException):
+            raise fragment
+        return fragment
+
+
+def _docker_http_response(
+    headers: bytes, body: bytes, *, status: bytes = b"HTTP/1.1 200 OK"
+) -> bytes:
+    return status + b"\r\n" + headers + b"\r\n\r\n" + body
+
+
+def _docker_chunked(body: bytes) -> bytes:
+    midpoint = max(1, len(body) // 2)
+    first, second = body[:midpoint], body[midpoint:]
+    chunks = [first, second] if second else [first]
+    return (
+        b"".join(f"{len(chunk):X}".encode("ascii") + b"\r\n" + chunk + b"\r\n" for chunk in chunks)
+        + b"0\r\n\r\n"
+    )
+
+
+def _install_docker_socket(
+    helper: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    response: bytes | list[bytes | BaseException],
+) -> _DockerResponseSocket:
+    fake = _DockerResponseSocket(response)
+    monkeypatch.setattr(helper.socket, "socket", lambda *_: fake)
+    return fake
+
+
+def test_docker_request_decodes_observed_chunked_image_response(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = json.dumps(
+        {
+            "RepoDigests": [helper.EXPECTED_IMAGE_REFERENCE],
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Id": "sha256:" + "0" * 64,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    fake = _install_docker_socket(
+        helper,
+        monkeypatch,
+        _docker_http_response(b"Transfer-Encoding: chunked", _docker_chunked(body)),
+    )
+    assert helper._docker_request("/images/example/json") == json.loads(body)
+    assert fake.timeout == helper.DOCKER_API_TIMEOUT_SECONDS
+    assert fake.connected == str(helper.DOCKER_SOCKET)
+    assert (
+        fake.request
+        == b"GET /images/example/json HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"
+    )
+
+
+@pytest.mark.parametrize("width", (1, 2, 7, 31))
+def test_docker_request_accepts_chunked_framing_across_recv_boundaries(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, width: int
+) -> None:
+    body = b'{"Volumes":[]}'
+    response = _docker_http_response(b"Transfer-Encoding: chunked", _docker_chunked(body))
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        [response[offset : offset + width] for offset in range(0, len(response), width)],
+    )
+    assert helper._docker_request("/volumes") == {"Volumes": []}
+
+
+def test_docker_request_accepts_fragmented_content_length_response(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b'{"Volumes":[]}'
+    response = _docker_http_response(f"Content-Length: {len(body)}".encode("ascii"), body)
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        [response[:19], response[19:31], response[31:], b""],
+    )
+    assert helper._docker_request("/volumes") == {"Volumes": []}
+
+
+def test_docker_request_preserves_content_length_response_behavior(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b'{"Volumes":[]}'
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        _docker_http_response(f"Content-Length: {len(body)}".encode("ascii"), body),
+    )
+    assert helper._docker_request("/volumes") == {"Volumes": []}
+
+
+@pytest.mark.parametrize(
+    "headers,body",
+    (
+        (b"Transfer-Encoding: chunked", b"Z\r\n"),
+        (b"Transfer-Encoding: chunked", b"5\r\n{}"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\n0\r\n\r\n"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\r\n"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\r\n0\r\n\r\nX"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\r\n0\r\nX-Test: value\r\n\r\n"),
+        (b"Transfer-Encoding: chunked", b"2;extension\r\n{}\r\n0\r\n\r\n"),
+        (b"Transfer-Encoding: chunked\r\nContent-Length: 2", b"2\r\n{}\r\n0\r\n\r\n"),
+        (b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked", b"2\r\n{}\r\n0\r\n\r\n"),
+        (b"Content-Length: 2\r\nContent-Length: 2", b"{}"),
+        (b"Content-Length: 2\r\nContent-Encoding: identity", b"{}"),
+        (b"Content-Length: 2\r\n folded: value", b"{}"),
+        (b"Content-Length: 2\r\nMalformed", b"{}"),
+        (b"Transfer-Encoding: gzip", b"{}"),
+        (b"Transfer-Encoding: chunked", f"{(1 << 20) + 1:X}\r\n".encode("ascii")),
+    ),
+)
+def test_docker_request_rejects_invalid_or_oversized_chunked_framing(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, headers: bytes, body: bytes
+) -> None:
+    _install_docker_socket(helper, monkeypatch, _docker_http_response(headers, body))
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/images/example/json")
+
+
+def test_docker_request_rejects_content_length_excess_body(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        _docker_http_response(b"Content-Length: 2", b"{}X"),
+    )
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "headers,framing",
+    (
+        (b"Content-Length: 2", b"{}"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\r\n0\r\n\r\n"),
+    ),
+)
+def test_docker_request_rejects_delayed_extra_data_after_framing(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, headers: bytes, framing: bytes
+) -> None:
+    response = _docker_http_response(headers, framing)
+    _install_docker_socket(helper, monkeypatch, [response, b"X"])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "headers,body",
+    (
+        (b"Content-Type: application/json", b"{}"),
+        (b"Content-Length: ", b"{}"),
+        (b"Content-Length: +2", b"{}"),
+        (b"Content-Length: -2", b"{}"),
+        (b"Content-Length: 02", b"{}"),
+        (b"Content-Length: 2x", b"{}"),
+        (b"Content-Length: 3", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace: one\r\nx-trace: two", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace:\tvalue", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace:  value", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace: value ", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace: value\x7f", b"{}"),
+        (b"Content-Length: 2\r\nX-Trace: \x80", b"{}"),
+    ),
+)
+def test_docker_request_rejects_invalid_content_length_or_headers(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, headers: bytes, body: bytes
+) -> None:
+    _install_docker_socket(helper, monkeypatch, _docker_http_response(headers, body))
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "status",
+    (b"HTTP/1.0 200 OK", b"HTTP/1.1 200", b"HTTP/1.1 201 OK", b"HTTP/1.1  200 OK"),
+)
+def test_docker_request_rejects_status_line_variants(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, status: bytes
+) -> None:
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        _docker_http_response(b"Content-Length: 2", b"{}", status=status),
+    )
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"2\r\n{}\r\n0\r\n",
+        b"2\r\n{}\r\n0\r",
+        b"2\r\n{}\r\n0",
+        b"2\r\n{}\r\n",
+        b"2\r\n{}\r\n0\r\n\r",
+    ),
+)
+def test_docker_request_rejects_chunked_truncation_at_terminal_framing(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    response = _docker_http_response(b"Transfer-Encoding: chunked", body)
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"2",
+        b"2\r",
+        b"2\r\n",
+        b"2\r\n{",
+        b"2\r\n{}\r",
+    ),
+)
+def test_docker_request_rejects_chunked_truncation_before_terminal_chunk(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    response = _docker_http_response(b"Transfer-Encoding: chunked", body)
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize(
+    "headers,framing",
+    (
+        (b"Content-Length: 2", b"{}"),
+        (b"Transfer-Encoding: chunked", b"2\r\n{}\r\n0\r\n\r\n"),
+    ),
+)
+def test_docker_request_rejects_timeout_instead_of_eof_after_framing(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, headers: bytes, framing: bytes
+) -> None:
+    response = _docker_http_response(headers, framing)
+    _install_docker_socket(helper, monkeypatch, [response, TimeoutError("fixture timeout")])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+def _header_boundary_response(helper: ModuleType, header_size: int) -> bytes:
+    prefix = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Fill: "
+    assert header_size >= len(prefix)
+    return prefix + (b"a" * (header_size - len(prefix))) + b"\r\n\r\n{}"
+
+
+def test_docker_request_accepts_header_at_exact_limit_with_split_delimiter(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = _header_boundary_response(helper, helper.DOCKER_API_MAX_HEADER_BYTES)
+    boundary = helper.DOCKER_API_MAX_HEADER_BYTES + 3
+    _install_docker_socket(helper, monkeypatch, [response[:boundary], response[boundary:], b""])
+    assert helper._docker_request("/volumes") == {}
+
+
+def test_docker_request_rejects_header_over_limit(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = _header_boundary_response(helper, helper.DOCKER_API_MAX_HEADER_BYTES + 1)
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+def _chunked_encoded_limit_response(helper: ModuleType) -> bytes:
+    header = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    terminal = b"0\r\n\r\n"
+    remaining = helper.DOCKER_API_MAX_ENCODED_BYTES - len(header) - len(terminal)
+    five_chunks, remainder = divmod(remaining, 10)
+    sizes = [5] * five_chunks
+    if remainder:
+        sizes.pop()
+        remainder += 10
+        if remainder in (11, 12, 13, 14):
+            sizes.append(remainder - 5)
+        elif remainder == 15:
+            sizes.extend((1, 4))
+        else:  # The fixed constants above must always produce an encodable remainder.
+            raise AssertionError("unexpected encoded-boundary remainder")
+    body_size = sum(sizes)
+    assert body_size <= helper.DOCKER_API_MAX_BODY_BYTES
+    body = b'{"x":"' + (b"x" * (body_size - 8)) + b'"}'
+    assert len(body) == body_size
+    chunks: list[bytes] = []
+    offset = 0
+    for size in sizes:
+        chunk = body[offset : offset + size]
+        chunks.append(f"{size:X}".encode("ascii") + b"\r\n" + chunk + b"\r\n")
+        offset += size
+    response = header + b"".join(chunks) + terminal
+    assert len(response) == helper.DOCKER_API_MAX_ENCODED_BYTES
+    return response
+
+
+def test_docker_request_accepts_encoded_response_at_exact_limit(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = _chunked_encoded_limit_response(helper)
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    assert isinstance(helper._docker_request("/volumes"), dict)
+
+
+def test_docker_request_rejects_encoded_response_over_limit(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = _chunked_encoded_limit_response(helper) + b"X"
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    with pytest.raises(helper.ProvisioningFailure):
+        helper._docker_request("/volumes")
+
+
+@pytest.mark.parametrize("over_limit", (False, True))
+def test_docker_request_enforces_decoded_body_limit(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, over_limit: bool
+) -> None:
+    target_size = helper.DOCKER_API_MAX_BODY_BYTES + int(over_limit)
+    body = b'{"x":"' + (b"x" * (target_size - 8)) + b'"}'
+    response = _docker_http_response(b"Transfer-Encoding: chunked", _docker_chunked(body))
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    if over_limit:
+        with pytest.raises(helper.ProvisioningFailure):
+            helper._docker_request("/volumes")
+    else:
+        assert isinstance(helper._docker_request("/volumes"), dict)
+
+
+@pytest.mark.parametrize("over_limit", (False, True))
+def test_docker_request_enforces_content_length_body_limit(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, over_limit: bool
+) -> None:
+    target_size = helper.DOCKER_API_MAX_BODY_BYTES + int(over_limit)
+    body = b'{"x":"' + (b"x" * (target_size - 8)) + b'"}'
+    response = _docker_http_response(f"Content-Length: {len(body)}".encode("ascii"), body)
+    _install_docker_socket(helper, monkeypatch, [response, b""])
+    if over_limit:
+        with pytest.raises(helper.ProvisioningFailure):
+            helper._docker_request("/volumes")
+    else:
+        assert isinstance(helper._docker_request("/volumes"), dict)
+
+
+def test_docker_request_uses_fixed_nonreflecting_failure_for_framing_canary(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canary = "canary-response-content-must-not-reflect"
+    _install_docker_socket(
+        helper,
+        monkeypatch,
+        _docker_http_response(b"Content-Length: 2", b"{}" + canary.encode("ascii")),
+    )
+    with pytest.raises(helper.ProvisioningFailure) as error:
+        helper._docker_request("/volumes")
+    assert str(error.value) == helper.FAILURE_MARKER
+    assert canary not in repr(error.value)
+
+
+@pytest.mark.parametrize(
+    "fragments",
+    (
+        [b"HTTP/1.1 200"],
+        [b"HTTP/1.1 200 OK\r\nContent-Len"],
+        [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r"],
+    ),
+)
+def test_docker_request_rejects_header_eof_before_terminator_without_reflection(
+    helper: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fragments: list[bytes],
+) -> None:
+    partial_canary = b"header-eof-canary"
+    fake = _install_docker_socket(
+        helper,
+        monkeypatch,
+        [*fragments[:-1], fragments[-1] + partial_canary, b""],
+    )
+    monkeypatch.setattr(
+        helper.json,
+        "loads",
+        lambda *_args, **_kwargs: pytest.fail("header EOF must not reach JSON parsing"),
+    )
+    with pytest.raises(helper.ProvisioningFailure) as error:
+        helper._docker_request("/volumes")
+    captured = capsys.readouterr()
+    assert str(error.value) == helper.FAILURE_MARKER
+    assert partial_canary.decode("ascii") not in repr(error.value)
+    assert partial_canary.decode("ascii") not in captured.out
+    assert partial_canary.decode("ascii") not in captured.err
+    assert captured.out == ""
+    assert captured.err == ""
+    assert fake.timeout == helper.DOCKER_API_TIMEOUT_SECONDS
+
+
+def test_docker_request_does_not_reflect_path_canary_on_framing_failure(
+    helper: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path_canary = "/canary-path-must-not-be-reflected"
+    _install_docker_socket(helper, monkeypatch, [b"HTTP/1.1 200 OK\r\n", b""])
+    with pytest.raises(helper.ProvisioningFailure) as error:
+        helper._docker_request(path_canary)
+    captured = capsys.readouterr()
+    assert str(error.value) == helper.FAILURE_MARKER
+    assert path_canary not in repr(error.value)
+    assert path_canary not in captured.out
+    assert path_canary not in captured.err
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("operation", ("connect", "sendall", "recv"))
+def test_docker_request_normalizes_socket_exception_detail_without_reflection(
+    helper: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+) -> None:
+    detail_canary = f"socket-{operation}-detail-canary"
+    failure = OSError(123, detail_canary, f"/{detail_canary}")
+    fake = _DockerResponseSocket([failure] if operation == "recv" else b"")
+    if operation == "connect":
+
+        def failing_connect(_: str) -> None:
+            raise failure
+
+        monkeypatch.setattr(fake, "connect", failing_connect)
+    elif operation == "sendall":
+
+        def failing_sendall(_: bytes) -> None:
+            raise failure
+
+        monkeypatch.setattr(fake, "sendall", failing_sendall)
+    monkeypatch.setattr(helper.socket, "socket", lambda *_: fake)
+    with pytest.raises(helper.ProvisioningFailure) as error:
+        helper._docker_request("/volumes")
+    captured = capsys.readouterr()
+    assert str(error.value) == helper.FAILURE_MARKER
+    assert detail_canary not in repr(error.value)
+    assert detail_canary not in captured.out
+    assert detail_canary not in captured.err
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def _write(path: Path, value: bytes, mode: int) -> None:

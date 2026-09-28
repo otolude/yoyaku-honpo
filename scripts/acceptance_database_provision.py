@@ -62,6 +62,11 @@ WINDOWS_PORT_PRECHECK_VALUE = "USER_ATTESTED_25432"
 MINIMUM_DATA_ROOT_FREE_BYTES = 10 * 1024 * 1024 * 1024
 SUBPROCESS_TIMEOUT_SECONDS = 60
 DOCKER_API_TIMEOUT_SECONDS = 3
+# Header bytes exclude the terminating CRLFCRLF. Encoded bytes include every
+# response octet received from the socket, including header and chunk framing.
+DOCKER_API_MAX_HEADER_BYTES = 64 * 1024
+DOCKER_API_MAX_BODY_BYTES = 1 << 20
+DOCKER_API_MAX_ENCODED_BYTES = 2 << 20
 SANITIZED_ENV = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin"}
 PROHIBITED_ENVIRONMENT_PREFIXES = (
     "DOCKER_",
@@ -887,25 +892,154 @@ def _disk_is_sufficient(target: int | Path = DOCKER_DATA_ROOT) -> bool:
         return False
 
 
+def _docker_response_headers(header: bytes) -> tuple[str, int | None]:
+    """Validate the limited HTTP/1.1 framing accepted from Docker's Unix API."""
+    try:
+        lines = header.split(b"\r\n")
+        if not lines or lines[0] != b"HTTP/1.1 200 OK":
+            _fail()
+        fields: dict[bytes, bytes] = {}
+        token = re.compile(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+        for line in lines[1:]:
+            if not line or line[:1] in (b" ", b"\t") or b":" not in line:
+                _fail()
+            if any(byte < 0x20 or byte > 0x7E for byte in line):
+                _fail()
+            name, raw_value = line.split(b":", 1)
+            if token.fullmatch(name) is None:
+                _fail()
+            if raw_value.startswith(b"\t") or raw_value.endswith((b" ", b"\t")):
+                _fail()
+            value = raw_value[1:] if raw_value.startswith(b" ") else raw_value
+            if value.startswith(b" ") or b"\t" in value:
+                _fail()
+            normalized = name.lower()
+            if normalized in fields:
+                _fail()
+            fields[normalized] = value
+        if b"content-encoding" in fields:
+            _fail()
+        length = fields.get(b"content-length")
+        encoding = fields.get(b"transfer-encoding")
+        if (length is None) == (encoding is None):
+            _fail()
+        if length is not None:
+            if re.fullmatch(rb"(?:0|[1-9][0-9]*)", length) is None:
+                _fail()
+            declared_length = int(length)
+            if declared_length > DOCKER_API_MAX_BODY_BYTES:
+                _fail()
+            return "content-length", declared_length
+        if encoding != b"chunked":
+            _fail()
+        return "chunked", None
+    except UnicodeDecodeError, ValueError, ProvisioningFailure:
+        _fail()
+
+
+class _DockerResponseReader:
+    """Finite response reader that requires an explicit EOF after framing."""
+
+    def __init__(self, client: socket.socket) -> None:
+        self.client = client
+        self.buffer = bytearray()
+        self.received = 0
+
+    def _recv(self) -> bool:
+        if self.received >= DOCKER_API_MAX_ENCODED_BYTES:
+            _fail()
+        chunk = self.client.recv(min(65536, DOCKER_API_MAX_ENCODED_BYTES - self.received))
+        if not chunk:
+            return False
+        self.received += len(chunk)
+        if self.received > DOCKER_API_MAX_ENCODED_BYTES:
+            _fail()
+        self.buffer.extend(chunk)
+        return True
+
+    def headers(self) -> bytes:
+        while True:
+            marker = self.buffer.find(b"\r\n\r\n")
+            if marker >= 0:
+                if marker > DOCKER_API_MAX_HEADER_BYTES:
+                    _fail()
+                header = bytes(self.buffer[:marker])
+                del self.buffer[: marker + 4]
+                return header
+            if len(self.buffer) > DOCKER_API_MAX_HEADER_BYTES + 3 or not self._recv():
+                _fail()
+
+    def line(self, maximum: int) -> bytes:
+        while True:
+            marker = self.buffer.find(b"\r\n")
+            if marker >= 0:
+                if marker > maximum:
+                    _fail()
+                line = bytes(self.buffer[:marker])
+                del self.buffer[: marker + 2]
+                return line
+            # A CR can be the first half of a delimiter after a maximum-sized line.
+            if len(self.buffer) > maximum + 1 or not self._recv():
+                _fail()
+
+    def exact(self, size: int) -> bytes:
+        while len(self.buffer) < size:
+            if not self._recv():
+                _fail()
+        value = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return value
+
+    def eof(self) -> None:
+        if self.buffer:
+            _fail()
+        if self.received == DOCKER_API_MAX_ENCODED_BYTES:
+            if self.client.recv(1):
+                _fail()
+            return
+        if self._recv():
+            _fail()
+
+
+def _docker_chunked_body(reader: _DockerResponseReader) -> bytes:
+    decoded = bytearray()
+    while True:
+        line = reader.line(16)
+        if not line or b";" in line or len(line) > 16:
+            _fail()
+        if re.fullmatch(rb"[0-9A-Fa-f]+", line) is None:
+            _fail()
+        size = int(line, 16)
+        if size > DOCKER_API_MAX_BODY_BYTES - len(decoded):
+            _fail()
+        if size == 0:
+            # Trailers are deliberately unsupported: only the required empty line is valid.
+            if reader.line(0) != b"":
+                _fail()
+            reader.eof()
+            return bytes(decoded)
+        decoded.extend(reader.exact(size))
+        if reader.exact(2) != b"\r\n":
+            _fail()
+
+
 def _docker_request(path: str) -> object:
-    """Perform a bounded local Unix-socket GET without reflecting response details."""
+    """Perform one bounded local Unix-socket GET with strict HTTP/1.1 framing."""
     request = f"GET {path} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n".encode("ascii")
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(DOCKER_API_TIMEOUT_SECONDS)
             client.connect(os.fspath(DOCKER_SOCKET))
             client.sendall(request)
-            response = bytearray()
-            while len(response) <= 1 << 20:
-                chunk = client.recv(65536)
-                if not chunk:
-                    break
-                response.extend(chunk)
-            if len(response) > 1 << 20 or b"\r\n\r\n" not in response:
-                _fail()
-        header, body = bytes(response).split(b"\r\n\r\n", 1)
-        if not header.startswith(b"HTTP/1.1 200 "):
-            _fail()
+            reader = _DockerResponseReader(client)
+            mode, length = _docker_response_headers(reader.headers())
+            if mode == "content-length":
+                if length is None:
+                    _fail()
+                body = reader.exact(length)
+                reader.eof()
+            else:
+                body = _docker_chunked_body(reader)
         return json.loads(body.decode("utf-8"), object_pairs_hook=_reject_duplicate_object)
     except UnicodeDecodeError, json.JSONDecodeError, OSError, ProvisioningFailure:
         _fail()
