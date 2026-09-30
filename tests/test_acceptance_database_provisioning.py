@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import importlib.util
 import json
@@ -1632,7 +1633,8 @@ def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
         "Mounts": [
             {
                 "Type": "volume",
-                "Source": helper.EXPECTED_VOLUME,
+                "Name": helper.EXPECTED_VOLUME,
+                "Source": "/var/lib/docker/volumes/discord-ai-reminder-bot-acceptance-postgres-data/_data",
                 "Destination": helper.EXPECTED_POSTGRES_VOLUME_DESTINATION,
                 "RW": True,
             },
@@ -1653,6 +1655,7 @@ def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
     }
     volume = {
         "Name": helper.EXPECTED_VOLUME,
+        "Mountpoint": "/var/lib/docker/volumes/discord-ai-reminder-bot-acceptance-postgres-data/_data",
         "Labels": {
             "com.docker.compose.project": helper.EXPECTED_PROJECT,
             "com.docker.compose.volume": "acceptance_postgres_data",
@@ -1717,6 +1720,156 @@ def test_post_up_state_requires_exact_labels_mount_port_and_healthy_status(
     container["State"] = {"Health": {"Status": "starting"}}
     responses = iter(
         (image, container, network, volume, [global_container], [global_network], global_volumes)
+    )
+    monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
+    assert helper._post_state_is_exact(helper.RUNTIME_SECRET_DIRECTORY) is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "volume_source_is_name",
+        "volume_name_missing",
+        "volume_name_wrong",
+        "volume_source_mismatch",
+        "volume_name_empty",
+        "anonymous_volume",
+        "third_mount",
+        "volume_type_wrong",
+        "volume_destination_wrong",
+        "volume_rw_wrong",
+        "volume_rw_non_bool",
+        "bind_type_wrong",
+        "bind_destination_wrong",
+        "bind_rw_wrong",
+        "mountpoint_missing",
+        "mountpoint_empty",
+        "mountpoint_relative",
+        "mountpoint_non_string",
+    ),
+)
+def test_post_state_rejects_noncanonical_volume_mount_identity(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    mountpoint = "/var/lib/docker/volumes/discord-ai-reminder-bot-acceptance-postgres-data/_data"
+    image = _expected_pinned_postgres_image(helper)
+    container = {
+        "Name": f"/{helper.EXPECTED_CONTAINER}",
+        "Config": {
+            "Image": helper.EXPECTED_IMAGE_REFERENCE,
+            "Labels": {
+                "com.docker.compose.project": helper.EXPECTED_PROJECT,
+                "com.docker.compose.service": "acceptance_postgres",
+            },
+        },
+        "State": {"Status": "running", "Health": {"Status": "healthy"}},
+        "NetworkSettings": {
+            "Networks": {helper.EXPECTED_NETWORK: {}},
+            "Ports": {"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "25432"}]},
+        },
+        "Mounts": [
+            {
+                "Type": "volume",
+                "Name": helper.EXPECTED_VOLUME,
+                "Source": mountpoint,
+                "Destination": helper.EXPECTED_POSTGRES_VOLUME_DESTINATION,
+                "RW": True,
+            },
+            {
+                "Type": "bind",
+                "Source": str(helper.RUNTIME_SECRET_DIRECTORY),
+                "Destination": "/run/acceptance-postgres-secrets",
+                "RW": False,
+            },
+        ],
+    }
+    network = {
+        "Name": helper.EXPECTED_NETWORK,
+        "Labels": {
+            "com.docker.compose.project": helper.EXPECTED_PROJECT,
+            "com.docker.compose.network": "acceptance_postgres_network",
+        },
+    }
+    volume = {
+        "Name": helper.EXPECTED_VOLUME,
+        "Mountpoint": mountpoint,
+        "Labels": {
+            "com.docker.compose.project": helper.EXPECTED_PROJECT,
+            "com.docker.compose.volume": "acceptance_postgres_data",
+        },
+    }
+    global_container = {
+        "Names": [f"/{helper.EXPECTED_CONTAINER}"],
+        "Labels": container["Config"]["Labels"],
+    }
+    global_network = {"Name": helper.EXPECTED_NETWORK, "Labels": network["Labels"]}
+    global_volumes = {"Volumes": [{"Name": helper.EXPECTED_VOLUME, "Labels": volume["Labels"]}]}
+
+    candidate_container = copy.deepcopy(container)
+    candidate_volume = copy.deepcopy(volume)
+    volume_mount = candidate_container["Mounts"][0]
+    bind_mount = candidate_container["Mounts"][1]
+    assert isinstance(volume_mount, dict)
+    assert isinstance(bind_mount, dict)
+
+    if mutation == "volume_source_is_name":
+        volume_mount["Source"] = helper.EXPECTED_VOLUME
+    elif mutation == "volume_name_missing":
+        del volume_mount["Name"]
+    elif mutation == "volume_name_wrong":
+        volume_mount["Name"] = "wrong-volume"
+    elif mutation == "volume_source_mismatch":
+        volume_mount["Source"] = mountpoint + "-wrong"
+    elif mutation == "volume_name_empty":
+        volume_mount["Name"] = ""
+    elif mutation == "anonymous_volume":
+        del volume_mount["Name"]
+        volume_mount["Source"] = "/var/lib/docker/volumes/anonymous/_data"
+    elif mutation == "third_mount":
+        candidate_container["Mounts"].append(
+            {
+                "Type": "volume",
+                "Name": "anonymous-volume",
+                "Source": "/var/lib/docker/volumes/anonymous/_data",
+                "Destination": "/anonymous",
+                "RW": True,
+            }
+        )
+    elif mutation == "volume_type_wrong":
+        volume_mount["Type"] = "bind"
+    elif mutation == "volume_destination_wrong":
+        volume_mount["Destination"] = "/var/lib/postgresql/data"
+    elif mutation == "volume_rw_wrong":
+        volume_mount["RW"] = False
+    elif mutation == "volume_rw_non_bool":
+        volume_mount["RW"] = 1
+    elif mutation == "bind_type_wrong":
+        bind_mount["Type"] = "volume"
+    elif mutation == "bind_destination_wrong":
+        bind_mount["Destination"] = "/run/wrong-secrets"
+    elif mutation == "bind_rw_wrong":
+        bind_mount["RW"] = True
+    elif mutation == "mountpoint_missing":
+        del candidate_volume["Mountpoint"]
+    elif mutation == "mountpoint_empty":
+        candidate_volume["Mountpoint"] = ""
+    elif mutation == "mountpoint_relative":
+        candidate_volume["Mountpoint"] = "relative/mountpoint"
+    elif mutation == "mountpoint_non_string":
+        candidate_volume["Mountpoint"] = 1
+    else:
+        raise AssertionError(mutation)
+
+    responses = iter(
+        (
+            image,
+            candidate_container,
+            network,
+            candidate_volume,
+            [global_container],
+            [global_network],
+            global_volumes,
+        )
     )
     monkeypatch.setattr(helper, "_docker_request", lambda _: next(responses))
     assert helper._post_state_is_exact(helper.RUNTIME_SECRET_DIRECTORY) is False
@@ -1798,7 +1951,8 @@ def test_post_state_rejects_non_exact_port_publication(
         "Mounts": [
             {
                 "Type": "volume",
-                "Source": helper.EXPECTED_VOLUME,
+                "Name": helper.EXPECTED_VOLUME,
+                "Source": "/var/lib/docker/volumes/discord-ai-reminder-bot-acceptance-postgres-data/_data",
                 "Destination": helper.EXPECTED_POSTGRES_VOLUME_DESTINATION,
                 "RW": True,
             },
@@ -1819,6 +1973,7 @@ def test_post_state_rejects_non_exact_port_publication(
     }
     volume = {
         "Name": helper.EXPECTED_VOLUME,
+        "Mountpoint": "/var/lib/docker/volumes/discord-ai-reminder-bot-acceptance-postgres-data/_data",
         "Labels": {
             "com.docker.compose.project": helper.EXPECTED_PROJECT,
             "com.docker.compose.volume": "acceptance_postgres_data",

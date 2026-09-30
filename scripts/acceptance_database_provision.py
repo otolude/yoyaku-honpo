@@ -1298,6 +1298,7 @@ def _post_state_is_exact(runtime_directory: Path) -> bool:
         )
         network_labels = _strict_labels(network.get("Labels"))
         volume_labels = _strict_labels(volume.get("Labels"))
+        volume_mountpoint = volume.get("Mountpoint")
         if (
             container.get("Name") != f"/{EXPECTED_CONTAINER}"
             or not isinstance(configuration, dict)
@@ -1313,6 +1314,10 @@ def _post_state_is_exact(runtime_directory: Path) -> bool:
             or volume_labels is None
             or volume_labels.get("com.docker.compose.project") != EXPECTED_PROJECT
             or volume_labels.get("com.docker.compose.volume") != "acceptance_postgres_data"
+            or type(volume_mountpoint) is not str
+            or not volume_mountpoint
+            or not os.path.isabs(volume_mountpoint)
+            or "\x00" in volume_mountpoint
         ):
             return False
         state = container.get("State")
@@ -1346,13 +1351,10 @@ def _post_state_is_exact(runtime_directory: Path) -> bool:
             or published[0].get("HostPort") != str(EXPECTED_PORT)
         ):
             return False
-        required_mounts = {
-            ("volume", EXPECTED_VOLUME, EXPECTED_POSTGRES_VOLUME_DESTINATION, False),
-            ("bind", os.fspath(runtime_directory), "/run/acceptance-postgres-secrets", True),
-        }
-        if len(mounts) != len(required_mounts):
+        if len(mounts) != 2:
             return False
-        actual_mounts: set[tuple[str, str, str, bool]] = set()
+        volume_mount_count = 0
+        bind_mount_count = 0
         for mount in mounts:
             if not isinstance(mount, dict) or any(
                 type(mount.get(key)) is not expected
@@ -1364,10 +1366,27 @@ def _post_state_is_exact(runtime_directory: Path) -> bool:
                 )
             ):
                 return False
-            actual_mounts.add(
-                (mount["Type"], mount["Source"], mount["Destination"], not mount["RW"])
-            )
-        if actual_mounts != required_mounts:
+            if mount["Type"] == "volume":
+                if (
+                    type(mount.get("Name")) is not str
+                    or mount["Name"] != EXPECTED_VOLUME
+                    or mount["Source"] != volume_mountpoint
+                    or mount["Destination"] != EXPECTED_POSTGRES_VOLUME_DESTINATION
+                    or mount["RW"] is not True
+                ):
+                    return False
+                volume_mount_count += 1
+            elif mount["Type"] == "bind":
+                if (
+                    mount["Source"] != os.fspath(runtime_directory)
+                    or mount["Destination"] != "/run/acceptance-postgres-secrets"
+                    or mount["RW"] is not False
+                ):
+                    return False
+                bind_mount_count += 1
+            else:
+                return False
+        if volume_mount_count != 1 or bind_mount_count != 1:
             return False
         return _post_global_state_is_exact(containers, networks, volumes)
     except ProvisioningFailure:
