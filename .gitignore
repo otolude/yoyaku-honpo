@@ -19,6 +19,10 @@ venv/
 .development-postgres-secrets/
 .test-postgres-secrets/
 !.env.example
+deployment/production/production.env
+deployment/production/secrets/
+deployment/production/*.dump
+deployment/production/*.sha256
 
 # Editors and operating systems
 .vscode/

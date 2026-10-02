@@ -1,0 +1,20 @@
+[Unit]
+Description=Discord AI Reminder Bot container stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/discord-ai-reminder-bot/current
+EnvironmentFile=/etc/discord-ai-reminder-bot/compose.env
+ExecStartPre=/usr/bin/docker compose -f compose.production.yaml config --quiet
+ExecStart=/usr/bin/docker compose -f compose.production.yaml up -d --no-build --pull never --wait postgres app
+ExecReload=/usr/bin/docker compose -f compose.production.yaml up -d --no-build --pull never --wait postgres app
+ExecStop=/usr/bin/docker compose -f compose.production.yaml stop -t 45 app postgres
+TimeoutStartSec=180
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

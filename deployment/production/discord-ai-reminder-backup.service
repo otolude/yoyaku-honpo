@@ -1,0 +1,14 @@
+[Unit]
+Description=Logical backup for Discord AI Reminder Bot PostgreSQL
+Requires=docker.service
+After=docker.service
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/discord-ai-reminder-bot/current
+EnvironmentFile=/etc/discord-ai-reminder-bot/compose.env
+ExecStart=/opt/discord-ai-reminder-bot/current/deployment/production/backup.sh
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true

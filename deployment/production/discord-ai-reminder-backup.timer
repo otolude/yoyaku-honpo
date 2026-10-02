@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily logical backup for Discord AI Reminder Bot
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=15m
+Unit=discord-ai-reminder-backup.service
+[Install]
+WantedBy=timers.target
